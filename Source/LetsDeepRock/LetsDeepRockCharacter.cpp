@@ -10,6 +10,11 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Materials/Material.h"
 #include "Engine/World.h"
+#include "Engine/LocalPlayer.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "InputActionValue.h"
+#include "LetsDeepRock.h"
 
 ALetsDeepRockCharacter::ALetsDeepRockCharacter()
 {
@@ -51,7 +56,17 @@ void ALetsDeepRockCharacter::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// stub
+	// Register the default input mapping context for the owning local player
+	if (APlayerController* PlayerController = Cast<APlayerController>(GetController()))
+	{
+		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+		{
+			if (DefaultMappingContext)
+			{
+				Subsystem->AddMappingContext(DefaultMappingContext, 0);
+			}
+		}
+	}
 }
 
 void ALetsDeepRockCharacter::Tick(float DeltaSeconds)
@@ -59,4 +74,38 @@ void ALetsDeepRockCharacter::Tick(float DeltaSeconds)
     Super::Tick(DeltaSeconds);
 
 	// stub
+}
+
+void ALetsDeepRockCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent))
+	{
+		// Bind WASD movement
+		EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ALetsDeepRockCharacter::Move);
+	}
+	else
+	{
+		UE_LOG(LogLetsDeepRock, Error, TEXT("'%s' Failed to find an Enhanced Input Component! This template is built to use the Enhanced Input system."), *GetNameSafe(this));
+	}
+}
+
+void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
+{
+	// Input is a Vector2D (X = right/left, Y = forward/back)
+	const FVector2D MovementVector = Value.Get<FVector2D>();
+
+	if (Controller != nullptr)
+	{
+		// Move relative to world axes so WASD maps to the fixed top-down camera view.
+		// Yaw-only rotation keeps movement on the ground plane.
+		const FRotator YawRotation(0.f, Controller->GetControlRotation().Yaw, 0.f);
+
+		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+
+		AddMovementInput(ForwardDirection, MovementVector.Y);
+		AddMovementInput(RightDirection, MovementVector.X);
+	}
 }

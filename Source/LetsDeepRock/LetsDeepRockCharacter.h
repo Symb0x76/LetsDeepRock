@@ -8,9 +8,13 @@
 
 class UCameraComponent;
 class USpringArmComponent;
+class UInputMappingContext;
+class UInputAction;
+struct FInputActionValue;
 
 /**
- *  A controllable top-down perspective character
+ *  A controllable top-down perspective character.
+ *  Uses WASD (Enhanced Input) for movement.
  */
 UCLASS(abstract)
 class ALetsDeepRockCharacter : public ACharacter
@@ -27,6 +31,16 @@ private:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<USpringArmComponent> CameraBoom;
 
+protected:
+
+	/** Input mapping context applied to the owning player when possessed */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Input", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UInputMappingContext> DefaultMappingContext;
+
+	/** Movement input action (Axis2D). Map W/A/S/D to this in the IMC. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Input", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UInputAction> MoveAction;
+
 public:
 
 	/** Constructor */
@@ -37,6 +51,14 @@ public:
 
 	/** Update */
 	virtual void Tick(float DeltaSeconds) override;
+
+	/** Set up Enhanced Input action bindings */
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+
+protected:
+
+	/** Handles WASD movement input */
+	void Move(const FInputActionValue& Value);
 
 	/** Returns the camera component **/
 	UCameraComponent* GetTopDownCameraComponent() const { return TopDownCameraComponent.Get(); }
