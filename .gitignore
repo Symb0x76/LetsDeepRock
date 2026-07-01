@@ -1,0 +1,88 @@
+# ==============================================================================
+# Unreal Engine .gitignore  (UE 5.8 C++ 项目)
+# ==============================================================================
+# 说明：
+# - 忽略所有由引擎生成的中间产物、编译输出、缓存、IDE 工程文件。
+# - 【临时】忽略 Content/ 素材资源，待资源同步方案敲定后再放开。
+# - 保留：源码(Source)、配置(Config)、.uproject、本文件。
+# ==============================================================================
+
+# ==============================================================================
+# 【临时】素材资源 —— 待资源同步方案确定后移除以下规则
+# ------------------------------------------------------------------------------
+# 现阶段只推送代码/配置/工程定义，不提交 Content/ 下的 uasset/umap 等素材。
+# 方案敲定后，删除本段即可将资源重新纳入版本管理。
+# 注意：忽略 Content/ 后，clone 出的项目可编译但打开时无关卡/蓝图/资源。
+# ==============================================================================
+Content/
+
+# ==============================================================================
+
+# --- UE 自动生成 / 编译产物目录 ---
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+
+# 插件下的同类目录（防止插件里的产物被提交）
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+Plugins/**/Saved/
+
+# --- IDE / 工具工程文件 ---
+# Visual Studio
+.vs/
+*.sln
+*.slnx
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# Rider
+.idea/
+*.sln.DotSettings.user
+
+# Visual Studio Code（如需保留团队共享配置，可反忽略 .vscode 内特定文件）
+.vscode/
+
+# --- 生成的项目文件 ---
+*.xcodeproj
+*.xcworkspace
+
+# --- 操作系统垃圾文件 ---
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- 临时 / 备份文件 ---
+*.tmp
+*.log
+*.bak
+*.orig
+*.autosave
+
+# ==============================================================================
+# Git LFS 建议（可选）
+# ------------------------------------------------------------------------------
+# UE 内容资源（.uasset / .umap）是二进制大文件，推荐用 Git LFS 管理。
+# 若启用，请单独创建 .gitattributes，例如：
+#   *.uasset  filter=lfs diff=lfs merge=lfs -text
+#   *.umap    filter=lfs diff=lfs merge=lfs -text
+#   *.fbx     filter=lfs diff=lfs merge=lfs -text
+#   *.wav     filter=lfs diff=lfs merge=lfs -text
+#   *.png     filter=lfs diff=lfs merge=lfs -text
+# 注意：本 .gitignore 默认【不忽略】Content/ 下的资源，它们会被正常提交。
+# ==============================================================================
