@@ -32,11 +32,11 @@
 		},
 		{
 			"Name": "ModelContextProtocol",
-			"Enabled": true
+			"Enabled": false
 		},
 		{
 			"Name": "AllToolsets",
-			"Enabled": true
+			"Enabled": false
 		}
 	]
 }
