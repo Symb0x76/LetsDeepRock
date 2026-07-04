@@ -74,6 +74,9 @@ $RECYCLE.BIN/
 *.orig
 *.autosave
 
+# GenerateProjectFiles 产生的空标记文件
+Generate
+
 # --- 本地 AI Agent 规则（个人本地配置，不提交）---
 AGENTS.md
 
