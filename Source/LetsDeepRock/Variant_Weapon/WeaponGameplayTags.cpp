@@ -18,3 +18,6 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_Cooldown_Weapon_Melee, "Cooldown.Weapon.Melee");
 
 // 状态
 UE_DEFINE_GAMEPLAY_TAG(TAG_State_Dead, "State.Dead");
+
+// 伤害类型
+UE_DEFINE_GAMEPLAY_TAG(TAG_Damage_Terrain, "Damage.Terrain");

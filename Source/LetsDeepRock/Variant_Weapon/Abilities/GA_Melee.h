@@ -52,6 +52,9 @@ protected:
 	/** 服务端执行近战 Sweep 检测并对命中目标施加伤害 */
 	void ServerMeleeSweep(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData);
 
+	/** 服务端执行近战对地形格子的伤害检测 */
+	void ServerMeleeTerrainSweep(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData);
+
 	/** 对单个目标 Apply 伤害 GE（统一伤害链路） */
 	void ApplyDamageToTarget(AActor* SourceActor, AActor* TargetActor, const UWeaponDataAsset* WeaponData);
 };

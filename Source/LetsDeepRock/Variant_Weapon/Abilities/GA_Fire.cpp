@@ -178,8 +178,8 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 
 	if (Projectile)
 	{
-		// 设置伤害参数和投射物速度
-		Projectile->InitDamageParams(WeaponData->DamageEffectClass, WeaponData->BaseDamage, Avatar);
+		// 设置伤害参数和投射物速度（包含 DamageTags 用于地形伤害判定）
+		Projectile->InitDamageParams(WeaponData->DamageEffectClass, WeaponData->BaseDamage, Avatar, WeaponData->DamageTags);
 		Projectile->SetProjectileSpeed(WeaponData->ProjectileSpeed);
 	}
 }

@@ -31,7 +31,7 @@ public:
 	AWeaponProjectile();
 
 	/** 设置伤害参数（由 GA_Fire 在 Spawn 后立即调用） */
-	void InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator);
+	void InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags);
 
 	/** 设置投射物速度（由 GA_Fire 在 Spawn 后调用，覆盖构造函数默认值） */
 	void SetProjectileSpeed(float InSpeed);
@@ -59,6 +59,9 @@ protected:
 	/** 射击发起者（用于 EffectContext 的因果链） */
 	UPROPERTY()
 	TWeakObjectPtr<AActor> InstigatorActor;
+
+	/** 伤害携带的 Tags（用于地形伤害等类型判定） */
+	FGameplayTagContainer DamageTags;
 
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;

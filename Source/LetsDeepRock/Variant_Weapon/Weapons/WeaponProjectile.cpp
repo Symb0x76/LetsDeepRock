@@ -8,6 +8,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
+#include "GridMap/GridDamageHelper.h"
 
 AWeaponProjectile::AWeaponProjectile()
 {
@@ -66,11 +67,12 @@ void AWeaponProjectile::BeginPlay()
 	}
 }
 
-void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator)
+void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags)
 {
 	DamageEffectClass = InDamageGE;
 	DamageValue = InDamage;
 	InstigatorActor = InInstigator;
+	DamageTags = InDamageTags;
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
@@ -108,9 +110,14 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 {
-	// 只在服务端销毁（客户端的复制 Actor 会随服务端销毁自动清除）
+	// 只在服务端处理
 	if (HasAuthority())
 	{
+		// 投射物撞墙停止时，尝试对命中位置施加地形伤害
+		if (DamageValue > 0.0f)
+		{
+			FGridDamageHelper::TryApplyTerrainDamage(this, ImpactResult.ImpactPoint, DamageValue, DamageTags);
+		}
 		Destroy();
 	}
 }

@@ -11,6 +11,7 @@
 #include "Engine/OverlapResult.h"
 #include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
+#include "GridMap/GridDamageHelper.h"
 
 UGA_Melee::UGA_Melee()
 {
@@ -54,6 +55,7 @@ void UGA_Melee::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	if (HasAuthority(&ActivationInfo))
 	{
 		ServerMeleeSweep(ActorInfo, WeaponData);
+		ServerMeleeTerrainSweep(ActorInfo, WeaponData);
 	}
 
 	// 单次挥砍：立即结束 Ability（Cooldown GE 独立运行）
@@ -233,4 +235,30 @@ void UGA_Melee::ApplyDamageToTarget(AActor* SourceActor, AActor* TargetActor, co
 
 	// 施加伤害：Source ASC → Target ASC
 	SourceASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+}
+
+void UGA_Melee::ServerMeleeTerrainSweep(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData)
+{
+	if (!WeaponData || !FGridDamageHelper::HasTerrainDamageTag(WeaponData->DamageTags))
+	{
+		return; // 该武器不携带地形伤害 Tag，跳过
+	}
+
+	AActor* Avatar = ActorInfo->AvatarActor.Get();
+	if (!Avatar)
+	{
+		return;
+	}
+
+	// 近战攻击点在角色正前方 MeleeRange 距离处
+	const FVector AvatarLocation = Avatar->GetActorLocation();
+	const FVector ForwardDir = Avatar->GetActorForwardVector().GetSafeNormal2D();
+	const FVector HitPoint = AvatarLocation + ForwardDir * WeaponData->MeleeRange * 0.5f;
+
+	// 对命中点施加地形伤害
+	FGridDamageHelper::TryApplyTerrainDamage(
+		Avatar,
+		HitPoint,
+		WeaponData->MeleeDamage,
+		WeaponData->DamageTags);
 }
