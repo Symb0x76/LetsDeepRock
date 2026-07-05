@@ -166,6 +166,10 @@ UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateHISMForType(E
 
 	// 设置材质：优先用户配置，否则创建默认颜色材质
 	UMaterialInterface* Mat = GetMaterialForType(Type);
+
+	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 类型=%d 配置材质=%s"),
+		(int32)Type, Mat ? *Mat->GetName() : TEXT("NULL"));
+
 	if (Mat)
 	{
 		HISM->SetMaterial(0, Mat);
