@@ -119,7 +119,7 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 	else
 	{
 		// 命中地形/世界物体：尝试地形伤害
-		const FVector HitLocation = SweepResult.ImpactPoint.IsZero() ? GetActorLocation() : SweepResult.ImpactPoint;
+		const FVector HitLocation = SweepResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(SweepResult.ImpactPoint);
 		if (DamageValue > 0.0f)
 		{
 			FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
