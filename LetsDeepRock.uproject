@@ -40,7 +40,11 @@
 		},
 		{
 			"Name": "AllToolsets",
-			"Enabled": false
+			"Enabled": true
+		},
+		{
+			"Name": "MCPClientToolset",
+			"Enabled": true
 		}
 	]
 }

@@ -46,17 +46,6 @@ void AWeaponProjectile::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 绑定碰撞事件
-	if (CollisionSphere)
-	{
-		CollisionSphere->OnComponentBeginOverlap.AddDynamic(this, &AWeaponProjectile::OnSphereBeginOverlap);
-	}
-
-	if (ProjectileMovement)
-	{
-		ProjectileMovement->OnProjectileStop.AddDynamic(this, &AWeaponProjectile::OnProjectileStop);
-	}
-
 	// 使用 Native Tag 代替字符串查找
 	DamageTag = TAG_Data_Damage;
 
@@ -64,6 +53,20 @@ void AWeaponProjectile::BeginPlay()
 	if (InstigatorActor.IsValid())
 	{
 		CollisionSphere->IgnoreActorWhenMoving(InstigatorActor.Get(), true);
+	}
+
+	// 延迟一帧再启用 overlap 检测，避免 spawn 瞬间与脚下地形立即碰撞
+	if (CollisionSphere)
+	{
+		CollisionSphere->SetGenerateOverlapEvents(false);
+	}
+
+	// 下一帧启用碰撞并绑定事件
+	GetWorldTimerManager().SetTimerForNextTick(this, &AWeaponProjectile::EnableCollisionAndBindEvents);
+
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->OnProjectileStop.AddDynamic(this, &AWeaponProjectile::OnProjectileStop);
 	}
 }
 
@@ -88,6 +91,18 @@ void AWeaponProjectile::SetProjectileSpeed(float InSpeed)
 		ProjectileMovement->MaxSpeed = InSpeed;
 		// 速度已设置，需要重新初始化移动方向（Velocity = Forward * Speed）
 		ProjectileMovement->SetVelocityInLocalSpace(FVector(InSpeed, 0.f, 0.f));
+	}
+}
+
+void AWeaponProjectile::EnableCollisionAndBindEvents()
+{
+	if (CollisionSphere)
+	{
+		CollisionSphere->SetGenerateOverlapEvents(true);
+		CollisionSphere->OnComponentBeginOverlap.AddDynamic(this, &AWeaponProjectile::OnSphereBeginOverlap);
+
+		// 刷新 overlap 状态（检测当前已重叠的物体）
+		CollisionSphere->UpdateOverlaps();
 	}
 }
 

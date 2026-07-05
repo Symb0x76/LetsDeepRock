@@ -81,4 +81,7 @@ protected:
 
 	/** 对目标施加伤害 GE */
 	void ApplyDamageToTarget(AActor* TargetActor);
+
+	/** 延迟启用碰撞检测（避免 spawn 瞬间与脚下地形碰撞） */
+	void EnableCollisionAndBindEvents();
 };
