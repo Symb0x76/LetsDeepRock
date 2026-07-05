@@ -90,17 +90,6 @@ void UGridMapRenderer::BuildFromMapData(UGridMapData* MapData)
 		TreeHISM ? TreeHISM->GetInstanceCount() : 0,
 		RockHISM ? RockHISM->GetInstanceCount() : 0,
 		LargeTreeHISM ? LargeTreeHISM->GetInstanceCount() : 0);
-
-	// 调试：如果树木数为 0 但数据层有树木，说明渲染层有问题
-	int32 DataTreeCount = 0;
-	int32 DataLargeTreeCount = 0;
-	for (const FGridTileData& Tile : AllTiles)
-	{
-		if (Tile.TileType == EGridTileType::Tree) ++DataTreeCount;
-		if (Tile.TileType == EGridTileType::LargeTree) ++DataLargeTreeCount;
-	}
-	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 数据层统计 - 树木=%d，高大树木=%d"),
-		DataTreeCount, DataLargeTreeCount);
 }
 
 void UGridMapRenderer::RemoveTileInstance(int32 GridX, int32 GridY)
@@ -166,10 +155,6 @@ UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateHISMForType(E
 
 	// 设置材质：优先用户配置，否则创建默认颜色材质
 	UMaterialInterface* Mat = GetMaterialForType(Type);
-
-	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 类型=%d 配置材质=%s"),
-		(int32)Type, Mat ? *Mat->GetName() : TEXT("NULL"));
-
 	if (Mat)
 	{
 		HISM->SetMaterial(0, Mat);
