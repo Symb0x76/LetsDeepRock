@@ -28,8 +28,8 @@ AWeaponProjectile::AWeaponProjectile()
 	CollisionSphere->SetCollisionObjectType(ECC_WorldDynamic);
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
 
 	// 投射物移动
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
@@ -67,12 +67,13 @@ void AWeaponProjectile::BeginPlay()
 	}
 }
 
-void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags)
+void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags, bool bInPenetratesTerrain)
 {
 	DamageEffectClass = InDamageGE;
 	DamageValue = InDamage;
 	InstigatorActor = InInstigator;
 	DamageTags = InDamageTags;
+	bPenetratesTerrain = bInPenetratesTerrain;
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
@@ -100,24 +101,43 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
-	// 只在服务端处理伤害和销毁（投射物是复制 Actor，由服务端管理生命周期）
-	if (HasAuthority())
+	// 只在服务端处理伤害和销毁
+	if (!HasAuthority())
 	{
+		return;
+	}
+
+	// 判断命中物的碰撞类型
+	const ECollisionChannel OtherChannel = OtherComp ? OtherComp->GetCollisionObjectType() : ECC_WorldStatic;
+
+	if (OtherChannel == ECC_Pawn)
+	{
+		// 命中敌人：走标准 GAS 伤害链路
 		ApplyDamageToTarget(OtherActor);
 		Destroy();
+	}
+	else
+	{
+		// 命中地形/世界物体：尝试地形伤害
+		const FVector HitLocation = SweepResult.ImpactPoint.IsZero() ? GetActorLocation() : SweepResult.ImpactPoint;
+		if (DamageValue > 0.0f)
+		{
+			FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
+		}
+
+		// 根据穿透设置决定是否销毁
+		if (!bPenetratesTerrain)
+		{
+			Destroy();
+		}
 	}
 }
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 {
-	// 只在服务端处理
+	// 投射物速度归零时销毁（仅服务端）
 	if (HasAuthority())
 	{
-		// 投射物撞墙停止时，尝试对命中位置施加地形伤害
-		if (DamageValue > 0.0f)
-		{
-			FGridDamageHelper::TryApplyTerrainDamage(this, ImpactResult.ImpactPoint, DamageValue, DamageTags);
-		}
 		Destroy();
 	}
 }
