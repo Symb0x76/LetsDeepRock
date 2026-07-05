@@ -35,13 +35,10 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerEventData)
 {
-	UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] ActivateAbility 被调用"));
-
 	// 获取武器数据
 	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
 	if (!WeaponData)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GA_Fire] WeaponData 为空，取消 Ability"));
 		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
 		return;
 	}
@@ -49,7 +46,6 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	// CommitAbility：检查 + 触发 Cooldown（本期无 Cost）
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] CommitAbility 失败"));
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -57,12 +53,7 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	// 仅服务端生成投射物（bReplicates=true 的投射物会自动复制到客户端）
 	if (HasAuthority(&ActivationInfo))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] 服务端，准备 SpawnProjectile"));
 		ServerSpawnProjectile(ActorInfo, WeaponData);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] 非服务端，跳过 Spawn"));
 	}
 
 	// 单发射击：立即结束 Ability（Cooldown GE 已独立运行，不需要等待）
@@ -139,14 +130,12 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 {
 	if (!WeaponData->ProjectileClass)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GA_Fire] ProjectileClass 为空"));
 		return;
 	}
 
 	AActor* Avatar = ActorInfo->AvatarActor.Get();
 	if (!Avatar)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GA_Fire] Avatar 为空"));
 		return;
 	}
 
@@ -189,7 +178,6 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 
 	if (Projectile)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] 投射物 Spawn 成功，位置=(%s)"), *SpawnLocation.ToString());
 		// 设置伤害参数和投射物速度（包含 DamageTags 和穿透设置）
 		Projectile->InitDamageParams(
 			WeaponData->DamageEffectClass,
@@ -198,9 +186,5 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 			WeaponData->DamageTags,
 			WeaponData->bProjectilePenetratesTerrain);
 		Projectile->SetProjectileSpeed(WeaponData->ProjectileSpeed);
-	}
-	else
-	{
-		UE_LOG(LogTemp, Error, TEXT("[GA_Fire] 投射物 Spawn 失败！"));
 	}
 }

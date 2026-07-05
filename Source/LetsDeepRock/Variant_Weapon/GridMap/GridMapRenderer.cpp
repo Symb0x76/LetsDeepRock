@@ -150,8 +150,7 @@ UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateHISMForType(E
 	HISM->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	HISM->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic);
 	HISM->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
-	HISM->SetCollisionResponseToChannel(ECollisionChannel::ECC_WorldDynamic, ECollisionResponse::ECR_Overlap);
-	HISM->SetGenerateOverlapEvents(true);
+	HISM->SetGenerateOverlapEvents(false);
 	HISM->SetCanEverAffectNavigation(true); // 影响 NavMesh
 
 	// 设置材质：优先用户配置，否则创建默认颜色材质

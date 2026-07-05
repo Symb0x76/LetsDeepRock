@@ -28,8 +28,7 @@ AWeaponProjectile::AWeaponProjectile()
 	CollisionSphere->SetCollisionObjectType(ECC_WorldDynamic);
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
-	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Overlap);
-	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Overlap);
+	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
 
 	// 投射物移动
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
@@ -55,14 +54,11 @@ void AWeaponProjectile::BeginPlay()
 		CollisionSphere->IgnoreActorWhenMoving(InstigatorActor.Get(), true);
 	}
 
-	// 延迟一帧再启用 overlap 检测，避免 spawn 瞬间与脚下地形立即碰撞
+	// 绑定碰撞事件
 	if (CollisionSphere)
 	{
-		CollisionSphere->SetGenerateOverlapEvents(false);
+		CollisionSphere->OnComponentBeginOverlap.AddDynamic(this, &AWeaponProjectile::OnSphereBeginOverlap);
 	}
-
-	// 下一帧启用碰撞并绑定事件
-	GetWorldTimerManager().SetTimerForNextTick(this, &AWeaponProjectile::EnableCollisionAndBindEvents);
 
 	if (ProjectileMovement)
 	{
@@ -94,19 +90,6 @@ void AWeaponProjectile::SetProjectileSpeed(float InSpeed)
 	}
 }
 
-void AWeaponProjectile::EnableCollisionAndBindEvents()
-{
-	if (CollisionSphere)
-	{
-		CollisionSphere->SetGenerateOverlapEvents(true);
-		CollisionSphere->OnComponentBeginOverlap.AddDynamic(this, &AWeaponProjectile::OnSphereBeginOverlap);
-
-		// 刷新 overlap 状态（检测当前已重叠的物体）
-		CollisionSphere->UpdateOverlaps();
-	}
-	UE_LOG(LogTemp, Warning, TEXT("[Projectile] EnableCollision - 碰撞已启用"));
-}
-
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
 	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
 	bool bFromSweep, const FHitResult& SweepResult)
@@ -123,39 +106,37 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
-	// 判断命中物的碰撞类型
-	const ECollisionChannel OtherChannel = OtherComp ? OtherComp->GetCollisionObjectType() : ECC_WorldStatic;
-
-	UE_LOG(LogTemp, Warning, TEXT("[Projectile] Overlap - OtherActor=%s, Channel=%d, Penetrate=%d"),
-		*OtherActor->GetName(), (int32)OtherChannel, (int32)bPenetratesTerrain);
-
-	if (OtherChannel == ECC_Pawn)
-	{
-		// 命中敌人：走标准 GAS 伤害链路
-		ApplyDamageToTarget(OtherActor);
-		Destroy();
-	}
-	else
-	{
-		// 命中地形/世界物体：尝试地形伤害
-		const FVector HitLocation = SweepResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(SweepResult.ImpactPoint);
-		if (DamageValue > 0.0f)
-		{
-			FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
-		}
-
-		// 根据穿透设置决定是否销毁
-		if (!bPenetratesTerrain)
-		{
-			Destroy();
-		}
-	}
+	// Overlap 只对 Pawn 生效（敌人命中）
+	ApplyDamageToTarget(OtherActor);
+	Destroy();
 }
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 {
-	// 投射物速度归零时销毁（仅服务端）
-	if (HasAuthority())
+	// 只在服务端处理
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	// 投射物撞到 WorldStatic（地形方块）时，尝试施加地形伤害
+	if (DamageValue > 0.0f)
+	{
+		const FVector HitLocation = ImpactResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(ImpactResult.ImpactPoint);
+		FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
+	}
+
+	// 根据穿透设置决定是否销毁
+	if (bPenetratesTerrain)
+	{
+		// 穿透模式：恢复速度继续飞行
+		if (ProjectileMovement)
+		{
+			const FVector Dir = GetActorForwardVector();
+			ProjectileMovement->SetVelocityInLocalSpace(FVector(ProjectileMovement->MaxSpeed, 0.f, 0.f));
+		}
+	}
+	else
 	{
 		Destroy();
 	}
