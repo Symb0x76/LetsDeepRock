@@ -4,6 +4,7 @@
 #include "GridMapData.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "UObject/ConstructorHelpers.h"
 
 UGridMapRenderer::UGridMapRenderer()
@@ -86,7 +87,20 @@ void UGridMapRenderer::BuildFromMapData(UGridMapData* MapData)
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 渲染完成 - 树木实例=%d，岩石实例=%d，高大树木实例=%d"),
-		TreeHISM->GetInstanceCount(), RockHISM->GetInstanceCount(), LargeTreeHISM->GetInstanceCount());
+		TreeHISM ? TreeHISM->GetInstanceCount() : 0,
+		RockHISM ? RockHISM->GetInstanceCount() : 0,
+		LargeTreeHISM ? LargeTreeHISM->GetInstanceCount() : 0);
+
+	// 调试：如果树木数为 0 但数据层有树木，说明渲染层有问题
+	int32 DataTreeCount = 0;
+	int32 DataLargeTreeCount = 0;
+	for (const FGridTileData& Tile : AllTiles)
+	{
+		if (Tile.TileType == EGridTileType::Tree) ++DataTreeCount;
+		if (Tile.TileType == EGridTileType::LargeTree) ++DataLargeTreeCount;
+	}
+	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 数据层统计 - 树木=%d，高大树木=%d"),
+		DataTreeCount, DataLargeTreeCount);
 }
 
 void UGridMapRenderer::RemoveTileInstance(int32 GridX, int32 GridY)
@@ -150,11 +164,34 @@ UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateHISMForType(E
 	HISM->SetGenerateOverlapEvents(false);
 	HISM->SetCanEverAffectNavigation(true); // 影响 NavMesh
 
-	// 设置材质
+	// 设置材质：优先用户配置，否则创建默认颜色材质
 	UMaterialInterface* Mat = GetMaterialForType(Type);
 	if (Mat)
 	{
 		HISM->SetMaterial(0, Mat);
+	}
+	else
+	{
+		// 无配置材质时，创建动态材质实例并赋予默认颜色
+		UMaterialInterface* BaseMat = HISM->GetMaterial(0);
+		if (BaseMat)
+		{
+			UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(BaseMat, Owner);
+			if (DynMat)
+			{
+				FLinearColor Color;
+				switch (Type)
+				{
+				case EGridTileType::Tree:      Color = FLinearColor(0.1f, 0.7f, 0.1f); break;  // 绿色
+				case EGridTileType::Rock:      Color = FLinearColor(0.5f, 0.5f, 0.5f); break;  // 灰色
+				case EGridTileType::LargeTree: Color = FLinearColor(0.05f, 0.4f, 0.05f); break; // 深绿
+				default:                       Color = FLinearColor::White; break;
+				}
+				DynMat->SetVectorParameterValue(TEXT("BaseColor"), Color);
+				DynMat->SetVectorParameterValue(TEXT("Color"), Color); // 兼容不同材质参数名
+				HISM->SetMaterial(0, DynMat);
+			}
+		}
 	}
 
 	HISM->RegisterComponent();
