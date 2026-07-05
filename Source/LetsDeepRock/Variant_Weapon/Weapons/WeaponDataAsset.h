@@ -57,6 +57,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	TSubclassOf<UGameplayEffect> DamageEffectClass;
 
+	/** 伤害携带的 Tag（如 Damage.Terrain 可破坏地形） */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
+	FGameplayTagContainer DamageTags;
+
 	/** Cooldown GE 类（Has Duration + TargetTags 授予 Cooldown.Weapon.Fire） */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
 	TSubclassOf<UGameplayEffect> CooldownEffectClass;
