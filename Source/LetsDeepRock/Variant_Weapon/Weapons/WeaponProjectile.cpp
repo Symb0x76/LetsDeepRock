@@ -104,6 +104,7 @@ void AWeaponProjectile::EnableCollisionAndBindEvents()
 		// 刷新 overlap 状态（检测当前已重叠的物体）
 		CollisionSphere->UpdateOverlaps();
 	}
+	UE_LOG(LogTemp, Warning, TEXT("[Projectile] EnableCollision - 碰撞已启用"));
 }
 
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -124,6 +125,9 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 
 	// 判断命中物的碰撞类型
 	const ECollisionChannel OtherChannel = OtherComp ? OtherComp->GetCollisionObjectType() : ECC_WorldStatic;
+
+	UE_LOG(LogTemp, Warning, TEXT("[Projectile] Overlap - OtherActor=%s, Channel=%d, Penetrate=%d"),
+		*OtherActor->GetName(), (int32)OtherChannel, (int32)bPenetratesTerrain);
 
 	if (OtherChannel == ECC_Pawn)
 	{
