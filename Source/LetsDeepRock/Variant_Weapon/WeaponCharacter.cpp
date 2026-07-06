@@ -199,14 +199,17 @@ void AWeaponCharacter::Move(const FInputActionValue& Value)
 
 	const FVector2D MoveInput = Value.Get<FVector2D>();
 
-	if (!FMath::IsNearlyZero(MoveInput.X))
+	if (Controller != nullptr && Camera != nullptr)
 	{
-		AddMovementInput(FVector(1.0f, 0.0f, 0.0f), MoveInput.X);
-	}
+		// 基于摄像机的 Yaw 方向计算移动，使 WASD 始终相对屏幕方向
+		const FRotator CameraRotation = Camera->GetComponentRotation();
+		const FRotator YawRotation(0.f, CameraRotation.Yaw, 0.f);
 
-	if (!FMath::IsNearlyZero(MoveInput.Y))
-	{
-		AddMovementInput(FVector(0.0f, 1.0f, 0.0f), MoveInput.Y);
+		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+
+		AddMovementInput(ForwardDirection, MoveInput.Y);
+		AddMovementInput(RightDirection, MoveInput.X);
 	}
 }
 
