@@ -3,11 +3,12 @@
 #include "LetsDeepRockCharacter.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Camera/CameraComponent.h"
-#include "Components/DecalComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "Net/UnrealNetwork.h"
+#include "Engine/Engine.h"
 #include "Materials/Material.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
@@ -50,6 +51,10 @@ ALetsDeepRockCharacter::ALetsDeepRockCharacter()
 	// Activate ticking in order to update the cursor every frame.
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
+	
+	// Init Player HP
+	MaxHealth = 100.0f;
+	CurrentHealth = MaxHealth;
 }
 
 void ALetsDeepRockCharacter::BeginPlay()
@@ -91,6 +96,14 @@ void ALetsDeepRockCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
 	}
 }
 
+void ALetsDeepRockCharacter::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	
+	// Replicate current HP
+	DOREPLIFETIME(ALetsDeepRockCharacter, CurrentHealth);
+}
+
 void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 {
 	// Input is a Vector2D (X = right/left, Y = forward/back)
@@ -108,4 +121,37 @@ void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 		AddMovementInput(ForwardDirection, MovementVector.Y);
 		AddMovementInput(RightDirection, MovementVector.X);
 	}
+}
+
+void ALetsDeepRockCharacter::OnHealthUpdate()
+{
+	// client
+	if (IsLocallyControlled())
+	{
+		const FString HealthMessage = FString::Printf(TEXT("Current Health: %f"), CurrentHealth);
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, HealthMessage);
+		
+		if (CurrentHealth <= 0.0f)
+		{
+			const FString DeathMessage = FString::Printf(TEXT("Player has died!"));
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, DeathMessage);
+		}
+	}
+	
+	// server
+	if (GetLocalRole())
+	{
+		const FString HealthMessage = FString::Printf(TEXT("%s has %f health remaining."), *GetFName().ToString(), CurrentHealth);
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, HealthMessage);
+	}
+	
+	// all
+	/*
+	 * Any health-related functions here
+	 */
+}
+
+void ALetsDeepRockCharacter::OnRep_CurrentHealth()
+{
+	OnHealthUpdate();
 }

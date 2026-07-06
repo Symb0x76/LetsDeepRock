@@ -41,6 +41,18 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Input", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UInputAction> MoveAction;
 
+	/** Player Max HP **/
+	UPROPERTY(EditDefaultsOnly, Category = "Health")
+	float MaxHealth;
+	
+	/** Player current HP **/
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth)	// enable server-side copy of Actor
+	float CurrentHealth;
+	
+	/** RepNotify. Sync HP changes **/
+	UFUNCTION()
+	void OnRep_CurrentHealth();
+	
 public:
 
 	/** Constructor */
@@ -54,6 +66,9 @@ public:
 
 	/** Set up Enhanced Input action bindings */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	
+	/** Meta Replication **/
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
 
@@ -66,5 +81,7 @@ protected:
 	/** Returns the Camera Boom component **/
 	USpringArmComponent* GetCameraBoom() const { return CameraBoom.Get(); }
 
+	/** Reply Health Update **/
+	void OnHealthUpdate();
 };
 
