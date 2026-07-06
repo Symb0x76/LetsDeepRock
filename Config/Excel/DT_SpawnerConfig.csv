@@ -1,0 +1,5 @@
+---,SpawnGroupDelay,SpawnGroupSize,MinSpawnDelay,MaxSpawnDelay,SpawnRadius,NPCCap
+Default,5.0,3,0.33,0.66,600,20
+EasyWave,8.0,2,0.5,1.0,800,10
+HardWave,3.0,5,0.2,0.4,400,30
+BossWave,10.0,1,0,0,1000,5

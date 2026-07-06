@@ -46,6 +46,10 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UWeaponHealthSet> HealthSet;
 
+	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName） */
+	UPROPERTY(EditAnywhere, Category = "DataTable")
+	FName EnemyConfigRowName = NAME_None;
+
 	/** 初始生命值（BeginPlay 时写入 Health/MaxHealth） */
 	UPROPERTY(EditAnywhere, Category = "Attributes", meta = (ClampMin = 1))
 	float DefaultHealth = 30.0f;

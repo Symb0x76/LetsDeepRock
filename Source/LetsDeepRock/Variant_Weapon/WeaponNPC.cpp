@@ -9,6 +9,7 @@
 #include "GameplayTagContainer.h"
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
+#include "GameDataSubsystem.h"
 
 AWeaponNPC::AWeaponNPC()
 {
@@ -40,6 +41,22 @@ void AWeaponNPC::BeginPlay()
 	// 仅服务端初始化属性与订阅死亡事件
 	if (HasAuthority() && HealthSet)
 	{
+		// 尝试从 DataTable 读取配置覆盖硬编码默认值
+		if (EnemyConfigRowName != NAME_None)
+		{
+			if (UGameInstance* GI = GetGameInstance())
+			{
+				if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+				{
+					if (const FEnemyConfigRow* Config = DataSys->GetEnemyConfig(EnemyConfigRowName))
+					{
+						DefaultHealth = Config->MaxHealth;
+						DeathLingerTime = Config->DeathLingerTime;
+					}
+				}
+			}
+		}
+
 		HealthSet->InitMaxHealth(DefaultHealth);
 		HealthSet->InitHealth(DefaultHealth);
 

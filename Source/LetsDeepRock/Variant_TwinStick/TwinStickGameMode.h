@@ -56,6 +56,10 @@ protected:
 	UPROPERTY(EditAnywhere, Category="Twin Stick", meta=(ClampMin = 0, ClampMax = 100))
 	int32 NPCCap = 20;
 
+	/** 配置表行名（对应 DT_GameModeConfig 中的 RowName，留空则使用编辑器默认值） */
+	UPROPERTY(EditAnywhere, Category="DataTable")
+	FName GameModeConfigRowName = NAME_None;
+
 	/** Current number of NPCs in the level */
 	int32 NPCCount = 0;
 

@@ -42,7 +42,8 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_Weapon/Abilities",
 			"LetsDeepRock/Variant_Weapon/Attributes",
 			"LetsDeepRock/Variant_Weapon/Weapons",
-			"LetsDeepRock/Variant_Weapon/GridMap"
+			"LetsDeepRock/Variant_Weapon/GridMap",
+			"LetsDeepRock/Data"
 		});
 
 		// Uncomment if you are using Slate UI

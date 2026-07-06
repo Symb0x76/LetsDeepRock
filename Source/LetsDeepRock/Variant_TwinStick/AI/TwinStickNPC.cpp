@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "TwinStickNPCDestruction.h"
 #include "TimerManager.h"
+#include "GameDataSubsystem.h"
 
 ATwinStickNPC::ATwinStickNPC()
 {
@@ -42,6 +43,23 @@ ATwinStickNPC::ATwinStickNPC()
 void ATwinStickNPC::BeginPlay()
 {
 	Super::BeginPlay();
+
+	// 从 DataTable 读取配置覆盖默认值
+	if (EnemyConfigRowName != NAME_None)
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FEnemyConfigRow* Config = DataSys->GetEnemyConfig(EnemyConfigRowName))
+				{
+					Score = Config->ScoreValue;
+					PickupSpawnChance = Config->PickupSpawnChance;
+					GetCharacterMovement()->MaxWalkSpeed = Config->MoveSpeed;
+				}
+			}
+		}
+	}
 
 	// increment the NPC counter so we can cap spawning if necessary
 	if (ATwinStickGameMode* GM = Cast<ATwinStickGameMode>(GetWorld()->GetAuthGameMode()))
