@@ -6,9 +6,28 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "GameDataSubsystem.h"
 
 void ATwinStickGameMode::BeginPlay()
 {
+	// 从 DataTable 读取游戏模式配置
+	if (GameModeConfigRowName != NAME_None)
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FGameModeConfigRow* Config = DataSys->GetGameModeConfig(GameModeConfigRowName))
+				{
+					ComboIncrementMax = Config->ComboIncrementMax;
+					ComboCap = Config->ComboCap;
+					ComboCooldown = Config->ComboCooldown;
+					NPCCap = Config->NPCCap;
+				}
+			}
+		}
+	}
+
 	// create the UI widget if it hasn't already
 	CreateUI();
 }

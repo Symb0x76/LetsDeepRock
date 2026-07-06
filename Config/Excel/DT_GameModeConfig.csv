@@ -1,0 +1,4 @@
+---,ComboIncrementMax,ComboCap,ComboCooldown,NPCCap
+Default,5,4,3.0,20
+Casual,3,6,5.0,15
+Hardcore,8,10,2.0,30

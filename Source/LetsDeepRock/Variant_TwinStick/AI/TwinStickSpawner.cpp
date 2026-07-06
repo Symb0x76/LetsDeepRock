@@ -9,6 +9,7 @@
 #include "Kismet/GameplayStatics.h"
 #include "TwinStickNPC.h"
 #include "TwinStickGameMode.h"
+#include "GameDataSubsystem.h"
 
 ATwinStickSpawner::ATwinStickSpawner()
 {
@@ -19,7 +20,26 @@ ATwinStickSpawner::ATwinStickSpawner()
 void ATwinStickSpawner::BeginPlay()
 {
 	Super::BeginPlay();
-	
+
+	// 从 DataTable 读取生成器配置
+	if (SpawnerConfigRowName != NAME_None)
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FSpawnerConfigRow* Config = DataSys->GetSpawnerConfig(SpawnerConfigRowName))
+				{
+					SpawnGroupDelay = Config->SpawnGroupDelay;
+					SpawnGroupSize = Config->SpawnGroupSize;
+					MinSpawnDelay = Config->MinSpawnDelay;
+					MaxSpawnDelay = Config->MaxSpawnDelay;
+					SpawnRadius = Config->SpawnRadius;
+				}
+			}
+		}
+	}
+
 	// find the recast navmesh actor on the level
 	TArray<AActor*> ActorList;
 	UGameplayStatics::GetAllActorsOfClass(GetWorld(), ARecastNavMesh::StaticClass(), ActorList);

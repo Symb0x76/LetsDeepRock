@@ -1,0 +1,109 @@
+// DataTable 行结构体定义
+// 所有配置表的 C++ 行结构在此集中声明
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Engine/DataTable.h"
+#include "DataTableRows.generated.h"
+
+/**
+ * 敌人配置表行
+ * 对应 DataTable: DT_EnemyConfig
+ * 用于定义不同种类敌人的基础属性
+ */
+USTRUCT(BlueprintType)
+struct FEnemyConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** 敌人显示名称 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Basic")
+	FText DisplayName;
+
+	/** 最大生命值 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
+	float MaxHealth = 30.0f;
+
+	/** 移动速度 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
+	float MoveSpeed = 400.0f;
+
+	/** 攻击伤害 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AttackDamage = 10.0f;
+
+	/** 击杀奖励分数 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Reward")
+	int32 ScoreValue = 1;
+
+	/** 死亡掉落拾取物概率（0-100） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Reward", meta = (ClampMin = 0, ClampMax = 100))
+	int32 PickupSpawnChance = 10;
+
+	/** 死亡后延迟销毁时间（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = 0))
+	float DeathLingerTime = 2.0f;
+};
+
+/**
+ * 生成器/波次配置表行
+ * 对应 DataTable: DT_SpawnerConfig
+ * 用于定义生成器的行为参数
+ */
+USTRUCT(BlueprintType)
+struct FSpawnerConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** 生成组间隔（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 0))
+	float SpawnGroupDelay = 5.0f;
+
+	/** 每组生成数量 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 1))
+	int32 SpawnGroupSize = 3;
+
+	/** 个体生成最小间隔（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 0))
+	float MinSpawnDelay = 0.33f;
+
+	/** 个体生成最大间隔（秒） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 0))
+	float MaxSpawnDelay = 0.66f;
+
+	/** 生成半径（cm） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 0))
+	float SpawnRadius = 600.0f;
+
+	/** 场上 NPC 数量上限 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 1))
+	int32 NPCCap = 20;
+};
+
+/**
+ * 游戏模式全局配置表行
+ * 对应 DataTable: DT_GameModeConfig
+ * 用于定义连击系统、难度等全局平衡参数
+ */
+USTRUCT(BlueprintType)
+struct FGameModeConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** 连击递增阈值（击杀多少次后连击倍率+1） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = 1))
+	int32 ComboIncrementMax = 5;
+
+	/** 最大连击倍率 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = 1))
+	int32 ComboCap = 4;
+
+	/** 连击冷却时间（秒，超时则连击衰减） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combo", meta = (ClampMin = 0))
+	float ComboCooldown = 3.0f;
+
+	/** 场上 NPC 数量上限 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 1))
+	int32 NPCCap = 20;
+};

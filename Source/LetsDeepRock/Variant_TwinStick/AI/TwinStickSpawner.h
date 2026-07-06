@@ -42,6 +42,10 @@ protected:
 	/** Number of NPCs to spawn per group */
 	UPROPERTY(EditAnywhere, Category="NPC Spawner", meta = (ClampMin = 0, ClampMax = 10))
 	int32 SpawnGroupSize = 3;
+
+	/** 配置表行名（对应 DT_SpawnerConfig 中的 RowName，留空则使用编辑器默认值） */
+	UPROPERTY(EditAnywhere, Category="DataTable")
+	FName SpawnerConfigRowName = NAME_None;
 	
 	/** Number of NPCs spawned in the current group */
 	int32 SpawnCount = 0;

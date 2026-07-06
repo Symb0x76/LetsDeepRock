@@ -21,6 +21,10 @@ class ATwinStickNPC : public ACharacter
 
 protected:
 
+	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName，留空则使用编辑器默认值） */
+	UPROPERTY(EditAnywhere, Category="DataTable")
+	FName EnemyConfigRowName = NAME_None;
+
 	/** Score to award when this NPC is destroyed */
 	UPROPERTY(EditAnywhere, Category="Score", meta=(ClampMin = 0, ClampMax = 100))
 	int32 Score = 1;
