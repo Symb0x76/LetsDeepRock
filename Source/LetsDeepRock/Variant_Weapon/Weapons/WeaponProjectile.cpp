@@ -29,7 +29,6 @@ AWeaponProjectile::AWeaponProjectile()
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
-	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldDynamic, ECR_Block);
 
 	// 投射物移动
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));
@@ -46,6 +45,15 @@ void AWeaponProjectile::BeginPlay()
 {
 	Super::BeginPlay();
 
+	// 使用 Native Tag 代替字符串查找
+	DamageTag = TAG_Data_Damage;
+
+	// 忽略射击者自身
+	if (InstigatorActor.IsValid())
+	{
+		CollisionSphere->IgnoreActorWhenMoving(InstigatorActor.Get(), true);
+	}
+
 	// 绑定碰撞事件
 	if (CollisionSphere)
 	{
@@ -56,23 +64,15 @@ void AWeaponProjectile::BeginPlay()
 	{
 		ProjectileMovement->OnProjectileStop.AddDynamic(this, &AWeaponProjectile::OnProjectileStop);
 	}
-
-	// 使用 Native Tag 代替字符串查找
-	DamageTag = TAG_Data_Damage;
-
-	// 忽略射击者自身
-	if (InstigatorActor.IsValid())
-	{
-		CollisionSphere->IgnoreActorWhenMoving(InstigatorActor.Get(), true);
-	}
 }
 
-void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags)
+void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags, bool bInPenetratesTerrain)
 {
 	DamageEffectClass = InDamageGE;
 	DamageValue = InDamage;
 	InstigatorActor = InInstigator;
 	DamageTags = InDamageTags;
+	bPenetratesTerrain = bInPenetratesTerrain;
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
@@ -100,24 +100,44 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
-	// 只在服务端处理伤害和销毁（投射物是复制 Actor，由服务端管理生命周期）
-	if (HasAuthority())
+	// 只在服务端处理伤害和销毁
+	if (!HasAuthority())
 	{
-		ApplyDamageToTarget(OtherActor);
-		Destroy();
+		return;
 	}
+
+	// Overlap 只对 Pawn 生效（敌人命中）
+	ApplyDamageToTarget(OtherActor);
+	Destroy();
 }
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 {
 	// 只在服务端处理
-	if (HasAuthority())
+	if (!HasAuthority())
 	{
-		// 投射物撞墙停止时，尝试对命中位置施加地形伤害
-		if (DamageValue > 0.0f)
+		return;
+	}
+
+	// 投射物撞到 WorldStatic（地形方块）时，尝试施加地形伤害
+	if (DamageValue > 0.0f)
+	{
+		const FVector HitLocation = ImpactResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(ImpactResult.ImpactPoint);
+		FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
+	}
+
+	// 根据穿透设置决定是否销毁
+	if (bPenetratesTerrain)
+	{
+		// 穿透模式：恢复速度继续飞行
+		if (ProjectileMovement)
 		{
-			FGridDamageHelper::TryApplyTerrainDamage(this, ImpactResult.ImpactPoint, DamageValue, DamageTags);
+			const FVector Dir = GetActorForwardVector();
+			ProjectileMovement->SetVelocityInLocalSpace(FVector(ProjectileMovement->MaxSpeed, 0.f, 0.f));
 		}
+	}
+	else
+	{
 		Destroy();
 	}
 }

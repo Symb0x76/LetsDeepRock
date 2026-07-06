@@ -51,6 +51,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat", meta = (ClampMin = 100))
 	float ProjectileSpeed = 3000.0f;
 
+	/** 投射物是否穿透地形障碍物（穿透时仍会对地形造成伤害） */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Combat")
+	bool bProjectilePenetratesTerrain = false;
+
 	/** === 伤害 GE === */
 
 	/** 伤害 GE 类（Instant + SetByCaller Data.Damage） */

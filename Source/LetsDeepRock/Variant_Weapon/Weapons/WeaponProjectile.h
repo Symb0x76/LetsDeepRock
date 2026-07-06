@@ -31,7 +31,7 @@ public:
 	AWeaponProjectile();
 
 	/** 设置伤害参数（由 GA_Fire 在 Spawn 后立即调用） */
-	void InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags);
+	void InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags, bool bInPenetratesTerrain = false);
 
 	/** 设置投射物速度（由 GA_Fire 在 Spawn 后调用，覆盖构造函数默认值） */
 	void SetProjectileSpeed(float InSpeed);
@@ -62,6 +62,9 @@ protected:
 
 	/** 伤害携带的 Tags（用于地形伤害等类型判定） */
 	FGameplayTagContainer DamageTags;
+
+	/** 是否穿透地形障碍物 */
+	bool bPenetratesTerrain = false;
 
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;

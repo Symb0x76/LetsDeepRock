@@ -109,3 +109,34 @@ void UGridMapGenerator_Simple::Generate(UGridMapData* MapData)
 	UE_LOG(LogTemp, Log, TEXT("[GridMap] Simple 生成完成：%dx%d，树木=%d，高大树木=%d。"),
 		Width, Height, TreeCount, LargeTreeCount);
 }
+
+// ============================================================
+// UGridMapGenerator_Test
+// ============================================================
+
+void UGridMapGenerator_Test::Generate(UGridMapData* MapData)
+{
+	if (!MapData)
+	{
+		return;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+	const int32 Width = Config.MapWidth;
+	const int32 Height = Config.MapHeight;
+
+	// 在地图中央区域放置三种类型各一个，间隔 3 格方便观察
+	const int32 CenterX = Width / 2;
+	const int32 CenterY = Height / 2;
+
+	// 从左到右：Tree、Rock、LargeTree
+	MapData->SetTileType(CenterX - 3, CenterY, EGridTileType::Tree);
+	MapData->SetTileType(CenterX,     CenterY, EGridTileType::Rock);
+	MapData->SetTileType(CenterX + 3, CenterY, EGridTileType::LargeTree);
+
+	UE_LOG(LogTemp, Log, TEXT("[GridMap] Test 生成完成：%dx%d，中央放置 Tree(%d,%d) Rock(%d,%d) LargeTree(%d,%d)。"),
+		Width, Height,
+		CenterX - 3, CenterY,
+		CenterX, CenterY,
+		CenterX + 3, CenterY);
+}

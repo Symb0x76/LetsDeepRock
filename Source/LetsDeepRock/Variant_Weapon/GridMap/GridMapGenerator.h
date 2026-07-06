@@ -61,15 +61,30 @@ class LETSDEEPROCK_API UGridMapGenerator_Simple : public UGridMapGenerator
 public:
 	// 一般树木的生成概率（0~1）
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float TreeDensity = 0.05f;
+	float TreeDensity = 0.03f;
 
 	// 高大树木的生成概率（0~1）
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float LargeTreeDensity = 0.02f;
+	float LargeTreeDensity = 0.01f;
 
 	// 随机种子（0 为完全随机）
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 Seed = 0;
 
+	virtual void Generate(UGridMapData* MapData) override;
+};
+
+/**
+ * UGridMapGenerator_Test
+ * 
+ * 测试生成器：在地图中央区域各放置一个 Tree、Rock、LargeTree。
+ * 无边界围墙，用于单独测试各类型障碍物的阻挡和破坏效果。
+ */
+UCLASS(BlueprintType, Blueprintable)
+class LETSDEEPROCK_API UGridMapGenerator_Test : public UGridMapGenerator
+{
+	GENERATED_BODY()
+
+public:
 	virtual void Generate(UGridMapData* MapData) override;
 };
