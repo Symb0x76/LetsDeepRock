@@ -21,16 +21,49 @@ class ALetsDeepRockCharacter : public ACharacter
 {
 	GENERATED_BODY()
 
-private:
+public:
+	/** Constructor */
+	ALetsDeepRockCharacter();
 
-	/** Top down camera */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<UCameraComponent> TopDownCameraComponent;
+	/** Initialization */
+	virtual void BeginPlay() override;
 
-	/** Camera boom positioning the camera above the character */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
-	TObjectPtr<USpringArmComponent> CameraBoom;
+	/** Update */
+	virtual void Tick(float DeltaSeconds) override;
 
+	/** Set up Enhanced Input action bindings */
+	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+	
+	/** Meta Replication **/
+	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
+	
+protected:
+	/** Handles WASD movement input */
+	void Move(const FInputActionValue& Value);
+
+	/** Returns the camera component **/
+	UCameraComponent* GetTopDownCameraComponent() const { return TopDownCameraComponent.Get(); }
+
+	/** Returns the Camera Boom component **/
+	USpringArmComponent* GetCameraBoom() const { return CameraBoom.Get(); }
+
+	/** Reply Health Update **/
+	void OnHealthUpdate() const;
+	
+public:
+	UFUNCTION(BlueprintPure, Category = "Health")
+	FORCEINLINE float GetMaxHealth() const { return MaxHealth; }
+	
+	UFUNCTION(BlueprintPure, Category = "Health")
+	FORCEINLINE float GetCurrentHealth() const { return CurrentHealth; }
+	
+	/** 当前生命值的存值函数。范围限定在0到MaxHealth之间，并调用OnHealthUpdate。仅在服务器上调用。**/
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	void SetCurrentHealth(float HealthValue);
+	
+	UFUNCTION(BlueprintCallable, Category = "Health")
+	virtual float TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser) override;	
+	
 protected:
 
 	/** Input mapping context applied to the owning player when possessed */
@@ -51,37 +84,15 @@ protected:
 	
 	/** RepNotify. Sync HP changes **/
 	UFUNCTION()
-	void OnRep_CurrentHealth();
-	
-public:
+	void OnRep_CurrentHealth() const;
 
-	/** Constructor */
-	ALetsDeepRockCharacter();
+private:
+	/** Top down camera */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UCameraComponent> TopDownCameraComponent;
 
-	/** Initialization */
-	virtual void BeginPlay() override;
-
-	/** Update */
-	virtual void Tick(float DeltaSeconds) override;
-
-	/** Set up Enhanced Input action bindings */
-	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
-	
-	/** Meta Replication **/
-	virtual void GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const override;
-
-protected:
-
-	/** Handles WASD movement input */
-	void Move(const FInputActionValue& Value);
-
-	/** Returns the camera component **/
-	UCameraComponent* GetTopDownCameraComponent() const { return TopDownCameraComponent.Get(); }
-
-	/** Returns the Camera Boom component **/
-	USpringArmComponent* GetCameraBoom() const { return CameraBoom.Get(); }
-
-	/** Reply Health Update **/
-	void OnHealthUpdate();
+	/** Camera boom positioning the camera above the character */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<USpringArmComponent> CameraBoom;
 };
 
