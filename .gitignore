@@ -84,6 +84,9 @@ AGENTS.md
 opencode.json
 .opencode/
 
+# --- 构建脚本本地配置（每个成员各自的引擎路径）---
+ue_root.cfg
+
 # --- Perforce 本地配置（P4 管素材，不提交到 Git）---
 .p4config
 .p4ignore
