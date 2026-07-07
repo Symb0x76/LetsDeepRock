@@ -17,6 +17,24 @@
 #include "InputActionValue.h"
 #include "LetsDeepRock.h"
 
+void ALetsDeepRockCharacter::SetCurrentHealth(float HealthValue)
+{
+	// server only
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		CurrentHealth = FMath::Clamp(HealthValue, 0.0f, MaxHealth);
+		OnHealthUpdate();
+	}
+}
+
+float ALetsDeepRockCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent,
+	class AController* EventInstigator, AActor* DamageCauser)
+{
+	float DamageApplied = CurrentHealth - DamageAmount;
+	SetCurrentHealth(DamageApplied);
+	return DamageApplied;
+}
+
 ALetsDeepRockCharacter::ALetsDeepRockCharacter()
 {
 	// Set size for player capsule
@@ -125,7 +143,7 @@ void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 	}
 }
 
-void ALetsDeepRockCharacter::OnHealthUpdate()
+void ALetsDeepRockCharacter::OnHealthUpdate() const
 {
 	// client
 	if (IsLocallyControlled())
@@ -141,7 +159,7 @@ void ALetsDeepRockCharacter::OnHealthUpdate()
 	}
 	
 	// server
-	if (GetLocalRole())
+	if (GetLocalRole() == ROLE_Authority)
 	{
 		const FString HealthMessage = FString::Printf(TEXT("%s has %f health remaining."), *GetFName().ToString(), CurrentHealth);
 		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, HealthMessage);
@@ -153,7 +171,7 @@ void ALetsDeepRockCharacter::OnHealthUpdate()
 	 */
 }
 
-void ALetsDeepRockCharacter::OnRep_CurrentHealth()
+void ALetsDeepRockCharacter::OnRep_CurrentHealth() const
 {
 	OnHealthUpdate();
 }
