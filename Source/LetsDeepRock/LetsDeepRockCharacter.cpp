@@ -111,9 +111,11 @@ void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 
 	if (Controller != nullptr)
 	{
-		// Move relative to world axes so WASD maps to the fixed top-down camera view.
-		// Yaw-only rotation keeps movement on the ground plane.
-		const FRotator YawRotation(0.f, Controller->GetControlRotation().Yaw, 0.f);
+		// 基于摄像机的 Yaw 方向计算移动，使 WASD 始终相对屏幕方向：
+		// W = 屏幕上方（摄像机前方投影到地面）
+		// S = 屏幕下方，A = 屏幕左方，D = 屏幕右方
+		const FRotator CameraRotation = TopDownCameraComponent->GetComponentRotation();
+		const FRotator YawRotation(0.f, CameraRotation.Yaw, 0.f);
 
 		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
 		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);

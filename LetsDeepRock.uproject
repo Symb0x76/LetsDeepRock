@@ -31,12 +31,8 @@
 			"Enabled": true
 		},
 		{
-			"Name": "ModelContextProtocol",
-			"Enabled": false
-		},
-		{
-			"Name": "AllToolsets",
-			"Enabled": false
+			"Name": "GameplayAbilities",
+			"Enabled": true
 		}
 	]
 }

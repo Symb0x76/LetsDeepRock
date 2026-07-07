@@ -74,6 +74,21 @@ $RECYCLE.BIN/
 *.orig
 *.autosave
 
+# GenerateProjectFiles 产生的空标记文件
+Generate
+
+# --- 本地 AI Agent 规则（个人本地配置，不提交）---
+AGENTS.md
+
+# --- opencode 本地配置 ---
+opencode.json
+.opencode/
+
+# --- Perforce 本地配置（P4 管素材，不提交到 Git）---
+.p4config
+.p4ignore
+p4login.ps1
+
 # ==============================================================================
 # Git LFS 建议（可选）
 # ------------------------------------------------------------------------------

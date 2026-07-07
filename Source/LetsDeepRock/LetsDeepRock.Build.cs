@@ -20,10 +20,15 @@ public class LetsDeepRock : ModuleRules
 			"GameplayStateTreeModule",
 			"Niagara",
 			"UMG",
-			"Slate"
+			"Slate",
+			"GameplayAbilities",
+			"GameplayTags",
+			"GameplayTasks"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
+
+		// 阶段 1 起会用到 GameplayAbilities 类型的头文件，保持公共依赖即可
 
 		PublicIncludePaths.AddRange(new string[] {
 			"LetsDeepRock",
@@ -32,7 +37,13 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_TwinStick",
 			"LetsDeepRock/Variant_TwinStick/AI",
 			"LetsDeepRock/Variant_TwinStick/Gameplay",
-			"LetsDeepRock/Variant_TwinStick/UI"
+			"LetsDeepRock/Variant_TwinStick/UI",
+			"LetsDeepRock/Variant_Weapon",
+			"LetsDeepRock/Variant_Weapon/Abilities",
+			"LetsDeepRock/Variant_Weapon/Attributes",
+			"LetsDeepRock/Variant_Weapon/Weapons",
+			"LetsDeepRock/Variant_Weapon/GridMap",
+			"LetsDeepRock/Data"
 		});
 
 		// Uncomment if you are using Slate UI
