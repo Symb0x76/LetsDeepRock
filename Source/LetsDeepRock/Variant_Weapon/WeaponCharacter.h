@@ -22,6 +22,9 @@ class UWeaponEquipmentComponent;
  *  阶段 1 起将挂接 GAS：本 Character 作为 AvatarActor，ASC 挂在 PlayerState 上，
  *  并在 PossessedBy（服务端）/ OnRep_PlayerState（客户端）中调用 InitAbilityActorInfo。
  *  下方已预留这两个覆写点的占位（阶段 1 填充实现）。
+ *
+ *  3C 优化：角色始终面向鼠标位置（Tick 中射线检测鼠标与地面交点），
+ *  移动方向与面向解耦，射击方向跟随角色面向。
  */
 UCLASS(abstract)
 class AWeaponCharacter : public ACharacter, public IAbilitySystemInterface
@@ -58,6 +61,9 @@ public:
 
 	/** 构造函数 */
 	AWeaponCharacter();
+
+	//~ AActor
+	virtual void Tick(float DeltaTime) override;
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
@@ -98,4 +104,7 @@ protected:
 
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
+
+	/** 每 Tick 将角色朝向旋转到鼠标在地面的投影位置 */
+	void RotateToMouseCursor(float DeltaTime);
 };

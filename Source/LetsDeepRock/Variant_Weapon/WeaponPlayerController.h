@@ -13,11 +13,17 @@ class UInputMappingContext;
  *
  *  阶段 0：仅负责注册 Enhanced Input 的 IMC。
  *  后续阶段将扩展：武器输入 InputTag 分发、死亡重生等。
+ *
+ *  3C 优化：启用鼠标光标显示，角色始终面向鼠标位置。
  */
 UCLASS(abstract, Config = "Game")
 class AWeaponPlayerController : public APlayerController
 {
 	GENERATED_BODY()
+
+public:
+
+	AWeaponPlayerController();
 
 protected:
 
