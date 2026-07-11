@@ -238,3 +238,32 @@ struct FCharacterAttributeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
 	float Lucky = 0.0f;
 };
+
+/**
+ * 伤害类型修正表行
+ *
+ * 对应 DataTable: DT_DamageTypeModifier
+ * 行名使用伤害类型 Tag 字符串（如 "Damage.Type.Fire"）
+ * 每列为不同护甲类型的伤害修正系数（>1 克制，<1 抵抗）
+ */
+USTRUCT(BlueprintType)
+struct FDamageTypeModifierRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** 对无护甲目标的修正系数 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	float VsUnarmored = 1.0f;
+
+	/** 对轻甲目标的修正系数 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	float VsLight = 1.0f;
+
+	/** 对重甲目标的修正系数 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	float VsHeavy = 1.0f;
+
+	/** 对有机目标的修正系数 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	float VsOrganic = 1.0f;
+};

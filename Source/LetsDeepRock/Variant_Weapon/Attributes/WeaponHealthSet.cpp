@@ -62,7 +62,7 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 {
 	Super::PostGameplayEffectExecute(Data);
 
-	// 处理 Meta Damage 通道
+	// 处理 Meta Damage 通道：ExecCalc 已计算最终伤害，此处做护盾优先扣减
 	if (Data.EvaluatedData.Attribute == GetDamageAttribute())
 	{
 		const float LocalDamage = GetDamage();
@@ -70,20 +70,36 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 
 		if (LocalDamage > 0.0f)
 		{
-			const float OldHealth = GetHealth();
-			const float NewHealth = FMath::Clamp(OldHealth - LocalDamage, 0.0f, GetMaxHealth());
-			SetHealth(NewHealth);
+			float RemainingDamage = LocalDamage;
 
-			// 仅在生命值“从 >0 跨越到 <=0”这一刻广播死亡，且必须是服务端权威，
-			// 避免重复触发死亡流程（重复销毁 / 重复发奖）。
-			const AActor* OwningActor = GetOwningActor();
-			const bool bHasAuthority = OwningActor && OwningActor->HasAuthority();
-			if (bHasAuthority && OldHealth > 0.0f && NewHealth <= 0.0f)
+			// 先扣护盾
+			const float OldShield = GetShield();
+			if (OldShield > 0.0f && RemainingDamage > 0.0f)
 			{
-				OnHealthDepleted.Broadcast(GetOwningActor());
+				const float ShieldDamage = FMath::Min(RemainingDamage, OldShield);
+				SetShield(OldShield - ShieldDamage);
+				RemainingDamage -= ShieldDamage;
+			}
+
+			// 剩余伤害扣生命
+			if (RemainingDamage > 0.0f)
+			{
+				const float OldHealth = GetHealth();
+				const float NewHealth = FMath::Clamp(OldHealth - RemainingDamage, 0.0f, GetMaxHealth());
+				SetHealth(NewHealth);
+
+				// 仅在生命值"从 >0 跨越到 <=0"这一刻广播死亡，且必须是服务端权威，
+				// 避免重复触发死亡流程（重复销毁 / 重复发奖）。
+				const AActor* OwningActor = GetOwningActor();
+				const bool bHasAuthority = OwningActor && OwningActor->HasAuthority();
+				if (bHasAuthority && OldHealth > 0.0f && NewHealth <= 0.0f)
+				{
+					OnHealthDepleted.Broadcast(GetOwningActor());
+				}
 			}
 		}
 	}
+
 	// 处理 MaxHealth 变化：若上限被调低，需回夹当前 Health
 	else if (Data.EvaluatedData.Attribute == GetMaxHealthAttribute())
 	{
