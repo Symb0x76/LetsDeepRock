@@ -267,3 +267,32 @@ struct FDamageTypeModifierRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
 	float VsOrganic = 1.0f;
 };
+
+/**
+ * 天赋/模组效果表行
+ * 对应 DataTable: DT_ModifierEffects
+ *
+ * 一个天赋/模组可有多行（修改多个属性），用相同 SourceId 关联。
+ * 运行时由 UAttributeModifierManager 读取并动态创建 GE 应用。
+ */
+USTRUCT(BlueprintType)
+struct FModifierEffectRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	/** 来源标识（天赋ID 或 模组ID），相同 SourceId 的行属于同一组 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	FName SourceId;
+
+	/** 目标属性 Tag（如 "Attr.CritChance"） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	FGameplayTag AttributeTag;
+
+	/** 运算类型：Additive=加算, Multiplicitive=乘算, Division=除算, Override=覆盖 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	TEnumAsByte<EGameplayModOp::Type> ModOp = EGameplayModOp::Additive;
+
+	/** 修改数值 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Modifier")
+	float Magnitude = 0.0f;
+};
