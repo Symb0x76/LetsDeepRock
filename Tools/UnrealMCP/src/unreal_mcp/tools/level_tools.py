@@ -3,6 +3,8 @@
 import json
 from typing import TYPE_CHECKING
 
+from ._helpers import unwrap_result
+
 if TYPE_CHECKING:
     from ..server import UnrealConnection
 
@@ -106,19 +108,7 @@ except Exception as e:
     print(json.dumps({{"success": False, "message": f"生成 Actor 时出错: {{e}}"}}))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "操作完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  2. build_navigation — 构建 NavMesh 导航网格
@@ -166,19 +156,7 @@ except Exception as e:
 print(json.dumps(result))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "导航构建完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  3. create_material — 创建简单的基础颜色材质
@@ -263,19 +241,7 @@ except Exception as e:
 print(json.dumps(result))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "材质创建完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  4. create_blackboard — 创建 AI Blackboard 资产并添加键
@@ -398,16 +364,4 @@ except Exception as e:
 print(json.dumps(result))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "Blackboard 创建完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)

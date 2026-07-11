@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from mcp.server import Server
 
+from ._helpers import unwrap_result
+
 if TYPE_CHECKING:
     from ..server import UnrealConnection
 
@@ -22,15 +24,6 @@ def register(server: "FastMCP", connection: "UnrealConnection"):
     # ================================================================
     #  通用辅助
     # ================================================================
-
-    def _unwrap(result) -> str:
-        """将 execute_python 返回的 dict 解包为字符串结果"""
-        if isinstance(result, dict):
-            if result.get("success"):
-                return result.get("result", "操作完成")
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
 
     def _build_lookup_code(class_name: str) -> str:
         """生成 UE Python 中查找类的代码片段
@@ -134,7 +127,7 @@ except Exception as _ex:
     print(json.dumps({{"success": False, "error": str(_ex)}}))
 '''
         result = await connection.execute_python(code)
-        return _unwrap(result)
+        return unwrap_result(result)
 
     @server.tool()
     async def create_data_table(
@@ -256,7 +249,7 @@ except Exception as _ex:
     print(json.dumps({{"success": False, "error": str(_ex)}}))
 '''
         result = await connection.execute_python(code)
-        return _unwrap(result)
+        return unwrap_result(result)
 
     @server.tool()
     async def search_assets(
@@ -340,7 +333,7 @@ except Exception as _ex:
     print(json.dumps({{"success": False, "error": str(_ex)}}))
 '''
         result = await connection.execute_python(code)
-        return _unwrap(result)
+        return unwrap_result(result)
 
     @server.tool()
     async def get_asset_properties(
@@ -422,4 +415,4 @@ except Exception as _ex:
     print(json.dumps({{"success": False, "error": str(_ex)}}))
 '''
         result = await connection.execute_python(code)
-        return _unwrap(result)
+        return unwrap_result(result)
