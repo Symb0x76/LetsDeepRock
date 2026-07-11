@@ -5,14 +5,8 @@
 #include "CoreMinimal.h"
 #include "AttributeSet.h"
 #include "AbilitySystemComponent.h"
+#include "AttributeMacros.h"
 #include "WeaponHealthSet.generated.h"
-
-// 标准 GAS 属性访问器宏：为每个属性生成 Getter/Setter/Initter
-#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \
-	GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \
-	GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \
-	GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \
-	GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)
 
 /** 死亡事件委托：Health <= 0 时广播 */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnHealthDepleted, AActor* /*OwningActor*/);
@@ -51,6 +45,31 @@ public:
 	FGameplayAttributeData Damage;
 	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, Damage)
 
+	//~ 护盾值
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Shield, Category = "Attributes")
+	FGameplayAttributeData Shield;
+	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, Shield)
+
+	//~ 最大护盾值
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_MaxShield, Category = "Attributes")
+	FGameplayAttributeData MaxShield;
+	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, MaxShield)
+
+	//~ 护盾每秒恢复量
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_ShieldRegenRate, Category = "Attributes")
+	FGameplayAttributeData ShieldRegenRate;
+	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, ShieldRegenRate)
+
+	//~ 受击后护盾恢复延迟（秒）
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_ShieldRegenDelay, Category = "Attributes")
+	FGameplayAttributeData ShieldRegenDelay;
+	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, ShieldRegenDelay)
+
+	//~ 护甲值（参与减伤公式）
+	UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Armor, Category = "Attributes")
+	FGameplayAttributeData Armor;
+	ATTRIBUTE_ACCESSORS(UWeaponHealthSet, Armor)
+
 	/** 死亡事件（服务端 Health 归零时广播），供 Owner（PlayerState/NPC）订阅执行死亡流程 */
 	FOnHealthDepleted OnHealthDepleted;
 
@@ -70,6 +89,21 @@ protected:
 
 	UFUNCTION()
 	void OnRep_MaxHealth(const FGameplayAttributeData& OldMaxHealth);
+
+	UFUNCTION()
+	void OnRep_Shield(const FGameplayAttributeData& OldShield);
+
+	UFUNCTION()
+	void OnRep_MaxShield(const FGameplayAttributeData& OldMaxShield);
+
+	UFUNCTION()
+	void OnRep_ShieldRegenRate(const FGameplayAttributeData& OldShieldRegenRate);
+
+	UFUNCTION()
+	void OnRep_ShieldRegenDelay(const FGameplayAttributeData& OldShieldRegenDelay);
+
+	UFUNCTION()
+	void OnRep_Armor(const FGameplayAttributeData& OldArmor);
 
 private:
 

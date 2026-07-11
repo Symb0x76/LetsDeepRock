@@ -12,6 +12,8 @@ class AEnemyAIController;
 
 class UAbilitySystemComponent;
 class UWeaponHealthSet;
+class UWeaponResistanceSet;
+class UWeaponMovementSet;
 
 /**
  *  武器系统敌人 NPC
@@ -48,6 +50,14 @@ protected:
 	/** 生命值属性集 */
 	UPROPERTY()
 	TObjectPtr<UWeaponHealthSet> HealthSet;
+
+	/** 抗性属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponResistanceSet> ResistanceSet;
+
+	/** 移动属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponMovementSet> MovementSet;
 
 	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName） */
 	UPROPERTY(EditAnywhere, Category = "DataTable")
