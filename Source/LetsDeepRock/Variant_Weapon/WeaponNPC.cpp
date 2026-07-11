@@ -5,6 +5,8 @@
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Attributes/WeaponHealthSet.h"
+#include "Attributes/WeaponResistanceSet.h"
+#include "Attributes/WeaponMovementSet.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTagContainer.h"
@@ -24,6 +26,9 @@ AWeaponNPC::AWeaponNPC()
 	AbilitySystemComponent->SetReplicationMode(EGameplayEffectReplicationMode::Minimal);
 
 	HealthSet = CreateDefaultSubobject<UWeaponHealthSet>(TEXT("HealthSet"));
+
+	ResistanceSet = CreateDefaultSubobject<UWeaponResistanceSet>(TEXT("ResistanceSet"));
+	MovementSet = CreateDefaultSubobject<UWeaponMovementSet>(TEXT("MovementSet"));
 
 	// AI Controller 配置：使用 EnemyAIController，自动 Possess
 	AIControllerClass = AEnemyAIController::StaticClass();

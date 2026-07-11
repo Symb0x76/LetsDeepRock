@@ -4,6 +4,10 @@
 #include "WeaponPlayerState.h"
 #include "AbilitySystemComponent.h"
 #include "Attributes/WeaponHealthSet.h"
+#include "Attributes/WeaponCombatSet.h"
+#include "Attributes/WeaponMovementSet.h"
+#include "Attributes/WeaponResistanceSet.h"
+#include "Attributes/WeaponResourceSet.h"
 
 AWeaponPlayerState::AWeaponPlayerState()
 {
@@ -17,6 +21,18 @@ AWeaponPlayerState::AWeaponPlayerState()
 
 	// 创建生命值属性集（隶属于同一 Owner = PlayerState）
 	HealthSet = CreateDefaultSubobject<UWeaponHealthSet>(TEXT("HealthSet"));
+
+	// 创建战斗属性集
+	CombatSet = CreateDefaultSubobject<UWeaponCombatSet>(TEXT("CombatSet"));
+
+	// 创建移动属性集
+	MovementSet = CreateDefaultSubobject<UWeaponMovementSet>(TEXT("MovementSet"));
+
+	// 创建抗性属性集
+	ResistanceSet = CreateDefaultSubobject<UWeaponResistanceSet>(TEXT("ResistanceSet"));
+
+	// 创建资源属性集
+	ResourceSet = CreateDefaultSubobject<UWeaponResourceSet>(TEXT("ResourceSet"));
 
 	// ASC 在 PlayerState 上时需要更高的复制频率，避免属性/标签同步延迟
 	SetNetUpdateFrequency(100.0f);
