@@ -3,6 +3,8 @@
 import json
 from typing import TYPE_CHECKING
 
+from ._helpers import unwrap_result
+
 if TYPE_CHECKING:
     from ..server import UnrealConnection
 
@@ -162,20 +164,7 @@ except Exception as e:
 '''
 
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                try:
-                    data = json.loads(output)
-                    if data.get("success"):
-                        return data.get("message", "操作完成")
-                    else:
-                        return f"错误: {data.get('message', '未知错误')}"
-                except json.JSONDecodeError:
-                    return output if output.strip() else "操作完成"
-            else:
-                return f"Python 执行失败: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     @server.tool()
     async def create_gameplay_ability(
@@ -249,17 +238,4 @@ except Exception as e:
 '''
 
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                try:
-                    data = json.loads(output)
-                    if data.get("success"):
-                        return data.get("message", "操作完成")
-                    else:
-                        return f"错误: {data.get('message', '未知错误')}"
-                except json.JSONDecodeError:
-                    return output if output.strip() else "操作完成"
-            else:
-                return f"Python 执行失败: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)

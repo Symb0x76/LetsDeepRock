@@ -3,6 +3,8 @@
 import json
 from typing import TYPE_CHECKING
 
+from ._helpers import unwrap_result
+
 if TYPE_CHECKING:
     from ..server import UnrealConnection
 
@@ -27,14 +29,7 @@ def register(server, connection: "UnrealConnection"):
             UE 编辑器返回的执行结果字符串
         """
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                return result.get("result", "执行成功（无输出）")
-            else:
-                return f"执行失败: {result.get('result', '未知错误')}\n\n输出:\n" + "\n".join(
-                    result.get("output", [])
-                )
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  2. execute_console_command — 执行 UE 控制台命令
@@ -63,19 +58,7 @@ except Exception as e:
     print(json.dumps({{"success": False, "message": f"执行控制台命令时出错: {{e}}"}}))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return f"控制台命令已执行: {command}"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  3. save_asset — 保存指定资产或保存全部
@@ -112,19 +95,7 @@ except Exception as e:
     print(json.dumps({{"success": False, "message": f"保存资产时出错: {{e}}"}}))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "保存完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  4. get_editor_status — 获取编辑器当前状态
@@ -168,19 +139,7 @@ except Exception as e:
     print(json.dumps({"success": False, "message": str(e)}))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "编辑器状态获取完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
 
     # ================================================================
     #  5. list_assets_in_path — 列出指定路径下的所有资产
@@ -218,7 +177,7 @@ except Exception as e:
 import json
 
 package_path = {repr(package_path)}
-recursive = {json.dumps(recursive)}
+recursive = {repr(recursive)}
 
 try:
     registry = unreal.AssetRegistryHelpers.get_asset_registry()
@@ -250,16 +209,4 @@ except Exception as e:
     print(json.dumps({{"success": False, "message": f"列出资产失败: {{e}}"}}))
 '''
         result = await connection.execute_python(code)
-        if isinstance(result, dict):
-            if result.get("success"):
-                output = result.get("result", "")
-                if output:
-                    try:
-                        parsed = json.loads(output)
-                        return json.dumps(parsed, ensure_ascii=False, indent=2)
-                    except (json.JSONDecodeError, TypeError):
-                        return output
-                return "资产列表获取完成"
-            else:
-                return f"错误: {result.get('result', '未知错误')}"
-        return str(result)
+        return unwrap_result(result)
