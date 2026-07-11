@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
+#include "GameplayTagContainer.h"
 #include "DataTableRows.generated.h"
 
 /**
@@ -44,6 +45,42 @@ struct FEnemyConfigRow : public FTableRowBase
 	/** 死亡后延迟销毁时间（秒） */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = 0))
 	float DeathLingerTime = 2.0f;
+
+	/** 护甲值（参与减伤公式） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes", meta = (ClampMin = 0))
+	float Armor = 0.0f;
+
+	/** 最大护盾值 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes", meta = (ClampMin = 0))
+	float MaxShield = 0.0f;
+
+	/** 物理抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistPhysical = 0.0f;
+
+	/** 火焰抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistFire = 0.0f;
+
+	/** 冰霜抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistCold = 0.0f;
+
+	/** 毒素抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistPoison = 0.0f;
+
+	/** 爆炸抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistExplosion = 0.0f;
+
+	/** 电击抗性 (0~1) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistElectric = 0.0f;
+
+	/** 敌人护甲类型 Tag（如 "ArmorType.Light"） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Attributes")
+	FGameplayTag ArmorTypeTag;
 };
 
 /**
@@ -106,4 +143,98 @@ struct FGameModeConfigRow : public FTableRowBase
 	/** 场上 NPC 数量上限 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 1))
 	int32 NPCCap = 20;
+};
+
+/**
+ * 角色/职业属性基础值表行
+ * 对应 DataTable: DT_CharacterAttributes
+ * 用于定义不同职业的初始属性
+ */
+USTRUCT(BlueprintType)
+struct FCharacterAttributeRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	// --- 生存 ---
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health")
+	float MaxHealth = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health")
+	float MaxShield = 50.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health")
+	float ShieldRegenRate = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health")
+	float ShieldRegenDelay = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Health")
+	float Armor = 0.0f;
+
+	// --- 战斗 ---
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float CritChance = 0.05f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float CritDamage = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float ArmorPenetration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float DamageBonus = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float WeakpointBonus = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AttackSpeed = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat")
+	float AreaDamageBonus = 0.0f;
+
+	// --- 移动 ---
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
+	float MoveSpeed = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
+	float SprintSpeed = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
+	float DodgeDistance = 600.0f;
+
+	// --- 抗性 ---
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistPhysical = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistFire = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistCold = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistPoison = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistExplosion = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
+	float ResistElectric = 0.0f;
+
+	// --- 资源 ---
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
+	float MaxEnergy = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
+	float EnergyRegenRate = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
+	float MaxStamina = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
+	float StaminaRegenRate = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resource")
+	float Lucky = 0.0f;
 };

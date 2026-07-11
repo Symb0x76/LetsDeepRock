@@ -13,12 +13,14 @@
 #include "WeaponPlayerState.h"
 #include "WeaponGameMode.h"
 #include "Attributes/WeaponHealthSet.h"
+#include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Weapons/WeaponDataAsset.h"
 #include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Data/GameDataSubsystem.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -111,6 +113,24 @@ void AWeaponCharacter::InitAbilitySystem()
 	{
 		// OwnerActor = PlayerState，AvatarActor = 当前 Character
 		AbilitySystemComponent->InitAbilityActorInfo(PS, this);
+	}
+
+	// 仅服务端、且仅首次初始化属性（避免重生时重复覆盖）
+	if (HasAuthority() && !bAttributesInitialized)
+	{
+		// 从 GameDataSubsystem 获取角色属性配置
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				const FCharacterAttributeRow* Row = DataSys->GetCharacterAttributes(CharacterConfigRowName);
+				if (Row)
+				{
+					FAttributeInitHelper::InitializePlayerAttributes(AbilitySystemComponent, *Row);
+					bAttributesInitialized = true;
+				}
+			}
+		}
 	}
 
 	// 仅服务端订阅死亡事件（AddUniqueDynamic 语义：这里用普通委托，先移除再添加避免重复绑定）

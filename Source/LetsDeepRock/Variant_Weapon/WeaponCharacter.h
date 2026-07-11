@@ -90,6 +90,13 @@ protected:
 	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
 
+	/** 角色配置表行名（策划在蓝图中指定） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attributes")
+	FName CharacterConfigRowName = FName("Default");
+
+	/** 属性是否已从表初始化（避免重复初始化） */
+	bool bAttributesInitialized = false;
+
 	/** 检查玩家是否处于死亡状态（ASC 是否持有 State.Dead Tag） */
 	bool IsDead() const;
 
