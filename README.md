@@ -13,6 +13,7 @@ Unreal Engine 5.8 C++ 项目 — 受 Deep Rock Galactic 启发的多人合作射
 - [Git 工作流](#git-工作流)
 - [Perforce (P4) 工作流](#perforce-p4-工作流)
 - [项目结构简介](#项目结构简介)
+- [AI 编辑器自动化 (Unreal MCP)](#ai-编辑器自动化-unreal-mcp)
 - [常见问题](#常见问题)
 
 ---
@@ -239,6 +240,8 @@ LetsDeepRock/
 │   ├── DefaultInput.ini
 │   └── ...
 ├── Content/                   # 素材资源（P4 管理，Git 忽略）
+├── Tools/                     # 开发工具（Git 管理）
+│   └── UnrealMCP/             #   AI 编辑器自动化 MCP Server
 ├── LetsDeepRock.uproject      # 项目定义（Git 管理）
 ├── .gitignore                 # Git 忽略规则
 ├── .p4ignore                  # P4 忽略规则（Git 忽略）
@@ -255,6 +258,53 @@ LetsDeepRock/
 | GameplayAbilities (GAS) | Gameplay Ability System — 技能/属性系统 |
 | StateTree + GameplayStateTree | AI 行为树 |
 | ModelingToolsEditorMode | 建模工具（仅编辑器） |
+| Python Editor Script Plugin | Python 脚本支持（MCP Server 需要） |
+
+---
+
+## AI 编辑器自动化 (Unreal MCP)
+
+项目集成了自研的 **Unreal MCP Server**，允许 AI Agent（如 OpenCode）直接操作 UE 编辑器，自动化资产创建、蓝图配置等重复性工作。
+
+### 核心能力
+
+| 类别 | 可执行的操作 |
+|------|------------|
+| **资产操作** | 创建 DataAsset、DataTable；搜索/列出资产；读取属性 |
+| **蓝图操作** | 创建 Blueprint、设置 Class Defaults、添加组件、编译 |
+| **GAS 系统** | 创建 GameplayEffect/GameplayAbility |
+| **输入系统** | 创建 Input Action、配置 IMC 按键绑定 |
+| **关卡操作** | 放置 Actor、构建 NavMesh、创建材质、创建 Blackboard |
+| **通用工具** | 执行任意 Python 代码、控制台命令、保存资产 |
+
+### 架构
+
+```
+AI Agent (OpenCode) → stdio → MCP Server (Python) → UE 5.8 Editor
+                                    │
+                                    ├── Python Remote Exec (UDP+TCP) ← 主通道
+                                    └── Remote Control API (HTTP)    ← 补充通道
+```
+
+### 快速启用
+
+**1. 安装 MCP Server 依赖：**
+
+```powershell
+cd Tools/UnrealMCP
+pip install -e .
+```
+
+**2. UE 编辑器中启用插件：**
+
+- Edit → Plugins → 启用 `Python Editor Script Plugin`
+- Project Settings → Plugins → Python → Enable Remote Execution = **True**
+- Multicast Bind Address 改为 `0.0.0.0`
+- 可选：启用 `Remote Control API` 插件
+
+**3. 重启编辑器后即可使用。**
+
+> 完整配置说明见 [`Tools/UnrealMCP/README.md`](Tools/UnrealMCP/README.md)
 
 ---
 
