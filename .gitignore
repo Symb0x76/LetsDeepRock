@@ -73,6 +73,7 @@ $RECYCLE.BIN/
 *.bak
 *.orig
 *.autosave
+~$*
 
 # GenerateProjectFiles 产生的空标记文件
 Generate
