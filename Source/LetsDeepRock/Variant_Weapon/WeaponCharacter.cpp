@@ -13,14 +13,18 @@
 #include "WeaponPlayerState.h"
 #include "WeaponGameMode.h"
 #include "Attributes/WeaponHealthSet.h"
+#include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Weapons/WeaponDataAsset.h"
 #include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
+#include "GameFramework/PlayerController.h"
+#include "Kismet/KismetMathLibrary.h"
+#include "Data/GameDataSubsystem.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 
 	// 创建相机弹簧臂（俯视角）
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Spring Arm"));
@@ -42,9 +46,13 @@ AWeaponCharacter::AWeaponCharacter()
 	GetCharacterMovement()->MaxAcceleration = 1000.0f;
 	GetCharacterMovement()->BrakingFrictionFactor = 1.0f;
 	GetCharacterMovement()->bCanWalkOffLedges = false;
-	GetCharacterMovement()->RotationRate = FRotator(0.0f, 640.0f, 0.0f);
 	GetCharacterMovement()->bConstrainToPlane = true;
 	GetCharacterMovement()->bSnapToPlaneAtStart = true;
+
+	// 3C 优化：面向与移动解耦 —— 不自动转向移动方向，由 Tick 控制朝向鼠标
+	GetCharacterMovement()->bOrientRotationToMovement = false;
+	GetCharacterMovement()->RotationRate = FRotator(0.0f, 0.0f, 0.0f);
+	bUseControllerRotationYaw = false;
 }
 
 UAbilitySystemComponent* AWeaponCharacter::GetAbilitySystemComponent() const
@@ -107,6 +115,24 @@ void AWeaponCharacter::InitAbilitySystem()
 		AbilitySystemComponent->InitAbilityActorInfo(PS, this);
 	}
 
+	// 仅服务端、且仅首次初始化属性（避免重生时重复覆盖）
+	if (HasAuthority() && !bAttributesInitialized)
+	{
+		// 从 GameDataSubsystem 获取角色属性配置
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				const FCharacterAttributeRow* Row = DataSys->GetCharacterAttributes(CharacterConfigRowName);
+				if (Row)
+				{
+					FAttributeInitHelper::InitializePlayerAttributes(AbilitySystemComponent, *Row);
+					bAttributesInitialized = true;
+				}
+			}
+		}
+	}
+
 	// 仅服务端订阅死亡事件（AddUniqueDynamic 语义：这里用普通委托，先移除再添加避免重复绑定）
 	if (HasAuthority())
 	{
@@ -116,6 +142,70 @@ void AWeaponCharacter::InitAbilitySystem()
 			HealthSet->OnHealthDepleted.AddUObject(this, &AWeaponCharacter::HandleHealthDepleted);
 		}
 	}
+}
+
+void AWeaponCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// 每帧让角色面向鼠标位置
+	RotateToMouseCursor(DeltaTime);
+}
+
+void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
+{
+	// 死亡时不旋转
+	if (IsDead())
+	{
+		return;
+	}
+
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return;
+	}
+
+	// 将鼠标屏幕坐标射线投射到地面平面（Z = 角色脚底高度）
+	FVector WorldLocation, WorldDirection;
+	if (!PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+	{
+		return;
+	}
+
+	// 与角色所在水平面求交（使用角色 Z 坐标作为平面高度）
+	const float CharacterZ = GetActorLocation().Z;
+	// 避免射线平行于平面（Direction.Z 接近 0）
+	if (FMath::Abs(WorldDirection.Z) < KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	const float T = (CharacterZ - WorldLocation.Z) / WorldDirection.Z;
+	// T < 0 表示平面在摄像机后方，忽略
+	if (T < 0.0f)
+	{
+		return;
+	}
+
+	const FVector GroundHitPoint = WorldLocation + WorldDirection * T;
+
+	// 计算从角色到鼠标地面点的方向（只关心 XY 平面）
+	const FVector ToMouse = GroundHitPoint - GetActorLocation();
+	const FVector2D ToMouse2D(ToMouse.X, ToMouse.Y);
+
+	// 鼠标太靠近角色时不旋转（避免抖动）
+	if (ToMouse2D.SizeSquared() < 100.0f) // 10cm 死区
+	{
+		return;
+	}
+
+	// 计算目标朝向并平滑插值旋转
+	const FRotator TargetRotation = UKismetMathLibrary::MakeRotFromX(FVector(ToMouse2D.X, ToMouse2D.Y, 0.0f));
+	const FRotator CurrentRotation = GetActorRotation();
+	const FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, 15.0f);
+
+	SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
 }
 
 void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)

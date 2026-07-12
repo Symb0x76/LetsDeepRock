@@ -5,10 +5,15 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "Abilities/GameplayAbility.h"
 #include "WeaponNPC.generated.h"
+
+class AEnemyAIController;
 
 class UAbilitySystemComponent;
 class UWeaponHealthSet;
+class UWeaponResistanceSet;
+class UWeaponMovementSet;
 
 /**
  *  武器系统敌人 NPC
@@ -20,7 +25,7 @@ class UWeaponHealthSet;
  *  伤害入口与玩家完全统一：外部只需通过 IAbilitySystemInterface
  *  拿到 ASC 施加 GE_Damage，不需要关心 ASC 挂在哪。
  */
-UCLASS(abstract)
+UCLASS()
 class AWeaponNPC : public ACharacter, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
@@ -46,6 +51,14 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UWeaponHealthSet> HealthSet;
 
+	/** 抗性属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponResistanceSet> ResistanceSet;
+
+	/** 移动属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponMovementSet> MovementSet;
+
 	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName） */
 	UPROPERTY(EditAnywhere, Category = "DataTable")
 	FName EnemyConfigRowName = NAME_None;
@@ -57,6 +70,10 @@ protected:
 	/** 死亡后延迟销毁时间（秒），给死亡特效/动画预留时间 */
 	UPROPERTY(EditAnywhere, Category = "Death", meta = (ClampMin = 0))
 	float DeathLingerTime = 2.0f;
+
+	/** NPC 默认拥有的能力列表（BeginPlay 时自动 Grant） */
+	UPROPERTY(EditAnywhere, Category = "GAS|Abilities")
+	TArray<TSubclassOf<UGameplayAbility>> DefaultAbilities;
 
 	/** Health 归零时的服务端回调 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);

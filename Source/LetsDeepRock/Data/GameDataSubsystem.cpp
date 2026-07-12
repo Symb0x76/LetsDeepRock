@@ -14,6 +14,8 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		TEXT("/Game/Data/DT_SpawnerConfig.DT_SpawnerConfig"));
 	GameModeConfigTable = LoadObject<UDataTable>(nullptr,
 		TEXT("/Game/Data/DT_GameModeConfig.DT_GameModeConfig"));
+	CharacterAttributeTable = LoadObject<UDataTable>(nullptr,
+		TEXT("/Game/Data/DT_CharacterAttributes.DT_CharacterAttributes"));
 
 	if (!EnemyConfigTable)
 	{
@@ -26,6 +28,10 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (!GameModeConfigTable)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_GameModeConfig not found at /Game/Data/. DataTable-driven values will use defaults."));
+	}
+	if (!CharacterAttributeTable)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_CharacterAttributes not found at /Game/Data/. DataTable-driven values will use defaults."));
 	}
 }
 
@@ -45,4 +51,10 @@ const FGameModeConfigRow* UGameDataSubsystem::GetGameModeConfig(FName RowName) c
 {
 	if (!GameModeConfigTable) return nullptr;
 	return GameModeConfigTable->FindRow<FGameModeConfigRow>(RowName, TEXT("GetGameModeConfig"));
+}
+
+const FCharacterAttributeRow* UGameDataSubsystem::GetCharacterAttributes(FName RowName) const
+{
+	if (!CharacterAttributeTable) return nullptr;
+	return CharacterAttributeTable->FindRow<FCharacterAttributeRow>(RowName, TEXT("GetCharacterAttributes"));
 }

@@ -41,6 +41,11 @@ public:
 	/** 获取游戏模式配置行 */
 	const FGameModeConfigRow* GetGameModeConfig(FName RowName) const;
 
+	// ---- 角色属性配置 ----
+
+	/** 获取角色属性配置行 */
+	const FCharacterAttributeRow* GetCharacterAttributes(FName RowName) const;
+
 protected:
 	/** 敌人配置表资产路径（Content/Data/DT_EnemyConfig） */
 	UPROPERTY()
@@ -53,4 +58,8 @@ protected:
 	/** 游戏模式配置表资产路径 */
 	UPROPERTY()
 	TObjectPtr<UDataTable> GameModeConfigTable;
+
+	/** 角色属性配置表资产 */
+	UPROPERTY()
+	TObjectPtr<UDataTable> CharacterAttributeTable;
 };

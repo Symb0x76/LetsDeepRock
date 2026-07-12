@@ -151,17 +151,9 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	}
 	else
 	{
-		// 后备：从角色位置 + 控制器朝向
+		// 后备：从角色位置 + 角色自身朝向（俯视角中角色面向鼠标，不依赖 ControlRotation）
 		SpawnLocation = Avatar->GetActorLocation() + FVector(0.f, 0.f, 50.f);
-		ACharacter* Character = Cast<ACharacter>(Avatar);
-		if (Character && Character->GetController())
-		{
-			SpawnRotation = Character->GetController()->GetControlRotation();
-		}
-		else
-		{
-			SpawnRotation = Avatar->GetActorRotation();
-		}
+		SpawnRotation = Avatar->GetActorRotation();
 	}
 
 	// 俯视角射击：保持投射物水平飞行（Pitch=0）

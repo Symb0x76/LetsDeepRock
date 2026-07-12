@@ -5,6 +5,17 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputMappingContext.h"
 
+AWeaponPlayerController::AWeaponPlayerController()
+{
+	// 俯视角鼠标瞄准：显示鼠标光标
+	bShowMouseCursor = true;
+	DefaultMouseCursor = EMouseCursor::Crosshairs;
+
+	// 鼠标输入直接反映到光标位置（不影响 Controller Rotation）
+	bEnableClickEvents = true;
+	bEnableMouseOverEvents = true;
+}
+
 void AWeaponPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();

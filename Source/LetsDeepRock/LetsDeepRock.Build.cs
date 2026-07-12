@@ -43,6 +43,10 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_Weapon/Attributes",
 			"LetsDeepRock/Variant_Weapon/Weapons",
 			"LetsDeepRock/Variant_Weapon/GridMap",
+			"LetsDeepRock/Variant_Weapon/AI",
+			"LetsDeepRock/Variant_Weapon/AI/Tasks",
+			"LetsDeepRock/Variant_Weapon/AI/Services",
+			"LetsDeepRock/Variant_Weapon/AI/Decorators",
 			"LetsDeepRock/Data"
 		});
 

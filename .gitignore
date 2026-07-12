@@ -73,6 +73,7 @@ $RECYCLE.BIN/
 *.bak
 *.orig
 *.autosave
+~$*
 
 # GenerateProjectFiles 产生的空标记文件
 Generate
@@ -83,6 +84,9 @@ AGENTS.md
 # --- opencode 本地配置 ---
 opencode.json
 .opencode/
+
+# --- 构建脚本本地配置（每个成员各自的引擎路径）---
+ue_root.cfg
 
 # --- Perforce 本地配置（P4 管素材，不提交到 Git）---
 .p4config
@@ -101,3 +105,14 @@ p4login.ps1
 #   *.png     filter=lfs diff=lfs merge=lfs -text
 # 注意：本 .gitignore 默认【不忽略】Content/ 下的资源，它们会被正常提交。
 # ==============================================================================
+
+# ==============================================================================
+# Python (Tools/UnrealMCP)
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/

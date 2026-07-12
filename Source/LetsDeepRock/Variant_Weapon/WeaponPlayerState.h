@@ -9,6 +9,10 @@
 
 class UAbilitySystemComponent;
 class UWeaponHealthSet;
+class UWeaponCombatSet;
+class UWeaponMovementSet;
+class UWeaponResistanceSet;
+class UWeaponResourceSet;
 
 /**
  *  武器系统玩家状态
@@ -36,6 +40,18 @@ public:
 	/** 类型化访问 HealthSet */
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
 
+	/** 类型化访问 CombatSet */
+	UWeaponCombatSet* GetCombatSet() const { return CombatSet; }
+
+	/** 类型化访问 MovementSet */
+	UWeaponMovementSet* GetMovementSet() const { return MovementSet; }
+
+	/** 类型化访问 ResistanceSet */
+	UWeaponResistanceSet* GetResistanceSet() const { return ResistanceSet; }
+
+	/** 类型化访问 ResourceSet */
+	UWeaponResourceSet* GetResourceSet() const { return ResourceSet; }
+
 protected:
 
 	/** 能力系统组件（在 PlayerState 上创建并复制） */
@@ -45,4 +61,20 @@ protected:
 	/** 生命值属性集 */
 	UPROPERTY()
 	TObjectPtr<UWeaponHealthSet> HealthSet;
+
+	/** 战斗属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponCombatSet> CombatSet;
+
+	/** 移动属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponMovementSet> MovementSet;
+
+	/** 抗性属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponResistanceSet> ResistanceSet;
+
+	/** 资源属性集 */
+	UPROPERTY()
+	TObjectPtr<UWeaponResourceSet> ResourceSet;
 };
