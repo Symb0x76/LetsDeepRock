@@ -24,7 +24,7 @@ _NODE_TIMEOUT_SECONDS = 5                               # Number of seconds to w
 DEFAULT_MULTICAST_TTL = 0                               # Multicast TTL (0 is limited to the local host, 1 is limited to the local subnet)
 DEFAULT_MULTICAST_GROUP_ENDPOINT = ('239.0.0.1', 6766)  # The multicast group endpoint tuple that the UDP multicast socket should join (must match the "Multicast Group Endpoint" setting in the Python plugin)
 DEFAULT_MULTICAST_BIND_ADDRESS = '127.0.0.1'            # The adapter address that the UDP multicast socket should bind to, or 0.0.0.0 to bind to all adapters (must match the "Multicast Bind Address" setting in the Python plugin)
-DEFAULT_COMMAND_ENDPOINT = ('127.0.0.1', 6776)          # The endpoint tuple for the TCP command connection hosted by this client (that the remote client will connect to)
+DEFAULT_COMMAND_ENDPOINT = ('127.0.0.1', 0)              # The endpoint tuple for the TCP command connection hosted by this client (port 0 = OS auto-assign, avoids conflicts from orphaned sockets)
 DEFAULT_RECEIVE_BUFFER_SIZE = 8192                      # The default receive buffer size
 
 # Execution modes (these must match the names given to LexToString for EPythonCommandExecutionMode in IPythonScriptPlugin.h)
@@ -473,13 +473,22 @@ class _RemoteExecutionCommandConnection(object):
     def _init_command_listen_socket(self):
         '''
         Initialize the TCP based command socket based on the current configuration, and set it to listen for an incoming connection.
+        If the configured port is already in use, automatically fall back to an OS-assigned ephemeral port to avoid conflicts
+        (e.g. when a previous process was killed without proper cleanup).
         '''
         self._command_listen_socket = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM, _socket.IPPROTO_TCP)  # TCP/IP socket
         if hasattr(_socket, 'SO_REUSEPORT'):
             self._command_listen_socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEPORT, 1)
         else:
             self._command_listen_socket.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        self._command_listen_socket.bind(self._config.command_endpoint)
+        try:
+            self._command_listen_socket.bind(self._config.command_endpoint)
+        except OSError:
+            # 端口被占用（残留进程），回退到 OS 自动分配端口
+            _logger.warning('Port %d in use, falling back to ephemeral port', self._config.command_endpoint[1])
+            self._command_listen_socket.bind((self._config.command_endpoint[0], 0))
+        # 更新 config 中的实际端口（供 UDP 广播使用）
+        self._config.command_endpoint = self._command_listen_socket.getsockname()
         self._command_listen_socket.listen(1)
         self._command_listen_socket.settimeout(5)
 

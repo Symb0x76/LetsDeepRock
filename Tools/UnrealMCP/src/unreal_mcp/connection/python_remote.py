@@ -36,7 +36,7 @@ class PythonRemoteExec:
         multicast_group: str = "239.0.0.1",
         multicast_port: int = 6766,
         multicast_bind_address: str = "0.0.0.0",
-        command_endpoint: tuple = ("127.0.0.1", 6776),
+        command_endpoint: tuple = ("127.0.0.1", 0),
         discovery_timeout: float = 5.0,
         execute_timeout: float = 30.0,
     ):
