@@ -17,24 +17,6 @@
 #include "InputActionValue.h"
 #include "LetsDeepRock.h"
 
-void ALetsDeepRockCharacter::SetCurrentHealth(float HealthValue)
-{
-	// server only
-	if (GetLocalRole() == ROLE_Authority)
-	{
-		CurrentHealth = FMath::Clamp(HealthValue, 0.0f, MaxHealth);
-		OnHealthUpdate();
-	}
-}
-
-float ALetsDeepRockCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent,
-	class AController* EventInstigator, AActor* DamageCauser)
-{
-	float DamageApplied = CurrentHealth - DamageAmount;
-	SetCurrentHealth(DamageApplied);
-	return DamageApplied;
-}
-
 ALetsDeepRockCharacter::ALetsDeepRockCharacter()
 {
 	// Set size for player capsule
@@ -69,10 +51,6 @@ ALetsDeepRockCharacter::ALetsDeepRockCharacter()
 	// Activate ticking in order to update the cursor every frame.
 	PrimaryActorTick.bCanEverTick = true;
 	PrimaryActorTick.bStartWithTickEnabled = true;
-	
-	// Init Player HP
-	MaxHealth = 100.0f;
-	CurrentHealth = MaxHealth;
 }
 
 void ALetsDeepRockCharacter::BeginPlay()
@@ -114,14 +92,6 @@ void ALetsDeepRockCharacter::SetupPlayerInputComponent(UInputComponent* PlayerIn
 	}
 }
 
-void ALetsDeepRockCharacter::GetLifetimeReplicatedProps(TArray<class FLifetimeProperty>& OutLifetimeProps) const
-{
-	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	
-	// Replicate current HP
-	DOREPLIFETIME(ALetsDeepRockCharacter, CurrentHealth);
-}
-
 void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 {
 	// Input is a Vector2D (X = right/left, Y = forward/back)
@@ -141,37 +111,4 @@ void ALetsDeepRockCharacter::Move(const FInputActionValue& Value)
 		AddMovementInput(ForwardDirection, MovementVector.Y);
 		AddMovementInput(RightDirection, MovementVector.X);
 	}
-}
-
-void ALetsDeepRockCharacter::OnHealthUpdate() const
-{
-	// client
-	if (IsLocallyControlled())
-	{
-		const FString HealthMessage = FString::Printf(TEXT("Current Health: %f"), CurrentHealth);
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Green, HealthMessage);
-		
-		if (CurrentHealth <= 0.0f)
-		{
-			const FString DeathMessage = FString::Printf(TEXT("Player has died!"));
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, DeathMessage);
-		}
-	}
-	
-	// server
-	if (GetLocalRole() == ROLE_Authority)
-	{
-		const FString HealthMessage = FString::Printf(TEXT("%s has %f health remaining."), *GetFName().ToString(), CurrentHealth);
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, HealthMessage);
-	}
-	
-	// all
-	/*
-	 * Any health-related functions here
-	 */
-}
-
-void ALetsDeepRockCharacter::OnRep_CurrentHealth() const
-{
-	OnHealthUpdate();
 }
