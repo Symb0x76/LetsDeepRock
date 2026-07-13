@@ -3,11 +3,14 @@
 
 #include "WeaponPlayerState.h"
 #include "AbilitySystemComponent.h"
+#include "WeaponGameState.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/WeaponCombatSet.h"
 #include "Attributes/WeaponMovementSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "Attributes/WeaponResourceSet.h"
+#include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
 
 AWeaponPlayerState::AWeaponPlayerState()
 {
@@ -34,11 +37,74 @@ AWeaponPlayerState::AWeaponPlayerState()
 	// 创建资源属性集
 	ResourceSet = CreateDefaultSubobject<UWeaponResourceSet>(TEXT("ResourceSet"));
 
-	// ASC 在 PlayerState 上时需要更高的复制频率，避免属性/标签同步延迟
+	// ASC 在 PlayerState 上时需要更高复制频率，避免属性/标签同步延迟
 	SetNetUpdateFrequency(100.0f);
 }
 
 UAbilitySystemComponent* AWeaponPlayerState::GetAbilitySystemComponent() const
 {
 	return AbilitySystemComponent;
+}
+
+// 声明类成员同步 (Server -> Client)
+void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	// 保留父类复制规则
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	
+	// 注册子类复制规则
+	DOREPLIFETIME(AWeaponPlayerState, LobbyState);
+}
+
+void AWeaponPlayerState::SetPlayerSlotIndex(const int32 NewSlotIndex)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (const int32 MaxPlayers = WeaponGameState ? WeaponGameState->GetMaxPlayers() : 4; 
+		NewSlotIndex != INDEX_NONE && !ensureMsgf(
+		NewSlotIndex >= 0 && NewSlotIndex < MaxPlayers,
+		TEXT("Player slot must be INDEX_NONE or between 0~%d."), MaxPlayers - 1))
+	{
+		return;
+	}
+	
+	if (LobbyState.SlotIndex == NewSlotIndex)
+	{
+		return;
+	}
+	
+	const FWeaponPlayerLobbyState OldState = LobbyState;
+	LobbyState.SlotIndex = NewSlotIndex;
+	
+	// 服务端不会自动调用 OnRep，主动通知主机本地 UI。
+	OnLobbyStateChanged.Broadcast(OldState, LobbyState);
+	ForceNetUpdate();
+}
+
+void AWeaponPlayerState::SetPlayerReady(const bool bNewIsReady)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (LobbyState.bIsReady == bNewIsReady)
+	{
+		return;
+	}
+
+	const FWeaponPlayerLobbyState OldState = LobbyState;
+	LobbyState.bIsReady = bNewIsReady;
+
+	OnLobbyStateChanged.Broadcast(OldState, LobbyState);
+	ForceNetUpdate();
+}
+
+void AWeaponPlayerState::OnRep_LobbyState(const FWeaponPlayerLobbyState OldState)
+{
+	OnLobbyStateChanged.Broadcast(OldState, LobbyState);
 }

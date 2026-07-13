@@ -7,8 +7,6 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
-#include "Net/UnrealNetwork.h"
-#include "Engine/Engine.h"
 #include "Materials/Material.h"
 #include "Engine/World.h"
 #include "Engine/LocalPlayer.h"
