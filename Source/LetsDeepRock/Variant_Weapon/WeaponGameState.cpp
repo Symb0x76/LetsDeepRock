@@ -13,7 +13,7 @@
 
 AWeaponGameState::AWeaponGameState()
 {
-	bReplicates = true;	// 显示设置 GameStateBase 可复制
+	bReplicates = true;	// 显式设置 GameStateBase 可复制
 }
 
 int32 AWeaponGameState::FindSmallestAvailablePlayerSlot() const
