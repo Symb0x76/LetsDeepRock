@@ -247,7 +247,11 @@ class _RemoteExecutionBroadcastConnection(object):
         if self._broadcast_listen_thread:
             self._broadcast_listen_thread.join()
         if self._broadcast_socket:
-            self._broadcast_socket.close()
+            try:
+                self._broadcast_socket.close()
+            except OSError:
+                # socket 可能已关闭（WinError 10057 等）
+                pass
             self._broadcast_socket = None
         self._nodes = None
 
@@ -285,9 +289,14 @@ class _RemoteExecutionBroadcastConnection(object):
                 try:
                     data = b''
                     while True:
-                        part = self._broadcast_socket.recv(DEFAULT_RECEIVE_BUFFER_SIZE)
-                        data += part
-                        if len(part) < DEFAULT_RECEIVE_BUFFER_SIZE:
+                        try:
+                            part = self._broadcast_socket.recv(DEFAULT_RECEIVE_BUFFER_SIZE)
+                            data += part
+                            if len(part) < DEFAULT_RECEIVE_BUFFER_SIZE:
+                                break
+                        except OSError:
+                            # socket 可能已关闭（WinError 10057 等），退出接收循环
+                            data = None
                             break
                 except _socket.timeout:
                     data = None
@@ -308,7 +317,16 @@ class _RemoteExecutionBroadcastConnection(object):
         Args:
             message (_RemoteExecutionMessage): The message to broadcast.
         '''
-        self._broadcast_socket.sendto(message.to_json_bytes(), self._config.multicast_group_endpoint)
+        try:
+            self._broadcast_socket.sendto(message.to_json_bytes(), self._config.multicast_group_endpoint)
+        except OSError as e:
+            # 区分 socket 已关闭错误（可幂等忽略）与真实 UDP 发送失败（必须记录）
+            closed_errnos = _get_socket_closed_errnos()
+            if getattr(e, 'errno', None) in closed_errnos:
+                # socket 已关闭，安全忽略（幂等关闭场景）
+                pass
+            else:
+                _logger.warning('UDP 广播发送失败: %s', e)
 
     def _broadcast_ping(self, now=None):
         '''
@@ -411,12 +429,21 @@ class _RemoteExecutionCommandConnection(object):
         Args:
             broadcast_connection (_RemoteExecutionBroadcastConnection): The broadcast connection to send UDP based messages over.
         '''
-        broadcast_connection.broadcast_close_connection(self._remote_node_id)
+        try:
+            broadcast_connection.broadcast_close_connection(self._remote_node_id)
+        except Exception:
+            pass
         if self._command_channel_socket:
-            self._command_channel_socket.close()
+            try:
+                self._command_channel_socket.close()
+            except OSError:
+                pass
             self._command_channel_socket = None
         if self._command_listen_socket:
-            self._command_listen_socket.close()
+            try:
+                self._command_listen_socket.close()
+            except OSError:
+                pass
             self._command_listen_socket = None
 
     def run_command(self, command, unattended, exec_mode):
@@ -445,8 +472,14 @@ class _RemoteExecutionCommandConnection(object):
 
         Args:
             message (_RemoteExecutionMessage): The message to send.
+
+        Raises:
+            RuntimeError: 当 socket 发送失败时（连接已断开或 socket 错误）。
         '''
-        self._command_channel_socket.sendall(message.to_json_bytes())
+        try:
+            self._command_channel_socket.sendall(message.to_json_bytes())
+        except OSError as e:
+            raise RuntimeError(f"发送消息失败: {e}") from e
 
     def _receive_message(self, expected_type):
         '''
@@ -457,13 +490,24 @@ class _RemoteExecutionCommandConnection(object):
 
         Returns:
             The message that was received.
+
+        Raises:
+            RuntimeError: 当接收失败、socket 错误或收到无效响应时。
         '''
-        data = b''
-        while True:
-            part = self._command_channel_socket.recv(DEFAULT_RECEIVE_BUFFER_SIZE)
-            data += part
-            if len(part) < DEFAULT_RECEIVE_BUFFER_SIZE:
-                break
+        try:
+            data = b''
+            while True:
+                try:
+                    part = self._command_channel_socket.recv(DEFAULT_RECEIVE_BUFFER_SIZE)
+                    data += part
+                    if len(part) < DEFAULT_RECEIVE_BUFFER_SIZE:
+                        break
+                except OSError as e:
+                    raise RuntimeError(f"接收消息时 socket 错误: {e}") from e
+        except RuntimeError:
+            raise
+        except Exception:
+            raise RuntimeError('Remote party failed to send a valid response!')
         if data:
             message = _RemoteExecutionMessage(None, None)
             if message.from_json_bytes(data) and message.passes_receive_filter(self._node_id) and message.type_ == expected_type:
@@ -624,6 +668,22 @@ def _time_now(now=None):
         float: The cached timestamp (if set), otherwise the current time.
     '''
     return _time.time() if now is None else now
+
+def _get_socket_closed_errnos():
+    '''返回一组表示 "socket 已关闭" 的操作系统错误码。
+
+    这些错误在 socket.close() 后调用 sendto 时触发，可安全忽略（幂等关闭）。
+    平台差异：
+      - Windows: WSAENOTSOCK (10038), WSAENOTCONN (10057)
+      - Unix:    EBADF (9)
+    '''
+    import errno
+    closed = {errno.EBADF}  # 9: Bad file descriptor (Unix/macOS)
+    for name in ('WSAENOTSOCK', 'WSAENOTCONN'):
+        val = getattr(errno, name, None)
+        if val is not None:
+            closed.add(val)
+    return closed
 
 # Log handling
 _logger = _logging.getLogger(__name__)
