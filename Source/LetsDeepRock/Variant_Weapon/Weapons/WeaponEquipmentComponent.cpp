@@ -5,7 +5,9 @@
 #include "WeaponBase.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
+#include "Engine/World.h"
 #include "GameFramework/Character.h"
+#include "Net/UnrealNetwork.h"
 
 UWeaponEquipmentComponent::UWeaponEquipmentComponent()
 {
@@ -24,25 +26,23 @@ void UWeaponEquipmentComponent::BeginPlay()
 
 void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 {
-	if (!InWeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !InWeaponData)
 	{
 		return;
 	}
 
 	// 先卸载旧武器
-	if (CurrentWeaponData)
+	if (GetCurrentWeaponData())
 	{
 		UnequipWeapon();
 	}
 
-	CurrentWeaponData = InWeaponData;
-	CurrentWeaponIndex = WeaponInventory.IndexOfByKey(InWeaponData);
-
-	// 仅服务端授予 Ability 和 Spawn 武器 Actor
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	const int32 NewWeaponIndex = EquipmentState.WeaponInventory.IndexOfByKey(InWeaponData);
+	if (NewWeaponIndex == INDEX_NONE)
 	{
 		return;
 	}
+	EquipmentState.CurrentWeaponIndex = NewWeaponIndex;
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -64,8 +64,7 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 	// 俯视角本期可能没有角色骨骼/武器外观需求，WeaponActor 纯粹是可选的视觉表现
 	if (!InWeaponData->WeaponMesh.IsNull())
 	{
-		UWorld* World = GetWorld();
-		if (World)
+		if (UWorld* World = GetWorld())
 		{
 			FActorSpawnParameters SpawnParams;
 			SpawnParams.Owner = GetOwner();
@@ -78,27 +77,58 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 			}
 		}
 	}
+
+	GetOwner()->ForceNetUpdate();
+	NotifyEquipmentChanged();
 }
 
-void UWeaponEquipmentComponent::EquipWeaponLocal(UWeaponDataAsset* InWeaponData)
+UWeaponDataAsset* UWeaponEquipmentComponent::GetCurrentWeaponData() const
 {
-	// 客户端仅设置数据引用，用于 Fire() 中获取 FireAbilityClass
-	// 不 GiveAbility（服务端已通过 GAS 复制 AbilitySpec 到客户端）
-	// 不 Spawn 武器 Actor（武器视觉本期仅服务端辅助枪口定位）
-	if (InWeaponData)
+	return EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex) ?
+		EquipmentState.WeaponInventory[EquipmentState.CurrentWeaponIndex] : nullptr;
+}
+
+void UWeaponEquipmentComponent::OnRep_EquipmentState()
+{
+	ensureMsgf(
+		EquipmentState.CurrentWeaponIndex == INDEX_NONE ||
+		EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex),
+		TEXT("Replicated weapon index is outside the replicated inventory."));
+	NotifyEquipmentChanged();
+}
+
+void UWeaponEquipmentComponent::NotifyEquipmentChanged()
+{
+	OnEquipmentChanged.Broadcast(EquipmentState.CurrentWeaponIndex);
+}
+
+void UWeaponEquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UWeaponEquipmentComponent, EquipmentState);
+}
+
+void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 NewIndex)
+{
+	SwitchWeaponAuthority(NewIndex);
+}
+
+void UWeaponEquipmentComponent::SwitchWeaponAuthority(const int32 NewIndex)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) ||
+		NewIndex == EquipmentState.CurrentWeaponIndex)
 	{
-		CurrentWeaponData = InWeaponData;
-		CurrentWeaponIndex = WeaponInventory.IndexOfByKey(InWeaponData);
+		return;
 	}
+
+	EquipWeapon(EquipmentState.WeaponInventory[NewIndex]);
 }
 
 void UWeaponEquipmentComponent::UnequipWeapon()
 {
-	// 非服务端只清理本地数据引用
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
-		CurrentWeaponData = nullptr;
-		CurrentWeaponActor = nullptr;
 		return;
 	}
 
@@ -130,8 +160,6 @@ void UWeaponEquipmentComponent::UnequipWeapon()
 		CurrentWeaponActor->Destroy();
 		CurrentWeaponActor = nullptr;
 	}
-
-	CurrentWeaponData = nullptr;
 }
 
 UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
@@ -147,118 +175,119 @@ UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
 
 void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 {
-	// 边界检查
-	if (NewIndex < 0 || NewIndex >= WeaponInventory.Num())
+	if (!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) ||
+		NewIndex == EquipmentState.CurrentWeaponIndex)
 	{
 		return;
 	}
 
-	// 已经是当前武器，无需切换
-	if (NewIndex == CurrentWeaponIndex)
+	if (!GetOwner())
 	{
 		return;
 	}
 
-	const bool bHasAuthority = GetOwner() && GetOwner()->HasAuthority();
-
-	if (bHasAuthority)
+	if (GetOwner()->HasAuthority())
 	{
-		// 服务端：完整卸载旧武器 + 装备新武器
-		UnequipWeapon();
-		CurrentWeaponIndex = NewIndex;
-		EquipWeapon(WeaponInventory[NewIndex]);
+		SwitchWeaponAuthority(NewIndex);
 	}
 	else
 	{
-		// 客户端：仅清理本地数据引用 + 设置新武器数据
-		UnequipWeapon();
-		CurrentWeaponIndex = NewIndex;
-		EquipWeaponLocal(WeaponInventory[NewIndex]);
+		ServerSwitchWeapon(NewIndex);
 	}
 }
 
 void UWeaponEquipmentComponent::SwitchToNext()
 {
-	if (WeaponInventory.Num() <= 1)
+	if (EquipmentState.WeaponInventory.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (CurrentWeaponIndex + 1) % WeaponInventory.Num();
+	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex + 1) % EquipmentState.WeaponInventory.Num();
 	SwitchWeapon(NewIndex);
 }
 
 void UWeaponEquipmentComponent::SwitchToPrevious()
 {
-	if (WeaponInventory.Num() <= 1)
+	if (EquipmentState.WeaponInventory.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (CurrentWeaponIndex - 1 + WeaponInventory.Num()) % WeaponInventory.Num();
+	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex - 1 + EquipmentState.WeaponInventory.Num()) % EquipmentState.WeaponInventory.Num();
 	SwitchWeapon(NewIndex);
 }
 
 void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponData)
 {
-	if (!WeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
 	{
 		return;
 	}
 
 	// 不重复添加
-	if (WeaponInventory.Contains(WeaponData))
+	if (EquipmentState.WeaponInventory.Contains(WeaponData))
 	{
 		return;
 	}
 
-	WeaponInventory.Add(WeaponData);
+	EquipmentState.WeaponInventory.Add(WeaponData);
 
 	// 如果是第一把武器，自动装备
-	if (CurrentWeaponIndex == INDEX_NONE)
+	if (EquipmentState.CurrentWeaponIndex == INDEX_NONE)
 	{
 		SwitchWeapon(0);
+	}
+	else
+	{
+		GetOwner()->ForceNetUpdate();
+		NotifyEquipmentChanged();
 	}
 }
 
 void UWeaponEquipmentComponent::RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData)
 {
-	if (!WeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
 	{
 		return;
 	}
 
-	const int32 RemoveIndex = WeaponInventory.IndexOfByKey(WeaponData);
+	const int32 RemoveIndex = EquipmentState.WeaponInventory.IndexOfByKey(WeaponData);
 	if (RemoveIndex == INDEX_NONE)
 	{
 		return;
 	}
 
 	// 如果移除的是当前装备的武器
-	if (RemoveIndex == CurrentWeaponIndex)
+	if (RemoveIndex == EquipmentState.CurrentWeaponIndex)
 	{
 		UnequipWeapon();
-		WeaponInventory.RemoveAt(RemoveIndex);
+		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
 
 		// 库存还有武器则切到第 0 个，否则没有武器
-		if (WeaponInventory.Num() > 0)
+		if (EquipmentState.WeaponInventory.Num() > 0)
 		{
 			SwitchWeapon(0);
 		}
 		else
 		{
-			CurrentWeaponIndex = INDEX_NONE;
+			EquipmentState.CurrentWeaponIndex = INDEX_NONE;
+			GetOwner()->ForceNetUpdate();
+			NotifyEquipmentChanged();
 		}
 	}
 	else
 	{
 		// 移除的不是当前装备的武器，只从数组移除
-		WeaponInventory.RemoveAt(RemoveIndex);
+		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
 
 		// 如果移除的武器索引在当前武器之前，需要前移索引
-		if (RemoveIndex < CurrentWeaponIndex)
+		if (RemoveIndex < EquipmentState.CurrentWeaponIndex)
 		{
-			CurrentWeaponIndex--;
+			--EquipmentState.CurrentWeaponIndex;
 		}
+
+		GetOwner()->ForceNetUpdate();
+		NotifyEquipmentChanged();
 	}
 }

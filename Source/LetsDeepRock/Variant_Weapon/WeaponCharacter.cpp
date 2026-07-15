@@ -16,11 +16,12 @@
 #include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Weapons/WeaponDataAsset.h"
-#include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Data/GameDataSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -86,18 +87,7 @@ void AWeaponCharacter::OnRep_PlayerState()
 	// 用于本地预测、输入绑定与 UI 属性监听。
 	InitAbilitySystem();
 
-	// 客户端：ASC 就绪后也设置装备数据（仅设 CurrentWeaponData，不 GiveAbility）
-	// 将默认武器列表加入库存，客户端本地装备第 0 个
-	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
-	{
-		if (EquipComp->GetWeaponInventory().Num() == 0)
-		{
-			for (UWeaponDataAsset* WeaponData : EquipComp->GetDefaultWeapons())
-			{
-				EquipComp->AddWeaponToInventory(WeaponData);
-			}
-		}
-	}
+	// 装备库存与当前武器由服务器复制；客户端不得在这里重建或修改它们。
 }
 
 void AWeaponCharacter::InitAbilitySystem()
@@ -123,8 +113,7 @@ void AWeaponCharacter::InitAbilitySystem()
 		{
 			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
 			{
-				const FCharacterAttributeRow* Row = DataSys->GetCharacterAttributes(CharacterConfigRowName);
-				if (Row)
+				if (const FCharacterAttributeRow* Row = DataSys->GetCharacterAttributes(CharacterConfigRowName))
 				{
 					FAttributeInitHelper::InitializePlayerAttributes(AbilitySystemComponent, *Row);
 					bAttributesInitialized = true;

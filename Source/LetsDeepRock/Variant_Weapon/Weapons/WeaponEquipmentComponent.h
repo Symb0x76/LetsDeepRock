@@ -12,6 +12,24 @@ class AWeaponBase;
 class UAbilitySystemComponent;
 
 /**
+ * 服务端权威的装备状态。将库存和当前索引放进同一复制属性，
+ * 客户端不会观察到「新索引配旧库存」的中间状态。
+ */
+USTRUCT()
+struct FWeaponEquipmentState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY()
+	int32 CurrentWeaponIndex = INDEX_NONE;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponEquipmentChanged, int32, NewWeaponIndex);
+
+/**
  *  武器装备管理组件
  *
  *  挂在 WeaponCharacter 上，负责：
@@ -30,19 +48,18 @@ public:
 
 	UWeaponEquipmentComponent();
 
-	/** 装备指定武器（可在 BeginPlay 或运行时切枪调用） */
+	virtual void BeginPlay() override;
+
+	/** 服务端装备指定武器；客户端由复制结果更新状态。 */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void EquipWeapon(UWeaponDataAsset* InWeaponData);
-
-	/** 客户端仅设置武器数据引用（不 GiveAbility，不 Spawn Actor） */
-	void EquipWeaponLocal(UWeaponDataAsset* InWeaponData);
 
 	/** 卸载当前武器 */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void UnequipWeapon();
 
 	/** 获取当前武器数据（GA_Fire 读取伤害/投射物配置用） */
-	UWeaponDataAsset* GetCurrentWeaponData() const { return CurrentWeaponData; }
+	UWeaponDataAsset* GetCurrentWeaponData() const;
 
 	/** 获取当前武器 Actor（GA_Fire 读取枪口位置用） */
 	AWeaponBase* GetCurrentWeaponActor() const { return CurrentWeaponActor; }
@@ -68,10 +85,10 @@ public:
 	void SwitchToPrevious();
 
 	/** 获取武器库存 */
-	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return WeaponInventory; }
+	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return EquipmentState.WeaponInventory; }
 
 	/** 获取当前武器索引 */
-	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
+	int32 GetCurrentWeaponIndex() const { return EquipmentState.CurrentWeaponIndex; }
 
 	/** 向库存添加一把武器（如果已存在则不重复添加） */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
@@ -81,9 +98,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData);
 
-protected:
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	virtual void BeginPlay() override;
+	/** 客户端收到服务端装备状态后通知 UI/表现层。 */
+	UPROPERTY(BlueprintAssignable, Category = "Weapon")
+	FOnWeaponEquipmentChanged OnEquipmentChanged;
+
+protected:
 
 	/** 默认武器列表（编辑器中配置，PossessedBy 时加入库存并装备第 0 个） */
 	UPROPERTY(EditAnywhere, Category = "Weapon")
@@ -94,13 +115,22 @@ protected:
 	FName AttachSocketName = TEXT("hand_r");
 
 private:
+	/** 客户端的切枪意图；服务器会再次校验索引和库存。 */
+	UFUNCTION(Server, Reliable)
+	void ServerSwitchWeapon(int32 NewIndex);
+
+	/** 只在服务器执行真正的卸载、Ability 更新和 Actor Spawn。 */
+	void SwitchWeaponAuthority(int32 NewIndex);
+
+	/** 当前复制状态到达客户端时调用。 */
+	UFUNCTION()
+	void OnRep_EquipmentState();
+
+	/** 服务端不会触发 OnRep，因此状态改变后主动通知本地 UI。 */
+	void NotifyEquipmentChanged();
 
 	/** 获取 Owner 的 ASC */
 	UAbilitySystemComponent* GetOwnerASC() const;
-
-	/** 当前武器数据引用 */
-	UPROPERTY()
-	UWeaponDataAsset* CurrentWeaponData;
 
 	/** 当前武器世界 Actor */
 	UPROPERTY()
@@ -112,10 +142,7 @@ private:
 	/** 已授予的近战 Ability Handle */
 	FGameplayAbilitySpecHandle MeleeAbilityHandle;
 
-	/** 武器库存（所有可用武器） */
-	UPROPERTY()
-	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
-
-	/** 当前装备的武器在库存中的索引 */
-	int32 CurrentWeaponIndex = INDEX_NONE;
+	/** 服务端权威装备状态，复制到 owner 和其他观察者。 */
+	UPROPERTY(ReplicatedUsing = OnRep_EquipmentState)
+	FWeaponEquipmentState EquipmentState;
 };
