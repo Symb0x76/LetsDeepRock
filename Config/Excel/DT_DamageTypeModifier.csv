@@ -1,0 +1,7 @@
+﻿---,VsUnarmored,VsLight,VsHeavy,VsOrganic
+Damage.Type.Physical,1,1,0.8,1
+Damage.Type.Fire,1.2,1.5,0.7,1.3
+Damage.Type.Cold,1,0.8,1,1.2
+Damage.Type.Poison,1,1,0.5,1.5
+Damage.Type.Explosion,1.5,1.2,1,1
+Damage.Type.Electric,1.3,1,1.2,0.8

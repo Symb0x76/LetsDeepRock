@@ -1,6 +1,6 @@
----,DisplayName,MaxHealth,MoveSpeed,AttackDamage,ScoreValue,PickupSpawnChance,DeathLingerTime
-BasicGrunt,"基础虫族",30,400,10,1,10,2.0
-FastRunner,"疾速虫族",20,650,8,2,15,1.5
-HeavyTank,"重装虫族",150,200,25,5,25,3.0
-Exploder,"自爆虫族",15,500,50,3,5,0.5
-Spitter,"远程吐酸",40,300,15,3,20,2.0
+﻿---,DisplayName,MaxHealth,MoveSpeed,AttackDamage,ScoreValue,PickupSpawnChance,DeathLingerTime,Armor,MaxShield,ResistPhysical,ResistFire,ResistCold,ResistPoison,ResistExplosion,ResistElectric,ArmorTypeTag
+BasicGrunt,"基础虫族",30,400,10,1,10,2,0,0,0,0,0,0,0,0,"(TagName=""ArmorType.Unarmored"")"
+FastRunner,"疾速虫族",20,650,8,2,15,1.5,0,0,0,0,0.2,0,0,0,"(TagName=""ArmorType.Unarmored"")"
+HeavyTank,"重装虫族",150,200,25,5,25,3,50,0,0.3,0.1,0,0,0.2,0,"(TagName=""ArmorType.Heavy"")"
+Exploder,"自爆虫族",15,500,50,3,5,0.5,0,0,0,0.5,0,0,0.3,0,"(TagName=""ArmorType.Light"")"
+Spitter,"远程吐酸",40,300,15,3,20,2,10,0,0,0,0,0.4,0,0,"(TagName=""ArmorType.Light"")"
