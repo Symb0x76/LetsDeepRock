@@ -105,7 +105,7 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 	// 同一玩家的重复死亡通知不会创建第二个重生 Timer。
 	GetWorldTimerManager().ClearTimer(RespawnTimer);
 	
-	TWeakObjectPtr WeakController(DeadPlayerController);
+	TWeakObjectPtr<AController> WeakController(DeadPlayerController);
 	
 	GetWorldTimerManager().SetTimer(
 		RespawnTimer, [this, WeakController]

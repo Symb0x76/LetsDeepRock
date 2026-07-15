@@ -64,11 +64,11 @@ void AWeaponPlayerState::SetPlayerSlotIndex(const int32 NewSlotIndex)
 	}
 
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (const int32 MaxPlayers = WeaponGameState ? WeaponGameState->GetMaxPlayers() : 4; 
-		NewSlotIndex != INDEX_NONE && !ensureMsgf(
-		NewSlotIndex >= 0 && NewSlotIndex < MaxPlayers,
-		TEXT("Player slot must be INDEX_NONE or between 0~%d."), MaxPlayers - 1))
+	const int32 MaxPlayers = WeaponGameState ? WeaponGameState->GetMaxPlayers() : 4;
+
+	if (NewSlotIndex != INDEX_NONE && (NewSlotIndex < 0 || NewSlotIndex >= MaxPlayers))
 	{
+		UE_LOG(LogTemp, Warning, TEXT("Player slot must be INDEX_NONE or between 0~%d."), MaxPlayers - 1);
 		return;
 	}
 	

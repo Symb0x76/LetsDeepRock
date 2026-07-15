@@ -13,7 +13,7 @@
 
 AWeaponGameState::AWeaponGameState()
 {
-	bReplicates = true;	// 显示设置 GameStateBase 可复制
+	bReplicates = true;	// 显式设置 GameStateBase 可复制
 }
 
 int32 AWeaponGameState::FindSmallestAvailablePlayerSlot() const
@@ -61,7 +61,7 @@ void AWeaponGameState::SetMatchPhase(const EWeaponMatchPhase NewPhase)
 	
 	MatchPhase = NewPhase;
 	
-	// 服务端 UI 不会出发 OnRep，需要主动广播
+	// 服务端 UI 不会触发 OnRep，需要主动广播
 	OnMatchPhaseChanged.Broadcast(MatchPhase);
 	
 	// 尽快推送给所有客户端
