@@ -36,11 +36,35 @@ public:
 	 */
 	void PlayerDied(AController* DeadPlayerController);
 
+	/** 所有玩家 ready 且人数达标时，由 Listen Host 发起开局倒计时。 */
+	UFUNCTION(BlueprintCallable, Category = "Match")
+	bool TryStartWeaponMatch();
+
+	/** 由服务端胜负/任务逻辑调用，进入结算阶段。 */
+	UFUNCTION(BlueprintCallable, Category = "Match")
+	void EndWeaponMatch();
+
+	/** PlayerState ready 改变后的服务器通知入口。 */
+	void HandlePlayerReadyChanged();
+
+	UFUNCTION(BlueprintPure, Category = "Match")
+	bool CanStartWeaponMatch() const;
+
 protected:
 
 	/** 重生延迟（秒），可在蓝图子类中配置 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Respawn")
 	float RespawnDelay = 3.0f;
+
+	/** 最少多少名玩家 ready 才能开始；允许 1~4 人合作测试。 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Match", meta = (ClampMin = 1, ClampMax = 4))
+	int32 MinPlayersToStart = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Match", meta = (ClampMin = 0.0))
+	float StartingCountdownDuration = 3.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Match", meta = (ClampMin = 0.0))
+	float EndingDuration = 5.0f;
 	
 	/**
 	* 每个 Controller 独立拥有一个重生计时器。
@@ -52,7 +76,12 @@ protected:
 	void RespawnPlayer(AController* PlayerController);
 
 private:
-
-	/** Feature 0 始终设为 WaitingForPlayers；后续 feature 再加入自动开局。 */
+	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();
+
+	void BeginWeaponMatch();
+	void ReturnToWaitingForPlayers();
+	void ResetAllPlayerReadyStates();
+
+	FTimerHandle MatchPhaseTimer;
 };

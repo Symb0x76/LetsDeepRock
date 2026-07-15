@@ -126,6 +126,132 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 		false); // 不循环
 }
 
+bool AWeaponGameMode::CanStartWeaponMatch() const
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart)
+	{
+		return false;
+	}
+
+	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
+		if (!WeaponPlayerState || !WeaponPlayerState->GetIsPlayerReady())
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool AWeaponGameMode::TryStartWeaponMatch()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::WaitingForPlayers ||
+		!CanStartWeaponMatch())
+	{
+		return false;
+	}
+
+	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Starting, StartingCountdownDuration);
+
+	if (StartingCountdownDuration <= 0.0f)
+	{
+		BeginWeaponMatch();
+	}
+	else
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::BeginWeaponMatch,
+			StartingCountdownDuration,
+			false);
+	}
+
+	return true;
+}
+
+void AWeaponGameMode::BeginWeaponMatch()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
+	{
+		return;
+	}
+
+	if (!CanStartWeaponMatch())
+	{
+		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+		return;
+	}
+
+	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::InGame);
+}
+
+void AWeaponGameMode::EndWeaponMatch()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Ending, EndingDuration);
+
+	if (EndingDuration <= 0.0f)
+	{
+		ReturnToWaitingForPlayers();
+	}
+	else
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::ReturnToWaitingForPlayers,
+			EndingDuration,
+			false);
+	}
+}
+
+void AWeaponGameMode::ReturnToWaitingForPlayers()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Ending)
+	{
+		return;
+	}
+
+	ResetAllPlayerReadyStates();
+	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+}
+
+void AWeaponGameMode::ResetAllPlayerReadyStates()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState)
+	{
+		return;
+	}
+
+	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		if (AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState))
+		{
+			WeaponPlayerState->SetPlayerReady(false);
+		}
+	}
+}
+
+void AWeaponGameMode::HandlePlayerReadyChanged()
+{
+	RefreshMatchPhase();
+}
+
 void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 {
 	if (!PlayerController)
@@ -180,6 +306,16 @@ void AWeaponGameMode::RefreshMatchPhase()
 		return;
 	}
 	
-	WeaponGameState->SetMatchPhase(
-		EWeaponMatchPhase::WaitingForPlayers);
+	// InGame/Ending 中允许 mid-join；玩家加入或 ready 变化不能让战局倒退。
+	if (WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
+	{
+		return;
+	}
+
+	// 倒计时中有人取消 ready、掉线或新玩家加入，立即撤销开局。
+	if (!CanStartWeaponMatch())
+	{
+		GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+	}
 }

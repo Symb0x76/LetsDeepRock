@@ -98,13 +98,21 @@ public:
 	/** 仅服务端调用；由 WeaponGameMode 在 PostLogin 时分配 */
 	void SetPlayerSlotIndex(int32 NewSlotIndex);
 
-	/** 仅服务端调用；未来由 PlayerController 的 Server RPC 间接调用 */
+	/** 仅服务端调用；用于写入已验证的 ready 状态。 */
 	void SetPlayerReady(bool bNewIsReady);
+
+	/** 本地玩家提交 ready 意图；远程客户端通过 Server RPC，Listen Host 直接执行。 */
+	UFUNCTION(BlueprintCallable, Category = "Player")
+	void RequestSetPlayerReady(bool bNewIsReady);
 
 	UPROPERTY(BlueprintAssignable, Category = "Player")
 	FOnWeaponPlayerLobbyStateChanged OnLobbyStateChanged;
 	
 protected:
+	UFUNCTION(Server, Reliable)
+	void ServerSetPlayerReady(bool bNewIsReady);
+
+	void ApplyPlayerReadyRequest(bool bNewIsReady);
 
 	/** 能力系统组件（在 PlayerState 上创建并复制） */
 	UPROPERTY(VisibleAnywhere, Category = "GAS")

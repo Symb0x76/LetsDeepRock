@@ -52,25 +52,33 @@ int32 AWeaponGameState::GetConnectedPlayerCount() const
 	return PlayerArray.Num();
 }
 
-void AWeaponGameState::SetMatchPhase(const EWeaponMatchPhase NewPhase)
+void AWeaponGameState::SetMatchPhase(const EWeaponMatchPhase NewPhase, const float PhaseDuration)
 {
-	if (!HasAuthority() || MatchPhase == NewPhase)
+	if (!HasAuthority())
 	{
 		return;
 	}
+
+	MatchState.Phase = NewPhase;
+	MatchState.PhaseEndServerTime = PhaseDuration > 0.0f ?
+		GetServerWorldTimeSeconds() + PhaseDuration : 0.0f;
 	
-	MatchPhase = NewPhase;
-	
-	// 服务端 UI 不会触发 OnRep，需要主动广播
-	OnMatchPhaseChanged.Broadcast(MatchPhase);
+	// 服务端 UI 不会触发 OnRep，需要主动广播。
+	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 	
 	// 尽快推送给所有客户端
 	ForceNetUpdate();
 }
 
-void AWeaponGameState::OnRep_MatchPhase()
+float AWeaponGameState::GetRemainingPhaseTime() const
 {
-	OnMatchPhaseChanged.Broadcast(MatchPhase);
+	return MatchState.PhaseEndServerTime > 0.0f ?
+		FMath::Max(0.0f, MatchState.PhaseEndServerTime - GetServerWorldTimeSeconds()) : 0.0f;
+}
+
+void AWeaponGameState::OnRep_MatchState()
+{
+	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 }
 
 void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
@@ -78,5 +86,5 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
-	DOREPLIFETIME(AWeaponGameState, MatchPhase);
+	DOREPLIFETIME(AWeaponGameState, MatchState);
 }

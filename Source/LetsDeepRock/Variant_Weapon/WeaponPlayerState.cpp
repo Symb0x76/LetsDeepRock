@@ -3,6 +3,7 @@
 
 #include "WeaponPlayerState.h"
 #include "AbilitySystemComponent.h"
+#include "WeaponGameMode.h"
 #include "WeaponGameState.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/WeaponCombatSet.h"
@@ -83,6 +84,41 @@ void AWeaponPlayerState::SetPlayerSlotIndex(const int32 NewSlotIndex)
 	// 服务端不会自动调用 OnRep，主动通知主机本地 UI。
 	OnLobbyStateChanged.Broadcast(OldState, LobbyState);
 	ForceNetUpdate();
+
+	if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+	{
+		WeaponGameMode->HandlePlayerReadyChanged();
+	}
+}
+
+void AWeaponPlayerState::RequestSetPlayerReady(const bool bNewIsReady)
+{
+	if (HasAuthority())
+	{
+		ApplyPlayerReadyRequest(bNewIsReady);
+	}
+	else
+	{
+		ServerSetPlayerReady(bNewIsReady);
+	}
+}
+
+void AWeaponPlayerState::ServerSetPlayerReady_Implementation(const bool bNewIsReady)
+{
+	ApplyPlayerReadyRequest(bNewIsReady);
+}
+
+void AWeaponPlayerState::ApplyPlayerReadyRequest(const bool bNewIsReady)
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState ||
+		(WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::WaitingForPlayers &&
+		 WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting))
+	{
+		return;
+	}
+
+	SetPlayerReady(bNewIsReady);
 }
 
 void AWeaponPlayerState::SetPlayerReady(const bool bNewIsReady)
