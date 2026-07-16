@@ -146,6 +146,119 @@ bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, in
 	return DamageTile(X, Y, DamageAmount);
 }
 
+bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage)
+{
+	if (!MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+
+	// 将圆心和半径转换为网格坐标范围
+	int32 CenterX, CenterY;
+	MapData->WorldToGrid(Center, CenterX, CenterY);
+
+	// 根据半径计算网格坐标偏移量，构建遍历的矩形边界
+	const int32 GridRadius = FMath::CeilToInt(Radius / Config.TileSize) + 1;
+	const int32 MinX = FMath::Max(0, CenterX - GridRadius);
+	const int32 MaxX = FMath::Min(Config.MapWidth - 1, CenterX + GridRadius);
+	const int32 MinY = FMath::Max(0, CenterY - GridRadius);
+	const int32 MaxY = FMath::Min(Config.MapHeight - 1, CenterY + GridRadius);
+
+	bool bAnyDamage = false;
+	const float RadiusSq = Radius * Radius;
+	const float InvRadius = 1.0f / Radius;
+
+	for (int32 Y = MinY; Y <= MaxY; ++Y)
+	{
+		for (int32 X = MinX; X <= MaxX; ++X)
+		{
+			// 计算格子中心到爆炸中心的距离
+			const FVector TileCenter = MapData->GridToWorld(X, Y);
+			FVector Delta = TileCenter - Center;
+			Delta.Z = 0.0f; // 只考虑 2D 平面距离
+			const float DistSq = Delta.SizeSquared();
+
+			if (DistSq > RadiusSq)
+			{
+				continue; // 超出爆炸半径
+			}
+
+			// 线性距离衰减：MaxDamage at center → 0 at boundary
+			const float Distance = FMath::Sqrt(DistSq);
+			const float Attenuation = 1.0f - FMath::Clamp(Distance * InvRadius, 0.0f, 1.0f);
+			const int32 ScaledDamage = FMath::RoundToInt(MaxDamage * Attenuation);
+
+			if (ScaledDamage > 0)
+			{
+				if (DamageTile(X, Y, ScaledDamage))
+				{
+					bAnyDamage = true;
+				}
+			}
+		}
+	}
+
+	return bAnyDamage;
+}
+
+bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth, float HalfHeight, float MaxDamage)
+{
+	if (!MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+
+	// 将矩形中心和半尺寸转换为网格坐标范围
+	int32 CenterX, CenterY;
+	MapData->WorldToGrid(Center, CenterX, CenterY);
+
+	const int32 GridHalfWidth = FMath::CeilToInt(HalfWidth / Config.TileSize);
+	const int32 GridHalfHeight = FMath::CeilToInt(HalfHeight / Config.TileSize);
+
+	const int32 MinX = FMath::Max(0, CenterX - GridHalfWidth);
+	const int32 MaxX = FMath::Min(Config.MapWidth - 1, CenterX + GridHalfWidth);
+	const int32 MinY = FMath::Max(0, CenterY - GridHalfHeight);
+	const int32 MaxY = FMath::Min(Config.MapHeight - 1, CenterY + GridHalfHeight);
+
+	// 矩形世界坐标边界（用于精确判断格子中心是否在矩形内）
+	const float RectMinX = Center.X - HalfWidth;
+	const float RectMaxX = Center.X + HalfWidth;
+	const float RectMinY = Center.Y - HalfHeight;
+	const float RectMaxY = Center.Y + HalfHeight;
+
+	bool bAnyDamage = false;
+	const int32 IntDamage = FMath::RoundToInt(MaxDamage);
+
+	for (int32 Y = MinY; Y <= MaxY; ++Y)
+	{
+		for (int32 X = MinX; X <= MaxX; ++X)
+		{
+			const FVector TileCenter = MapData->GridToWorld(X, Y);
+
+			// 检查格子中心是否在矩形内（仅 XY 平面）
+			if (TileCenter.X < RectMinX || TileCenter.X > RectMaxX ||
+				TileCenter.Y < RectMinY || TileCenter.Y > RectMaxY)
+			{
+				continue;
+			}
+
+			if (IntDamage > 0)
+			{
+				if (DamageTile(X, Y, IntDamage))
+				{
+					bAnyDamage = true;
+				}
+			}
+		}
+	}
+
+	return bAnyDamage;
+}
+
 void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
 {
 	// 移除渲染实例（同时移除碰撞，因为 HISM 碰撞和实例绑定）

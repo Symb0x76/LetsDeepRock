@@ -46,4 +46,41 @@ public:
 	 * 检查伤害 Tag 容器是否包含地形伤害标签（Damage.Terrain）。
 	 */
 	static bool HasTerrainDamageTag(const FGameplayTagContainer& DamageTags);
+
+	/**
+	 * 尝试对圆形范围施加地形伤害（距离线性衰减）。
+	 *
+	 * @param WorldContext    世界上下文对象（用于查找 GridMapManager）
+	 * @param Center          爆炸中心世界位置
+	 * @param Radius          伤害半径（cm）
+	 * @param MaxDamage       中心最大伤害值（边界衰减到 0）
+	 * @param DamageTags      伤害携带的 GameplayTag 容器（必须含 Damage.Terrain）
+	 * @return true 如果至少对一个格子施加了伤害
+	 */
+	static bool TryApplyCircularTerrainDamage(
+		const UObject* WorldContext,
+		const FVector& Center,
+		float Radius,
+		float MaxDamage,
+		const FGameplayTagContainer& DamageTags);
+
+	/**
+	 * 尝试对矩形范围施加地形伤害（无距离衰减，区域内全伤害）。
+	 * 矩形沿世界 X 轴和 Y 轴对齐。
+	 *
+	 * @param WorldContext    世界上下文对象（用于查找 GridMapManager）
+	 * @param Center          矩形中心世界位置
+	 * @param HalfWidth       矩形半宽（世界 X 轴方向，cm）
+	 * @param HalfHeight      矩形半高（世界 Y 轴方向，cm）
+	 * @param MaxDamage       区域内每个格子的伤害值
+	 * @param DamageTags      伤害携带的 GameplayTag 容器（必须含 Damage.Terrain）
+	 * @return true 如果至少对一个格子施加了伤害
+	 */
+	static bool TryApplyRectTerrainDamage(
+		const UObject* WorldContext,
+		const FVector& Center,
+		float HalfWidth,
+		float HalfHeight,
+		float MaxDamage,
+		const FGameplayTagContainer& DamageTags);
 };

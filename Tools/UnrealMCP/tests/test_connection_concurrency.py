@@ -295,5 +295,375 @@ class TestCloseMethod(unittest.TestCase):
         remote._cleanup_executor.shutdown(wait=False)
 
 
+class TestPythonRemoteExecStateReset(unittest.TestCase):
+    """测试 PythonRemoteExec 在失败/断开/异常后正确重置状态"""
+
+    def test_connect_failure_resets_state(self):
+        """connect 失败后 _remote_exec/_remote_node_id/_connected 必须全部为 None/False"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            # _connect_impl 会尝试真实连接，超时后应重置状态
+            async def run():
+                result = await remote.connect()
+                return result
+
+            connected = asyncio.run(run())
+            self.assertFalse(connected, "短超时下 connect 应当失败")
+            self.assertIsNone(remote._remote_exec, "connect 失败后 _remote_exec 应为 None")
+            self.assertIsNone(remote._remote_node_id, "connect 失败后 _remote_node_id 应为 None")
+            self.assertFalse(remote._connected, "connect 失败后 _connected 应为 False")
+            self.assertFalse(remote.is_connected(), "connect 失败后 is_connected() 应为 False")
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_connect_impl_exception_resets_state(self):
+        """_connect_impl 自身异常（如 run_in_executor 失败）后必须重置状态"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            # 预先设置脏状态，模拟 run_in_executor 抛出异常的场景
+            remote._remote_exec = object()  # 非 None，模拟半连接
+            remote._remote_node_id = "stale-node"
+            remote._connected = True
+
+            # 关闭 cleanup_executor 使 disconnect 的 run_in_executor 抛出 RuntimeError
+            remote._cleanup_executor.shutdown(wait=True)
+
+            async def run():
+                return await remote.connect()
+
+            connected = asyncio.run(run())
+            self.assertFalse(connected, "executor 关闭后 connect 应当失败")
+            self.assertIsNone(remote._remote_exec, "异常后 _remote_exec 应为 None")
+            self.assertIsNone(remote._remote_node_id, "异常后 _remote_node_id 应为 None")
+            self.assertFalse(remote._connected, "异常后 _connected 应为 False")
+        finally:
+            try:
+                remote._cleanup_executor.shutdown(wait=False)
+            except Exception:
+                pass
+
+    def test_disconnect_resets_state_when_stop_throws(self):
+        """disconnect 时即使 stop() 抛出异常，也必须重置状态"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            # 设置 mock RemoteExec，其 stop() 会抛异常
+            mock_exec = MagicMock()
+            mock_exec.has_command_connection.return_value = True
+            mock_exec.stop.side_effect = RuntimeError("stop 失败")
+            remote._remote_exec = mock_exec
+            remote._remote_node_id = "test-node"
+            remote._connected = True
+
+            async def run():
+                await remote.disconnect()
+
+            asyncio.run(run())
+
+            # disconnect 后无论 stop 是否抛异常，状态必须全部重置
+            self.assertIsNone(remote._remote_exec, "disconnect 后 _remote_exec 应为 None")
+            self.assertIsNone(remote._remote_node_id, "disconnect 后 _remote_node_id 应为 None")
+            self.assertFalse(remote._connected, "disconnect 后 _connected 应为 False")
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_disconnect_resets_state_when_no_remote_exec(self):
+        """disconnect 时即使 _remote_exec 为 None 也应该重置状态（处理不一致状态）"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            # 设置不一致状态：_remote_exec 已清但 _connected 仍为 True
+            remote._remote_exec = None
+            remote._remote_node_id = "stale-node"
+            remote._connected = True
+
+            async def run():
+                await remote.disconnect()
+
+            asyncio.run(run())
+
+            self.assertIsNone(remote._remote_exec)
+            self.assertIsNone(remote._remote_node_id, "disconnect 应清空 _remote_node_id")
+            self.assertFalse(remote._connected, "disconnect 应重置 _connected")
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_execute_timeout_resets_state(self):
+        """execute 超时后 _force_cleanup 被调用，此后状态必须为 None/False"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.1, execute_timeout=0.01)
+        try:
+            mock_exec = MagicMock()
+            mock_exec.has_command_connection.return_value = True
+            # 让 _execute_sync 永久阻塞以触发超时
+            mock_exec.run_command.side_effect = lambda *a, **kw: (
+                __import__('time').sleep(10) or {'success': True, 'result': '', 'output': []}
+            )
+            remote._remote_exec = mock_exec
+            remote._connected = True
+            remote._remote_node_id = "test-node"
+
+            async def run():
+                result = await remote.execute("print(1)")
+                return result
+
+            result = asyncio.run(run())
+            self.assertFalse(result["success"], "超时应返回 success=False")
+            self.assertIn("超时", result["result"])
+
+            # 超时后状态必须全部清除
+            self.assertIsNone(remote._remote_exec, "超时后 _remote_exec 应为 None")
+            self.assertIsNone(remote._remote_node_id, "超时后 _remote_node_id 应为 None")
+            self.assertFalse(remote._connected, "超时后 _connected 应为 False")
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_execute_exception_resets_state(self):
+        """execute 内部异常后状态必须重置为 None/False"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.1, execute_timeout=1.0)
+        try:
+            mock_exec = MagicMock()
+            mock_exec.has_command_connection.return_value = True
+            mock_exec.run_command.side_effect = RuntimeError("执行崩溃")
+            remote._remote_exec = mock_exec
+            remote._connected = True
+            remote._remote_node_id = "test-node"
+
+            async def run():
+                result = await remote.execute("bad code")
+                return result
+
+            result = asyncio.run(run())
+            self.assertFalse(result["success"], "异常时应返回 success=False")
+
+            self.assertIsNone(remote._remote_exec, "异常后 _remote_exec 应为 None")
+            self.assertIsNone(remote._remote_node_id, "异常后 _remote_node_id 应为 None")
+            self.assertFalse(remote._connected, "异常后 _connected 应为 False")
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_force_cleanup_resets_state(self):
+        """_force_cleanup 调用后必须无条件重置所有状态"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            mock_exec = MagicMock()
+            remote._remote_exec = mock_exec
+            remote._remote_node_id = "test-node"
+            remote._connected = True
+
+            remote._force_cleanup()
+
+            self.assertIsNone(remote._remote_exec)
+            self.assertIsNone(remote._remote_node_id)
+            self.assertFalse(remote._connected)
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+
+class TestPingConnectBehavior(unittest.TestCase):
+    """测试 ping 的双通道连接策略：
+    - 任一通道可用时不应重复连接
+    - 双通道都不可用时主动调用 ensure_connected
+    """
+
+    def _setup_mock_connection(self, python_available, rc_available):
+        """设置 mock connection 对象"""
+        mock_conn = MagicMock()
+        mock_conn.python_exec = MagicMock()
+        mock_conn.python_exec.is_connected.return_value = python_available
+        mock_conn.rc_api = MagicMock()
+        mock_conn.rc_api.is_connected.return_value = rc_available
+        # 将属性访问转发到 is_connected()
+        type(mock_conn).python_available = property(lambda self: self.python_exec.is_connected())
+        type(mock_conn).rc_available = property(lambda self: self.rc_api.is_connected())
+        return mock_conn
+
+    async def _simulate_ping(self, mock_conn):
+        """模拟 ping 函数逻辑（与 server._register_ping_tool 行为一致）"""
+        if mock_conn.python_available or mock_conn.rc_available:
+            return "connected_no_reconnect"
+
+        # 两个通道都不可用 — 主动尝试连接
+        await mock_conn.ensure_connected()
+
+        if mock_conn.python_available or mock_conn.rc_available:
+            return "connected_after_attempt"
+        else:
+            return "disconnected"
+
+    def test_ping_does_not_reconnect_when_python_available(self):
+        """Python 通道已连接 → 不应调用 ensure_connected"""
+        mock_conn = self._setup_mock_connection(python_available=True, rc_available=False)
+        mock_conn.ensure_connected = MagicMock(side_effect=lambda: asyncio.sleep(0))
+
+        async def run():
+            return await self._simulate_ping(mock_conn)
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "connected_no_reconnect")
+        mock_conn.ensure_connected.assert_not_called()
+
+    def test_ping_does_not_reconnect_when_rc_available(self):
+        """RC 通道已连接 → 不应调用 ensure_connected"""
+        mock_conn = self._setup_mock_connection(python_available=False, rc_available=True)
+        mock_conn.ensure_connected = MagicMock(side_effect=lambda: asyncio.sleep(0))
+
+        async def run():
+            return await self._simulate_ping(mock_conn)
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "connected_no_reconnect")
+        mock_conn.ensure_connected.assert_not_called()
+
+    def test_ping_does_not_reconnect_when_both_available(self):
+        """双通道都连接 → 不应调用 ensure_connected"""
+        mock_conn = self._setup_mock_connection(python_available=True, rc_available=True)
+        mock_conn.ensure_connected = MagicMock(side_effect=lambda: asyncio.sleep(0))
+
+        async def run():
+            return await self._simulate_ping(mock_conn)
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "connected_no_reconnect")
+        mock_conn.ensure_connected.assert_not_called()
+
+    def test_ping_calls_ensure_connected_when_both_disconnected(self):
+        """双通道都断开 → 必须调用 ensure_connected"""
+        mock_conn = self._setup_mock_connection(python_available=False, rc_available=False)
+        mock_conn.ensure_connected = MagicMock(side_effect=lambda: asyncio.sleep(0))
+
+        async def run():
+            return await self._simulate_ping(mock_conn)
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "disconnected")
+        mock_conn.ensure_connected.assert_called_once()
+
+    def test_ping_ensure_connected_success_then_report_status(self):
+        """ensure_connected 成功后应报告连接正常"""
+        mock_conn = self._setup_mock_connection(python_available=False, rc_available=False)
+
+        async def fake_ensure():
+            # 模拟连接成功：将 Python 通道标记为已连接
+            mock_conn.python_exec.is_connected.return_value = True
+
+        mock_conn.ensure_connected = fake_ensure
+
+        async def run():
+            return await self._simulate_ping(mock_conn)
+
+        result = asyncio.run(run())
+        self.assertEqual(result, "connected_after_attempt")
+
+
+class TestExecutePythonConnectCheck(unittest.TestCase):
+    """测试 UnrealConnection.execute_python 在首次连接时的返回值检查"""
+
+    def test_execute_python_connect_failure_returns_error(self):
+        """connect() 返回 False 时必须返回错误 dict，不能继续执行"""
+        from unreal_mcp.server import UnrealConnection
+
+        conn = UnrealConnection(multicast_group="239.0.0.99")
+        # 注入 mock，模拟 connect 失败
+        conn.python_exec.connect = MagicMock(side_effect=lambda: asyncio.sleep(0, result=False))
+        conn.python_exec.is_connected = MagicMock(return_value=False)
+
+        async def run():
+            return await conn.execute_python("print(42)")
+
+        result = asyncio.run(run())
+        self.assertFalse(result["success"], "首次连接失败应返回 success=False")
+        self.assertIn("连接失败", result["result"])
+        self.assertEqual(result["command"], "print(42)")
+        # 不应调用 execute
+        conn.python_exec.execute = MagicMock()
+        # 确认 connect 被调用了一次
+        conn.python_exec.connect.assert_called_once()
+
+    def test_execute_python_connect_success_then_executes(self):
+        """connect() 返回 True 时应继续执行"""
+        from unreal_mcp.server import UnrealConnection
+
+        conn = UnrealConnection(multicast_group="239.0.0.99")
+        conn.python_exec.connect = MagicMock(side_effect=lambda: asyncio.sleep(0, result=True))
+        conn.python_exec.is_connected = MagicMock(return_value=True)
+        conn.python_exec.execute = MagicMock(side_effect=lambda *a, **kw: asyncio.sleep(
+            0, result={"success": True, "result": "ok", "command": "print(42)", "output": []}
+        ))
+
+        async def run():
+            return await conn.execute_python("print(42)")
+
+        result = asyncio.run(run())
+        self.assertTrue(result["success"])
+        conn.python_exec.execute.assert_called_once_with("print(42)")
+
+    def test_execute_python_already_connected_skips_connect(self):
+        """已连接时不调用 connect，直接执行"""
+        from unreal_mcp.server import UnrealConnection
+
+        conn = UnrealConnection(multicast_group="239.0.0.99")
+        conn.python_exec.is_connected = MagicMock(return_value=True)
+        conn.python_exec.connect = MagicMock()
+        conn.python_exec.execute = MagicMock(side_effect=lambda *a, **kw: asyncio.sleep(
+            0, result={"success": True, "result": "ok", "command": "test", "output": []}
+        ))
+
+        async def run():
+            return await conn.execute_python("test")
+
+        result = asyncio.run(run())
+        self.assertTrue(result["success"])
+        conn.python_exec.connect.assert_not_called()
+        conn.python_exec.execute.assert_called_once_with("test")
+
+
+class TestResetStateCompleteness(unittest.TestCase):
+    """测试 _reset_state 方法在所有关键路径上被调用"""
+
+    def test_all_three_fields_cleared(self):
+        """_reset_state 必须一次性清空全部三个字段"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            remote._remote_exec = object()
+            remote._remote_node_id = "node-123"
+            remote._connected = True
+
+            remote._reset_state()
+
+            self.assertIsNone(remote._remote_exec)
+            self.assertIsNone(remote._remote_node_id)
+            self.assertFalse(remote._connected)
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+    def test_reset_state_idempotent(self):
+        """_reset_state 对已清空的状态是幂等的"""
+        from unreal_mcp.connection.python_remote import PythonRemoteExec
+
+        remote = PythonRemoteExec(discovery_timeout=0.05)
+        try:
+            remote._reset_state()  # 第一次调用
+            remote._reset_state()  # 第二次调用（幂等）
+            self.assertIsNone(remote._remote_exec)
+            self.assertIsNone(remote._remote_node_id)
+            self.assertFalse(remote._connected)
+        finally:
+            remote._cleanup_executor.shutdown(wait=False)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

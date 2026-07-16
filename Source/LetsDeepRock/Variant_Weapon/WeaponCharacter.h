@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "GameplayAbilitySpec.h"
 #include "WeaponCharacter.generated.h"
 
 class USpringArmComponent;
@@ -14,6 +15,7 @@ class UInputAction;
 class UInputMappingContext;
 class UAbilitySystemComponent;
 class UWeaponEquipmentComponent;
+class UGameplayAbility;
 
 /**
  *  俯视角武器系统角色（Variant_Weapon 骨架）
@@ -57,6 +59,14 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* SwitchWeaponAction;
 
+	/** 手雷投掷输入 Action */
+	UPROPERTY(EditAnywhere, Category = "Input")
+	UInputAction* ThrowGrenadeAction;
+
+	/** 手雷投掷 Ability 类（由蓝图配置，独立于武器装备系统） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	TSubclassOf<UGameplayAbility> GrenadeAbilityClass;
+
 public:
 
 	/** 构造函数 */
@@ -64,6 +74,7 @@ public:
 
 	//~ AActor
 	virtual void Tick(float DeltaTime) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
@@ -83,6 +94,9 @@ protected:
 	/** 缓存的 ASC 指针（实际拥有者是 PlayerState） */
 	UPROPERTY()
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;
+
+	/** 已授予的手雷 Ability Handle（EndPlay Authority 端清除，重生时重新 Grant） */
+	FGameplayAbilitySpecHandle GrenadeAbilityHandle;
 
 	/** 统一的 ASC ActorInfo 初始化：获取 PlayerState 上的 ASC，设置 Owner=PS / Avatar=this */
 	void InitAbilitySystem();
@@ -111,6 +125,9 @@ protected:
 
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
+
+	/** 处理手雷投掷输入：激活 GrenadeAbilityClass */
+	void ThrowGrenade(const FInputActionValue& Value);
 
 	/** 每 Tick 将角色朝向旋转到鼠标在地面的投影位置 */
 	void RotateToMouseCursor(float DeltaTime);

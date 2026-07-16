@@ -8,6 +8,7 @@
 #include "WeaponProjectile.generated.h"
 
 class USphereComponent;
+class UStaticMeshComponent;
 class UProjectileMovementComponent;
 class UGameplayEffect;
 
@@ -44,6 +45,10 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<USphereComponent> CollisionSphere;
 
+	/** 投射物网格体（视觉表现，无碰撞，附到 CollisionSphere） */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
+	TObjectPtr<UStaticMeshComponent> ProjectileMesh;
+
 	/** 投射物移动组件 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
@@ -69,16 +74,16 @@ protected:
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;
 
-	/** 命中处理（碰撞回调） */
+	/** 命中处理（碰撞回调），子类可覆写以改变命中行为（如手雷弹跳过而不引爆） */
 	UFUNCTION()
-	void OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
+	virtual void OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
 		UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
 		bool bFromSweep, const FHitResult& SweepResult);
 
-	/** 投射物停止移动时销毁 */
+	/** 投射物停止移动时回调，子类可覆写（如手雷停止后等待引信而非立即销毁） */
 	UFUNCTION()
-	void OnProjectileStop(const FHitResult& ImpactResult);
+	virtual void OnProjectileStop(const FHitResult& ImpactResult);
 
-	/** 对目标施加伤害 GE */
-	void ApplyDamageToTarget(AActor* TargetActor);
+	/** 对目标施加伤害 GE（可用于手雷等子类的爆炸伤害） */
+	virtual void ApplyDamageToTarget(AActor* TargetActor);
 };

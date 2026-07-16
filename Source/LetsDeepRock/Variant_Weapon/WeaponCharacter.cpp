@@ -21,6 +21,7 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Data/GameDataSubsystem.h"
+#include "Abilities/GameplayAbility.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -142,6 +143,13 @@ void AWeaponCharacter::InitAbilitySystem()
 			HealthSet->OnHealthDepleted.AddUObject(this, &AWeaponCharacter::HandleHealthDepleted);
 		}
 	}
+
+	// 授予手雷 Ability（独立于武器装备系统，仅服务端授予一次，重生时自动重新授予）
+	if (HasAuthority() && GrenadeAbilityClass && !GrenadeAbilityHandle.IsValid())
+	{
+		FGameplayAbilitySpec GrenadeSpec(GrenadeAbilityClass, 1, INDEX_NONE, this);
+		GrenadeAbilityHandle = AbilitySystemComponent->GiveAbility(GrenadeSpec);
+	}
 }
 
 void AWeaponCharacter::Tick(float DeltaTime)
@@ -206,6 +214,18 @@ void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 	const FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, 15.0f);
 
 	SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
+}
+
+void AWeaponCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// 仅 Authority 端清除手雷 Ability（重生时新 Character 会重新 Grant）
+	if (HasAuthority() && GrenadeAbilityHandle.IsValid() && AbilitySystemComponent)
+	{
+		AbilitySystemComponent->ClearAbility(GrenadeAbilityHandle);
+	}
+	GrenadeAbilityHandle = FGameplayAbilitySpecHandle();
+
+	Super::EndPlay(EndPlayReason);
 }
 
 void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
@@ -275,6 +295,11 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 		if (SwitchWeaponAction)
 		{
 			EnhancedInput->BindAction(SwitchWeaponAction, ETriggerEvent::Started, this, &AWeaponCharacter::SwitchWeapon);
+		}
+
+		if (ThrowGrenadeAction)
+		{
+			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Started, this, &AWeaponCharacter::ThrowGrenade);
 		}
 	}
 }
@@ -369,4 +394,21 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 	{
 		EquipComp->SwitchToPrevious();
 	}
+}
+
+void AWeaponCharacter::ThrowGrenade(const FInputActionValue& Value)
+{
+	// 死亡时禁止投掷
+	if (IsDead())
+	{
+		return;
+	}
+
+	// 通过 ASC 尝试激活手雷 Ability（独立于武器装备系统）
+	if (!AbilitySystemComponent || !GrenadeAbilityClass)
+	{
+		return;
+	}
+
+	AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
 }
