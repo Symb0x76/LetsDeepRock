@@ -37,6 +37,9 @@ public:
 	/** 用手雷数据资产初始化（替代父类的 InitDamageParams，额外配置弹道和引信） */
 	void InitFromGrenadeData(const UWeaponGrenadeDataAsset* GrenadeData, AActor* InInstigator);
 
+	/** 覆盖初始投掷速度（在 InitFromGrenadeData 之后调用，用于动态弹道解算覆写） */
+	void SetInitialThrowSpeed(float Speed);
+
 protected:
 
 	virtual void BeginPlay() override;

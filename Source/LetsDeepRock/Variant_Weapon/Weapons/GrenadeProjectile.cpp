@@ -62,7 +62,7 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 	TerrainDamageRadius = GrenadeData->TerrainDamageRadius;
 	AdditionalTargetEffects = GrenadeData->AdditionalTargetEffects;
 
-	// 配置投射物移动组件
+	// 配置投射物移动组件（初始速度在 SetInitialThrowSpeed 中可被动态覆写）
 	if (ProjectileMovement)
 	{
 		ProjectileMovement->InitialSpeed = GrenadeData->ThrowSpeed;
@@ -70,6 +70,17 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 		ProjectileMovement->ProjectileGravityScale = GrenadeData->GravityScale;
 		ProjectileMovement->bShouldBounce = GrenadeData->bShouldBounce;
 		ProjectileMovement->SetVelocityInLocalSpace(FVector(GrenadeData->ThrowSpeed, 0.f, 0.f));
+	}
+}
+
+void AGrenadeProjectile::SetInitialThrowSpeed(float Speed)
+{
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->InitialSpeed = Speed;
+		ProjectileMovement->MaxSpeed = Speed;
+		// 使用 Actor 前方（SpawnTransform 设定的瞄准方向）作为世界速度方向
+		ProjectileMovement->Velocity = GetActorForwardVector() * Speed;
 	}
 }
 

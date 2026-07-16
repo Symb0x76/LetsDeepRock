@@ -76,13 +76,32 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0.1))
 	float FuseSeconds = 3.0f;
 
-	/** 投掷初始速度 */
+	/**
+	 * 投掷初始速度（回退值，当弹道解算不可用时使用）
+	 * 有地面命中点时通过 LaunchAngleDeg + 命中距离动态解算速度并 clamp 到 [MinThrowSpeed, MaxThrowSpeed]
+	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 100))
 	float ThrowSpeed = 1500.0f;
 
 	/** 重力缩放（1.0 = 标准重力，0 = 无重力） */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0.0))
 	float GravityScale = 1.0f;
+
+	/** 发射仰角（度，固定值），用于动态解算弹道速度 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1.0, ClampMax = 89.0))
+	float LaunchAngleDeg = 35.0f;
+
+	/** 最小投掷速度（cm/s），弹道解算结果 clamp 下限 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1.0))
+	float MinThrowSpeed = 1.0f;
+
+	/** 最大投掷速度（cm/s），弹道解算结果 clamp 上限 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1.0))
+	float MaxThrowSpeed = 2500.0f;
+
+	/** 最大水平射程（cm），超出后沿水平方向裁剪到该值再解算速度。0 = 不限制 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0.0))
+	float MaxThrowRange = 3000.0f;
 
 	/** 是否可弹跳（撞到 WorldStatic 后反弹） */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
