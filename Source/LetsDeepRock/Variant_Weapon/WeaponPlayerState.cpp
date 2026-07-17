@@ -112,7 +112,7 @@ void AWeaponPlayerState::ApplyPlayerReadyRequest(const bool bNewIsReady)
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 	if (!WeaponGameState ||
-		(WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::WaitingForPlayers &&
+		(WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting &&
 		 WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting))
 	{
 		return;

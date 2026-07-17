@@ -50,6 +50,7 @@ Plugins/**/Saved/
 
 # Visual Studio Code（如需保留团队共享配置，可反忽略 .vscode 内特定文件）
 .vscode/
+*.code-workspace
 
 # --- 生成的项目文件 ---
 *.xcodeproj
@@ -79,7 +80,14 @@ $RECYCLE.BIN/
 Generate
 
 # --- 本地 AI Agent 规则（个人本地配置，不提交）---
+.agent/
 AGENTS.md
+
+# --- codex 本地配置 ---
+.codex/
+
+# --- claude 本地配置 ---
+.claude/
 
 # --- opencode 本地配置 ---
 opencode.json

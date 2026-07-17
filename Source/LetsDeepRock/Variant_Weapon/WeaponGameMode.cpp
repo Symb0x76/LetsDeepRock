@@ -136,8 +136,7 @@ bool AWeaponGameMode::CanStartWeaponMatch() const
 
 	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
-		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
-		if (!WeaponPlayerState || !WeaponPlayerState->GetIsPlayerReady())
+		if (const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState); !WeaponPlayerState || !WeaponPlayerState->GetIsPlayerReady())
 		{
 			return false;
 		}
@@ -150,7 +149,7 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 	if (!HasAuthority() || !WeaponGameState ||
-		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::WaitingForPlayers ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting ||
 		!CanStartWeaponMatch())
 	{
 		return false;
@@ -185,7 +184,7 @@ void AWeaponGameMode::BeginWeaponMatch()
 
 	if (!CanStartWeaponMatch())
 	{
-		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 		return;
 	}
 
@@ -227,7 +226,7 @@ void AWeaponGameMode::ReturnToWaitingForPlayers()
 	}
 
 	ResetAllPlayerReadyStates();
-	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 }
 
 void AWeaponGameMode::ResetAllPlayerReadyStates()
@@ -316,6 +315,6 @@ void AWeaponGameMode::RefreshMatchPhase()
 	if (!CanStartWeaponMatch())
 	{
 		GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
-		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::WaitingForPlayers);
+		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 	}
 }

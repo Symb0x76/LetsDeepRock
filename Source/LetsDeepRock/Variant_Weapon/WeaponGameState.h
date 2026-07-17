@@ -17,8 +17,8 @@ class AWeaponGameMode;
 UENUM(BlueprintType)
 enum class EWeaponMatchPhase : uint8
 {
-	/* 等待玩家阶段 */
-	WaitingForPlayers = 0 UMETA(DisplayName = "Waiting For Players"),
+	/* 等待阶段 */
+	Waiting = 0 UMETA(DisplayName = "Waiting"),
 	
 	/* 游戏中 */
 	InGame = 1 UMETA(DisplayName = "In Game"),
@@ -37,7 +37,7 @@ struct FWeaponReplicatedMatchState
 	GENERATED_BODY()
 
 	UPROPERTY(BlueprintReadOnly, Category = "Match")
-	EWeaponMatchPhase Phase = EWeaponMatchPhase::WaitingForPlayers;
+	EWeaponMatchPhase Phase = EWeaponMatchPhase::Waiting;
 
 	/** 使用 GameState 的同步服务器时间；0 表示当前阶段没有倒计时。 */
 	UPROPERTY(BlueprintReadOnly, Category = "Match")
@@ -66,7 +66,7 @@ class AWeaponGameState : public AGameStateBase
 public:
 	AWeaponGameState();
 	
-	/** 返回 0–MaxPlayers-1 中最小未占用槽位；满员时返回 INDEX_NONE。仅服务端调用。 */
+	/** 返回最小未占用槽位；满员时返回 INDEX_NONE。仅服务端调用。 */
 	int32 FindSmallestAvailablePlayerSlot() const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
