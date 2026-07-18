@@ -68,6 +68,16 @@ class PythonRemoteExec:
             max_workers=1, thread_name_prefix="pyremote-cleanup"
         )
 
+    def _reset_state(self):
+        """无条件重置所有连接状态（集中化清理入口）
+
+        异常、disconnect、connect 失败后调用，确保不残留半连接状态。
+        不执行 socket 级 stop()——调用者应在调用本方法前完成资源回收。
+        """
+        self._remote_exec = None
+        self._remote_node_id = None
+        self._connected = False
+
     def is_connected(self) -> bool:
         """检查是否已建立命令连接"""
         return self._connected and self._remote_exec is not None and self._remote_exec.has_command_connection()
@@ -98,17 +108,18 @@ class PythonRemoteExec:
             return result
         except Exception as e:
             logger.error("连接失败: %s", e)
-            self._connected = False
+            # run_in_executor 自身异常（如线程池关闭）→ 无条件清理
+            self._reset_state()
             return False
 
     def _force_cleanup(self):
-        """强制清理所有 socket 资源"""
+        """强制清理所有 socket 资源并重置状态"""
         if self._remote_exec:
             try:
                 self._remote_exec.stop()
             except Exception as e:
                 logger.debug("强制清理时 stop 出错: %s", e)
-            self._remote_exec = None
+        self._reset_state()
 
     def _connect_sync(self) -> bool:
         """同步连接实现（在线程池中执行）
@@ -148,8 +159,7 @@ class PythonRemoteExec:
             else:
                 logger.warning("节点发现超时 (%.1fs)，未找到 UE 编辑器", self._discovery_timeout)
                 self._remote_exec.stop()
-                self._remote_exec = None
-                self._connected = False
+                self._reset_state()
                 return False
 
             # 建立 TCP 命令连接
@@ -165,17 +175,26 @@ class PythonRemoteExec:
                     self._remote_exec.stop()
                 except Exception:
                     pass
-            self._remote_exec = None
-            self._remote_node_id = None
-            self._connected = False
+            self._reset_state()
             return False
 
     async def disconnect(self):
-        """断开连接（加锁，串行化生命周期操作）"""
+        """断开连接（加锁，串行化生命周期操作）
+
+        即使 _remote_exec 为 None（状态不一致），也会重置所有连接状态，
+        确保 stop 异常或 executor 关闭不会泄漏半连接状态。
+        """
         async with self._lock:
             if self._remote_exec:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(self._cleanup_executor, self._disconnect_sync)
+                try:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(self._cleanup_executor, self._disconnect_sync)
+                except Exception as e:
+                    logger.warning("disconnect executor 异常: %s", e)
+                    self._reset_state()
+            else:
+                # 无 _remote_exec 但状态可能不一致（如 _connected 仍为 True）
+                self._reset_state()
 
     def _disconnect_sync(self):
         """同步断开实现"""
@@ -185,9 +204,7 @@ class PythonRemoteExec:
             except Exception as e:
                 logger.warning("断开连接时出错: %s", e)
             finally:
-                self._remote_exec = None
-                self._connected = False
-                self._remote_node_id = None
+                self._reset_state()
                 logger.info("已断开 UE 连接")
 
     async def execute(self, code: str, mode: str = "ExecuteFile") -> dict:
@@ -242,10 +259,7 @@ class PythonRemoteExec:
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(self._cleanup_executor, self._force_cleanup)
                 except Exception:
-                    pass
-                self._remote_exec = None
-                self._connected = False
-                self._remote_node_id = None
+                    self._reset_state()
                 return {
                     "success": False,
                     "result": f"执行超时 ({self._execute_timeout}s)",
@@ -253,15 +267,12 @@ class PythonRemoteExec:
                     "output": [],
                 }
             except Exception as e:
-                self._connected = False
                 logger.warning("执行异常: %s，正在清理连接...", e)
                 try:
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(self._cleanup_executor, self._force_cleanup)
                 except Exception:
-                    pass
-                self._remote_exec = None
-                self._remote_node_id = None
+                    self._reset_state()
                 return {
                     "success": False,
                     "result": f"执行错误: {str(e)}",

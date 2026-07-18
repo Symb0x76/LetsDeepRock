@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "GameplayAbilitySpec.h"
 #include "WeaponCharacter.generated.h"
 
 class USpringArmComponent;
@@ -14,6 +15,10 @@ class UInputAction;
 class UInputMappingContext;
 class UAbilitySystemComponent;
 class UWeaponEquipmentComponent;
+class UGameplayAbility;
+class UGrenadeTrajectoryPreviewComponent;
+class UWeaponGrenadeDataAsset;
+struct FGrenadeBallisticsOutput;
 
 /**
  *  俯视角武器系统角色（Variant_Weapon 骨架）
@@ -57,6 +62,22 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Input")
 	UInputAction* SwitchWeaponAction;
 
+	/** 手雷投掷输入 Action */
+	UPROPERTY(EditAnywhere, Category = "Input")
+	UInputAction* ThrowGrenadeAction;
+
+	/** 手雷投掷 Ability 类（由蓝图配置，独立于武器装备系统） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	TSubclassOf<UGameplayAbility> GrenadeAbilityClass;
+
+	/** 手雷数据资产（由蓝图配置或从 Ability CDO 读取，供水前预览组件使用） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	TObjectPtr<UWeaponGrenadeDataAsset> GrenadeDataAsset;
+
+	/** 是否启用手雷弹道预览（临时调试开关） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	bool bEnableGrenadePreview = false;
+
 public:
 
 	/** 构造函数 */
@@ -64,6 +85,7 @@ public:
 
 	//~ AActor
 	virtual void Tick(float DeltaTime) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
@@ -78,11 +100,19 @@ public:
 	/** 添加输入绑定 */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
+	// === 手雷 Pending Target（GA 消费接口） ===
+
+	/** GA 调用：消费一次性 pending 手雷目标，返回 true 表示有有效目标 */
+	bool ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOutValid) const;
+
 protected:
 
 	/** 缓存的 ASC 指针（实际拥有者是 PlayerState） */
 	UPROPERTY()
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;
+
+	/** 已授予的手雷 Ability Handle（EndPlay Authority 端清除，重生时重新 Grant） */
+	FGameplayAbilitySpecHandle GrenadeAbilityHandle;
 
 	/** 统一的 ASC ActorInfo 初始化：获取 PlayerState 上的 ASC，设置 Owner=PS / Avatar=this */
 	void InitAbilitySystem();
@@ -112,6 +142,55 @@ protected:
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
 
+	/** 处理手雷投掷输入：Started（预览）/ Triggered（更新）/ Completed（投掷）/ Canceled（取消） */
+	void ThrowGrenadeStarted(const FInputActionValue& Value);
+	void ThrowGrenadeTriggered(const FInputActionValue& Value);
+	void ThrowGrenadeCompleted(const FInputActionValue& Value);
+	void ThrowGrenadeCanceled(const FInputActionValue& Value);
+
+	// === 手雷预览（仅本地控制 Pawn 执行） ===
+
+	/** 获取鼠标地面位置（通过 Visibility 通道射线检测），返回是否命中地面 */
+	bool GetMouseGroundPosition(FVector& OutGroundPoint) const;
+
+	/** 执行弹道解算并显示预览 */
+	void ShowGrenadePreview();
+
+	/** 更新预览（按住期间鼠标移动时调用） */
+	void UpdateGrenadePreview();
+
+	/** 隐藏预览 */
+	void HideGrenadePreview();
+
+	// === 手雷 Server RPC ===
+
+	/** 客户端→服务器：发送瞄准目标，服务端校验后激活 GA */
+	UFUNCTION(Server, Reliable)
+	void ServerThrowGrenade(FVector_NetQuantize TargetPoint, bool bHasValidTarget);
+
 	/** 每 Tick 将角色朝向旋转到鼠标在地面的投影位置 */
 	void RotateToMouseCursor(float DeltaTime);
+
+	// === 手雷预览 ===
+
+	/** 弹道预览组件（仅本地控制 Pawn 创建，非复制） */
+	UPROPERTY()
+	TObjectPtr<UGrenadeTrajectoryPreviewComponent> GrenadePreviewComponent;
+
+	/** 是否正在预览（按住 G 键期间） */
+	bool bIsPreviewingGrenade = false;
+
+	/** 最近一次预览解算使用的目标点，Completed 时沿同一路径投掷 */
+	mutable FVector PreviewGrenadeTarget = FVector::ZeroVector;
+
+	/** 最近一次预览目标是否有效 */
+	mutable bool bHasPreviewGrenadeTarget = false;
+
+	// === 手雷 Pending Target（服务器消费） ===
+
+	/** 一次性待消费手雷目标点（服务器 RPC 设置，GA 消费后清空） */
+	mutable FVector PendingGrenadeTarget = FVector::ZeroVector;
+
+	/** PendingGrenadeTarget 是否有效 */
+	mutable bool bHasPendingGrenadeTarget = false;
 };

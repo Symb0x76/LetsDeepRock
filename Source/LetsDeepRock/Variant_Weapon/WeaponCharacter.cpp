@@ -16,11 +16,16 @@
 #include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Weapons/WeaponDataAsset.h"
+#include "Weapons/WeaponGrenadeDataAsset.h"
+#include "Weapons/GrenadeBallistics.h"
+#include "Weapons/GrenadeTrajectoryPreviewComponent.h"
 #include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Data/GameDataSubsystem.h"
+#include "Abilities/GameplayAbility.h"
+#include "Abilities/GA_ThrowGrenade.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -142,6 +147,13 @@ void AWeaponCharacter::InitAbilitySystem()
 			HealthSet->OnHealthDepleted.AddUObject(this, &AWeaponCharacter::HandleHealthDepleted);
 		}
 	}
+
+	// 授予手雷 Ability（独立于武器装备系统，仅服务端授予一次，重生时自动重新授予）
+	if (HasAuthority() && GrenadeAbilityClass && !GrenadeAbilityHandle.IsValid())
+	{
+		FGameplayAbilitySpec GrenadeSpec(GrenadeAbilityClass, 1, INDEX_NONE, this);
+		GrenadeAbilityHandle = AbilitySystemComponent->GiveAbility(GrenadeSpec);
+	}
 }
 
 void AWeaponCharacter::Tick(float DeltaTime)
@@ -208,6 +220,21 @@ void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 	SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
 }
 
+void AWeaponCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	// 隐藏预览
+	HideGrenadePreview();
+
+	// 仅 Authority 端清除手雷 Ability（重生时新 Character 会重新 Grant）
+	if (HasAuthority() && GrenadeAbilityHandle.IsValid() && AbilitySystemComponent)
+	{
+		AbilitySystemComponent->ClearAbility(GrenadeAbilityHandle);
+	}
+	GrenadeAbilityHandle = FGameplayAbilitySpecHandle();
+
+	Super::EndPlay(EndPlayReason);
+}
+
 void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 {
 	// 阶段 5：玩家死亡处理
@@ -226,16 +253,19 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 	// 3. 禁用碰撞（避免死亡后挡路/继续被命中）
 	GetCapsuleComponent()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
-	// 4. 隐藏角色网格（简单的死亡表现，后续可替换为布娃娃/死亡动画）
+	// 4. 清理手雷预览（死亡时不显示预览）
+	HideGrenadePreview();
+
+	// 5. 隐藏角色网格（简单的死亡表现，后续可替换为布娃娃/死亡动画）
 	SetActorHiddenInGame(true);
 
-	// 5. 卸载当前武器（清除 Ability + 销毁武器 Actor）
+	// 6. 卸载当前武器（清除 Ability + 销毁武器 Actor）
 	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
 	{
 		EquipComp->UnequipWeapon();
 	}
 
-	// 6. 通知 GameMode 启动重生流程
+	// 7. 通知 GameMode 启动重生流程
 	if (AWeaponGameMode* GM = GetWorld()->GetAuthGameMode<AWeaponGameMode>())
 	{
 		GM->PlayerDied(GetController());
@@ -275,6 +305,14 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 		if (SwitchWeaponAction)
 		{
 			EnhancedInput->BindAction(SwitchWeaponAction, ETriggerEvent::Started, this, &AWeaponCharacter::SwitchWeapon);
+		}
+
+		if (ThrowGrenadeAction)
+		{
+			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Started, this, &AWeaponCharacter::ThrowGrenadeStarted);
+			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Triggered, this, &AWeaponCharacter::ThrowGrenadeTriggered);
+			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Completed, this, &AWeaponCharacter::ThrowGrenadeCompleted);
+			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Canceled, this, &AWeaponCharacter::ThrowGrenadeCanceled);
 		}
 	}
 }
@@ -369,4 +407,337 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 	{
 		EquipComp->SwitchToPrevious();
 	}
+}
+
+// ============================================================================
+// 手雷投掷：预览 + ServerRPC 流程
+// ============================================================================
+
+void AWeaponCharacter::ThrowGrenadeStarted(const FInputActionValue& Value)
+{
+	// 死亡时禁止投掷
+	if (IsDead())
+	{
+		return;
+	}
+
+	if (!bEnableGrenadePreview)
+	{
+		return;
+	}
+
+	// 仅本地控制 Pawn 显示预览
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+
+	// 检查冷却（避免预览在冷却期显示）
+	if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(TAG_Cooldown_Weapon_Grenade))
+	{
+		return;
+	}
+
+	if (!GrenadeDataAsset && GrenadeAbilityClass)
+	{
+		if (const UGA_ThrowGrenade* GrenadeAbilityCDO = Cast<UGA_ThrowGrenade>(GrenadeAbilityClass->GetDefaultObject()))
+		{
+			GrenadeDataAsset = GrenadeAbilityCDO->GetGrenadeData();
+		}
+	}
+
+	// 确保预览组件已创建
+	if (!GrenadePreviewComponent)
+	{
+		// 服务器端（Listen Server）也需要创建预览组件用于本地预览
+		GrenadePreviewComponent = NewObject<UGrenadeTrajectoryPreviewComponent>(this, TEXT("GrenadePreview"));
+		if (GrenadePreviewComponent)
+		{
+			GrenadePreviewComponent->RegisterComponent();
+		}
+	}
+
+	bIsPreviewingGrenade = true;
+	PreviewGrenadeTarget = FVector::ZeroVector;
+	bHasPreviewGrenadeTarget = false;
+	ShowGrenadePreview();
+}
+
+void AWeaponCharacter::ThrowGrenadeTriggered(const FInputActionValue& Value)
+{
+	if (!bEnableGrenadePreview || !bIsPreviewingGrenade)
+	{
+		return;
+	}
+
+	UpdateGrenadePreview();
+}
+
+void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
+{
+	if (!bEnableGrenadePreview)
+	{
+		if (!IsDead() && AbilitySystemComponent && GrenadeAbilityClass)
+		{
+			AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
+		}
+		return;
+	}
+
+	if (!bIsPreviewingGrenade)
+	{
+		return;
+	}
+
+	bIsPreviewingGrenade = false;
+
+	// 立即隐藏预览
+	HideGrenadePreview();
+
+	// 使用最后一次预览解算的目标，确保实际投掷与显示路径一致
+	const FVector TargetPoint = PreviewGrenadeTarget;
+	const bool bHasTarget = bHasPreviewGrenadeTarget;
+
+	// 客户端→服务器：发送目标点
+	if (!HasAuthority())
+	{
+		ServerThrowGrenade(TargetPoint, bHasTarget);
+	}
+	else
+	{
+		// Listen Server / Standalone：直接激活
+		if (AbilitySystemComponent && GrenadeAbilityClass)
+		{
+			PendingGrenadeTarget = TargetPoint;
+			bHasPendingGrenadeTarget = bHasTarget;
+			AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
+		}
+	}
+}
+
+void AWeaponCharacter::ThrowGrenadeCanceled(const FInputActionValue& Value)
+{
+	if (!bEnableGrenadePreview)
+	{
+		return;
+	}
+
+	bIsPreviewingGrenade = false;
+	PreviewGrenadeTarget = FVector::ZeroVector;
+	bHasPreviewGrenadeTarget = false;
+
+	// 取消：只清理预览，不投掷
+	HideGrenadePreview();
+}
+
+// === 预览方法 ===
+
+bool AWeaponCharacter::GetMouseGroundPosition(FVector& OutGroundPoint) const
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC)
+	{
+		return false;
+	}
+
+	FVector WorldLocation, WorldDirection;
+	if (!PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
+	{
+		return false;
+	}
+
+	// 长距离射线检测地面（忽略自身）
+	const float TraceDistance = 100000.0f;
+	const FVector TraceEnd = WorldLocation + WorldDirection * TraceDistance;
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.TraceTag = TEXT("GrenadeAim");
+
+	FHitResult TraceHit;
+	if (GetWorld()->LineTraceSingleByChannel(TraceHit, WorldLocation, TraceEnd,
+		ECC_Visibility, QueryParams) && TraceHit.bBlockingHit)
+	{
+		OutGroundPoint = TraceHit.ImpactPoint;
+		return true;
+	}
+
+	// Fallback：Deproject + 角色 Z 平面求交
+	const float TargetZ = GetActorLocation().Z;
+	if (!FMath::IsNearlyZero(WorldDirection.Z))
+	{
+		const float T = (TargetZ - WorldLocation.Z) / WorldDirection.Z;
+		if (T > 0.0f)
+		{
+			OutGroundPoint = WorldLocation + WorldDirection * T;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void AWeaponCharacter::ShowGrenadePreview()
+{
+	if (!GrenadePreviewComponent || !GrenadeDataAsset)
+	{
+		return;
+	}
+
+	// 1. 获取鼠标地面位置
+	FVector TargetPoint = FVector::ZeroVector;
+	const bool bHasTarget = GetMouseGroundPosition(TargetPoint);
+	PreviewGrenadeTarget = TargetPoint;
+	bHasPreviewGrenadeTarget = bHasTarget;
+
+	// 2. 获取 2D 瞄准方向
+	FVector2D AimDirection2D;
+	if (bHasTarget)
+	{
+		const FVector ToTarget = TargetPoint - GetActorLocation();
+		AimDirection2D = FVector2D(ToTarget).GetSafeNormal();
+	}
+	if (AimDirection2D.SizeSquared() <= KINDA_SMALL_NUMBER)
+	{
+		const FVector Forward = GetActorForwardVector();
+		AimDirection2D = FVector2D(Forward).GetSafeNormal();
+	}
+
+	// 3. 计算 Spawn 位置
+	const FVector ForwardDir(AimDirection2D.X, AimDirection2D.Y, 0.0f);
+	const FVector SpawnLocation = GetActorLocation()
+		+ ForwardDir * GrenadeDataAsset->SpawnForwardOffset
+		+ FVector(0.0f, 0.0f, GrenadeDataAsset->SpawnUpOffset);
+
+	// 4. 构建弹道解算输入
+	FGrenadeBallisticsInput BallisticsInput = FGrenadeBallisticsInput::FromDataAsset(
+		GrenadeDataAsset, SpawnLocation, AimDirection2D, TargetPoint, bHasTarget, this);
+
+	// 5. 执行解算
+	FGrenadeBallisticsOutput Result;
+	FGrenadeBallistics::Calculate(BallisticsInput, GetWorld(), Result);
+
+	// 6. 显示预览
+	GrenadePreviewComponent->ShowPreview(Result, GrenadeDataAsset);
+}
+
+void AWeaponCharacter::UpdateGrenadePreview()
+{
+	if (!GrenadePreviewComponent || !GrenadeDataAsset)
+	{
+		return;
+	}
+
+	// 重新获取目标并解算（鼠标可能已移动）
+	FVector TargetPoint = FVector::ZeroVector;
+	const bool bHasTarget = GetMouseGroundPosition(TargetPoint);
+	PreviewGrenadeTarget = TargetPoint;
+	bHasPreviewGrenadeTarget = bHasTarget;
+
+	FVector2D AimDirection2D;
+	if (bHasTarget)
+	{
+		const FVector ToTarget = TargetPoint - GetActorLocation();
+		AimDirection2D = FVector2D(ToTarget).GetSafeNormal();
+	}
+	if (AimDirection2D.SizeSquared() <= KINDA_SMALL_NUMBER)
+	{
+		const FVector Forward = GetActorForwardVector();
+		AimDirection2D = FVector2D(Forward).GetSafeNormal();
+	}
+
+	const FVector ForwardDir(AimDirection2D.X, AimDirection2D.Y, 0.0f);
+	const FVector SpawnLocation = GetActorLocation()
+		+ ForwardDir * GrenadeDataAsset->SpawnForwardOffset
+		+ FVector(0.0f, 0.0f, GrenadeDataAsset->SpawnUpOffset);
+
+	FGrenadeBallisticsInput BallisticsInput = FGrenadeBallisticsInput::FromDataAsset(
+		GrenadeDataAsset, SpawnLocation, AimDirection2D, TargetPoint, bHasTarget, this);
+
+	FGrenadeBallisticsOutput Result;
+	FGrenadeBallistics::Calculate(BallisticsInput, GetWorld(), Result);
+
+	GrenadePreviewComponent->UpdatePreview(Result, GrenadeDataAsset);
+}
+
+void AWeaponCharacter::HideGrenadePreview()
+{
+	if (GrenadePreviewComponent)
+	{
+		GrenadePreviewComponent->HidePreview();
+	}
+}
+
+// === Server RPC ===
+
+void AWeaponCharacter::ServerThrowGrenade_Implementation(FVector_NetQuantize TargetPoint, bool bHasValidTarget)
+{
+	// 死亡时拒绝
+	if (IsDead())
+	{
+		return;
+	}
+
+	// 基本校验：拒绝 NaN / 距离过远 / 极大值，但不阻断投掷
+	// 无效目标时回退到前方投掷（bHasPendingGrenadeTarget=false → GA 用 forward 方向）
+	bool bAcceptedTarget = false;
+	if (bHasValidTarget)
+	{
+		// NaN 检查
+		if (TargetPoint.ContainsNaN())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[ServerThrowGrenade] 目标点包含 NaN，回退到前方投掷。"));
+		}
+		// 极大值检查
+		else if (TargetPoint.SizeSquared() >= FMath::Square(100000.0f))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[ServerThrowGrenade] 目标点过大 (%f)，回退到前方投掷。"),
+				TargetPoint.Size());
+		}
+		// 距离检查
+		else
+		{
+			const float MaxValidDistance = GrenadeDataAsset
+				? GrenadeDataAsset->MaxThrowRange + GrenadeDataAsset->SpawnForwardOffset + 500.0f
+				: 4000.0f;
+
+			const FVector ToTarget = TargetPoint - GetActorLocation();
+			if (ToTarget.SizeSquared() > FMath::Square(MaxValidDistance))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[ServerThrowGrenade] 目标距离 %f 超出有效范围 %f，回退到前方投掷。"),
+					ToTarget.Size(), MaxValidDistance);
+			}
+			else
+			{
+				PendingGrenadeTarget = TargetPoint;
+				bAcceptedTarget = true;
+			}
+		}
+	}
+
+	bHasPendingGrenadeTarget = bAcceptedTarget;
+	if (!bAcceptedTarget)
+	{
+		PendingGrenadeTarget = FVector::ZeroVector;
+	}
+
+	// 激活手雷 Ability
+	if (AbilitySystemComponent && GrenadeAbilityClass)
+	{
+		AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
+	}
+}
+
+// === Pending Target 消费接口 ===
+
+bool AWeaponCharacter::ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOutValid) const
+{
+	OutTarget = PendingGrenadeTarget;
+	bOutValid = bHasPendingGrenadeTarget;
+
+	// 消费后清空（mutable 允许在 const 方法中修改）
+	PendingGrenadeTarget = FVector::ZeroVector;
+	bHasPendingGrenadeTarget = false;
+
+	return bOutValid;
 }

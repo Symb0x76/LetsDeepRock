@@ -71,6 +71,33 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	bool DamageTileAtWorldLocation(const FVector& WorldLocation, int32 DamageAmount);
 
+	/**
+	 * 对圆形范围内的所有格子施加距离衰减伤害。
+	 *
+	 * 遍历范围内所有格子，按距离线性衰减：
+	 *   Damage = MaxDamage * (1 - Distance / Radius)
+	 * 中心为 MaxDamage，边界为 0。
+	 * 仅对有 Damage.Terrain 标签的伤害源生效（调用方已预先过滤）。
+	 *
+	 * @param Center      圆心世界位置
+	 * @param Radius      伤害半径（cm）
+	 * @param MaxDamage   中心最大伤害值
+	 * @return true 如果至少对一个格子造成了伤害
+	 */
+	bool DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage);
+
+	/**
+	 * 对轴对齐矩形范围内的所有格子施加伤害（无距离衰减）。
+	 * 矩形沿世界 X 轴（HalfWidth）和 Y 轴（HalfHeight）对齐。
+	 *
+	 * @param Center      矩形中心世界位置
+	 * @param HalfWidth   世界 X 轴方向半宽（cm）
+	 * @param HalfHeight  世界 Y 轴方向半高（cm）
+	 * @param MaxDamage   区域内每个格子的伤害值
+	 * @return true 如果至少对一个格子造成了伤害
+	 */
+	bool DamageTilesInRect(const FVector& Center, float HalfWidth, float HalfHeight, float MaxDamage);
+
 	// ===== 事件 =====
 
 	/** 格子被破坏时广播 */
