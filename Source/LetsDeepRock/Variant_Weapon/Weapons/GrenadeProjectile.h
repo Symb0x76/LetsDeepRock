@@ -37,8 +37,14 @@ public:
 	/** 用手雷数据资产初始化（替代父类的 InitDamageParams，额外配置弹道和引信） */
 	void InitFromGrenadeData(const UWeaponGrenadeDataAsset* GrenadeData, AActor* InInstigator);
 
-	/** 覆盖初始投掷速度（在 InitFromGrenadeData 之后调用，用于动态弹道解算覆写） */
-	void SetInitialThrowSpeed(float Speed);
+	/**
+	 * 设置世界空间初速度向量（替代旧的 SetInitialThrowSpeed）
+	 *
+	 * GA 完成弹道解算后，将完整三维初速度向量（水平 = 方向 * V * cosθ，垂直 = V * sinθ）传入。
+	 * InitialSpeed = 向量长度，Velocity = 原向量，MaxSpeed 使用安全上限（不受初速度大小限制）。
+	 * 避免旧实现 MaxSpeed=初速度 导致重力加速阶段下落速度被截断。
+	 */
+	void SetInitialThrowVelocity(const FVector& WorldVelocity);
 
 protected:
 

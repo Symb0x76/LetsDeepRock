@@ -107,6 +107,20 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile")
 	bool bShouldBounce = true;
 
+	// === 预览与生成参数 ===
+
+	/** 生成位置前向偏移（cm），从角色位置沿瞄准方向前移 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float SpawnForwardOffset = 80.0f;
+
+	/** 生成位置上方偏移（cm），从角色位置向上抬升 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float SpawnUpOffset = 80.0f;
+
+	/** 投射物碰撞球半径（cm），用于 PredictProjectilePath 和投射物 Init */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1.0))
+	float ProjectileCollisionRadius = 15.0f;
+
 	// === 伤害 Tag ===
 
 	/** 伤害携带的 Tag（如 Damage.Type.Explosion 用于元素抗性、Damage.Terrain 用于地形破坏） */

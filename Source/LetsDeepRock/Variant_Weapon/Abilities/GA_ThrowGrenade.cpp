@@ -5,20 +5,22 @@
 #include "GameplayEffect.h"
 #include "Weapons/WeaponGrenadeDataAsset.h"
 #include "Weapons/GrenadeProjectile.h"
+#include "Weapons/GrenadeBallistics.h"
+#include "WeaponCharacter.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/PlayerController.h"
 #include "WeaponGameplayTags.h"
 
 UGA_ThrowGrenade::UGA_ThrowGrenade()
 {
-	// 本地预测：手雷投掷客户端立即响应，服务端验证生成
-	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+	// ServerOnly：专用服务器不读取鼠标，目标由客户端 ServerRPC 发送
+	// Listen Server 也走此路径（本地 Character 直接设置 pending target 后激活）
+	NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::ServerOnly;
 
 	// 同一时间只能有一个 ThrowGrenade 实例
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 
 	// 配置 Ability Tag
-	AbilityTags.AddTag(TAG_Ability_Weapon_Grenade);
+	SetAssetTags(FGameplayTagContainer(TAG_Ability_Weapon_Grenade));
 
 	// 激活阻断 Tag：Cooldown 期间不可激活
 	ActivationBlockedTags.AddTag(TAG_Cooldown_Weapon_Grenade);
@@ -39,17 +41,12 @@ void UGA_ThrowGrenade::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 		return;
 	}
 
-	// 计算 2D 瞄准方向 + 地面命中点：主路径地面命中 → fallback Deproject+Z平面 → 最终回退 Avatar Forward
-	CachedThrowDirection2D = FVector2D::ZeroVector;
-	CachedGroundHitPoint = FVector::ZeroVector;
-	if (!CalculateMouseAimDirection2D(ActorInfo, CachedThrowDirection2D, &CachedGroundHitPoint))
+	// 获取 Avatar Character
+	AWeaponCharacter* Character = Cast<AWeaponCharacter>(ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr);
+	if (!Character)
 	{
-		const AActor* AvatarForDir = ActorInfo ? ActorInfo->AvatarActor.Get() : nullptr;
-		if (AvatarForDir)
-		{
-			CachedThrowDirection2D = FVector2D(AvatarForDir->GetActorForwardVector()).GetSafeNormal();
-		}
-		// 回退时 CachedGroundHitPoint 保持 ZeroVector，ServerSpawnGrenade 内跳过动态解算
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
 	}
 
 	// CommitAbility：检查条件 + 触发 Cooldown（无需 Cost）
@@ -59,10 +56,10 @@ void UGA_ThrowGrenade::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 		return;
 	}
 
-	// 仅服务端生成手雷投射物（bReplicates=true 自动复制到客户端）
+	// 仅服务端生成手雷投射物
 	if (HasAuthority(&ActivationInfo))
 	{
-		ServerSpawnGrenade(ActorInfo, CachedThrowDirection2D, CachedGroundHitPoint);
+		ServerSpawnGrenade(ActorInfo);
 	}
 
 	// 单次投掷：立即结束 Ability（Cooldown GE 已独立运行）
@@ -86,131 +83,7 @@ UGameplayEffect* UGA_ThrowGrenade::GetCooldownGameplayEffect() const
 	return Super::GetCooldownGameplayEffect();
 }
 
-bool UGA_ThrowGrenade::CalculateMouseAimDirection2D(const FGameplayAbilityActorInfo* ActorInfo, FVector2D& OutDirection, FVector* OutHitPoint /* = nullptr */) const
-{
-	if (!ActorInfo)
-	{
-		return false;
-	}
-
-	const AActor* Avatar = ActorInfo->AvatarActor.Get();
-	if (!Avatar)
-	{
-		return false;
-	}
-
-	APlayerController* PC = ActorInfo->PlayerController.Get();
-	if (!PC)
-	{
-		return false;
-	}
-
-	const FVector AvatarLocation = Avatar->GetActorLocation();
-
-	// ── 主路径：鼠标射线地面命中（ECC_Visibility）──
-	FHitResult CursorHit;
-	if (PC->GetHitResultUnderCursorByChannel(UEngineTypes::ConvertToTraceType(ECC_Visibility), true, CursorHit) && CursorHit.bBlockingHit)
-	{
-		const FVector2D RawDir = FVector2D(CursorHit.ImpactPoint - AvatarLocation);
-		OutDirection = RawDir.GetSafeNormal();
-		if (OutDirection.SizeSquared() > KINDA_SMALL_NUMBER)
-		{
-			if (OutHitPoint)
-			{
-				*OutHitPoint = CursorHit.ImpactPoint;
-			}
-			return true;
-		}
-	}
-
-	// ── Fallback：DeprojectMousePositionToWorld → Avatar Z 平面求交 ──
-	FVector WorldLocation, WorldDirection;
-	if (PC->DeprojectMousePositionToWorld(WorldLocation, WorldDirection))
-	{
-		const float TargetZ = AvatarLocation.Z;
-		if (!FMath::IsNearlyZero(WorldDirection.Z))
-		{
-			const float T = (TargetZ - WorldLocation.Z) / WorldDirection.Z;
-			if (T > 0.0f)
-			{
-				const FVector IntersectionPoint = WorldLocation + WorldDirection * T;
-				const FVector2D RawDir = FVector2D(IntersectionPoint - AvatarLocation);
-				OutDirection = RawDir.GetSafeNormal();
-				if (OutDirection.SizeSquared() > KINDA_SMALL_NUMBER)
-				{
-					// 仅真实碰撞点可用于精确弹道解算；此路径只负责提供安全的朝向回退。
-					return true;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-float UGA_ThrowGrenade::CalculateThrowSpeed(const UWeaponGrenadeDataAsset* Data, const FVector& SpawnLocation, const FVector& TargetPoint, UWorld* World) const
-{
-	if (!Data || !World)
-	{
-		return Data ? FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed) : 1500.0f;
-	}
-
-	const float Gravity = FMath::Abs(World->GetGravityZ()) * Data->GravityScale;
-
-	// 无重力或重力极小：使用回退速度
-	if (Gravity <= KINDA_SMALL_NUMBER)
-	{
-		return FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-	}
-
-	const float Theta = FMath::DegreesToRadians(Data->LaunchAngleDeg);
-	const float CosTheta = FMath::Cos(Theta);
-	const float TanTheta = FMath::Tan(Theta);
-
-	// 仰角接近 90°（cos 趋近 0）
-	if (FMath::IsNearlyZero(CosTheta))
-	{
-		return FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-	}
-
-	const float DeltaHeight = TargetPoint.Z - SpawnLocation.Z;   // 目标高于起抛点为正
-	FVector2D HorizontalVec(TargetPoint.X - SpawnLocation.X, TargetPoint.Y - SpawnLocation.Y);
-	float D = HorizontalVec.Size();
-
-	// 距离过近
-	if (D <= KINDA_SMALL_NUMBER)
-	{
-		return FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-	}
-
-	// 超出最大射程：沿水平方向裁剪
-	if (Data->MaxThrowRange > KINDA_SMALL_NUMBER && D > Data->MaxThrowRange)
-	{
-		const FVector2D ClampedVec = HorizontalVec.GetSafeNormal() * Data->MaxThrowRange;
-		D = Data->MaxThrowRange;
-		// 命中点 Z 保持原值（近似地面高度），HorizontalVec 仅用于 D 值实际已替换
-	}
-
-	const float Denominator = D * TanTheta - DeltaHeight;
-	if (Denominator <= KINDA_SMALL_NUMBER)
-	{
-		// 分母不合法：几何上无法用此仰角命中目标（目标过高或距离过短）
-		return FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-	}
-
-	const float CosThetaSq = CosTheta * CosTheta;
-	const float VSquared = Gravity * D * D / (2.0f * CosThetaSq * Denominator);
-
-	if (VSquared <= 0.0f || !FMath::IsFinite(VSquared))
-	{
-		return FMath::Clamp(Data->ThrowSpeed, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-	}
-
-	const float V = FMath::Sqrt(VSquared);
-	return FMath::Clamp(V, Data->MinThrowSpeed, Data->MaxThrowSpeed);
-}
-
-void UGA_ThrowGrenade::ServerSpawnGrenade(const FGameplayAbilityActorInfo* ActorInfo, const FVector2D& AimDirection2D, const FVector& HitPoint)
+void UGA_ThrowGrenade::ServerSpawnGrenade(const FGameplayAbilityActorInfo* ActorInfo)
 {
 	if (!GrenadeData || !GrenadeData->ProjectileClass)
 	{
@@ -223,42 +96,58 @@ void UGA_ThrowGrenade::ServerSpawnGrenade(const FGameplayAbilityActorInfo* Actor
 		return;
 	}
 
+	AWeaponCharacter* Character = Cast<AWeaponCharacter>(Avatar);
+	if (!Character)
+	{
+		return;
+	}
+
 	UWorld* World = Avatar->GetWorld();
 	if (!World)
 	{
 		return;
 	}
 
-	// ── 第1步：计算瞄准方向与命中点（优先服务端重算）──
-	FVector2D ThrowDir2D = AimDirection2D;
-	FVector TargetHitPoint = HitPoint;
+	// ── 第1步：消费 Character 上的 PendingGrenadeTarget ──
+	FVector TargetPoint = FVector::ZeroVector;
+	bool bHasTarget = false;
+	Character->ConsumePendingGrenadeTarget(TargetPoint, bHasTarget);
+
+	// ── 第2步：获取瞄准方向 ──
+	FVector2D AimDirection2D;
+	if (bHasTarget)
 	{
-		FVector2D ServerCalcDir;
-		FVector ServerHitPt;
-		if (CalculateMouseAimDirection2D(ActorInfo, ServerCalcDir, &ServerHitPt))
-		{
-			ThrowDir2D = ServerCalcDir;
-			TargetHitPoint = ServerHitPt;
-		}
+		const FVector ToTarget = TargetPoint - Avatar->GetActorLocation();
+		AimDirection2D = FVector2D(ToTarget).GetSafeNormal();
+	}
+	if (AimDirection2D.SizeSquared() <= KINDA_SMALL_NUMBER)
+	{
+		AimDirection2D = FVector2D(Avatar->GetActorForwardVector()).GetSafeNormal();
 	}
 
-	if (ThrowDir2D.SizeSquared() <= KINDA_SMALL_NUMBER)
-	{
-		// 最终回退：Avatar Forward（命中点保持无效以跳过动态解算）
-		ThrowDir2D = FVector2D(Avatar->GetActorForwardVector()).GetSafeNormal();
-	}
+	const FVector ForwardDir(AimDirection2D.X, AimDirection2D.Y, 0.0f);
 
-	const FVector ForwardDir = FVector(ThrowDir2D.X, ThrowDir2D.Y, 0.0f);
+	// ── 第3步：计算 Spawn 位置 ──
+	const FVector SpawnLocation = Avatar->GetActorLocation()
+		+ ForwardDir * GrenadeData->SpawnForwardOffset
+		+ FVector(0.0f, 0.0f, GrenadeData->SpawnUpOffset);
 
-	// ── 第2步：计算 Spawn 位置与旋转（使用 LaunchAngleDeg 作为 Pitch）──
-	const FVector SpawnLocation = Avatar->GetActorLocation() + ForwardDir * 80.0f + FVector(0.f, 0.f, 80.0f);
-	const FRotator SpawnRotation = FRotator(GrenadeData->LaunchAngleDeg,
-		FMath::RadiansToDegrees(FMath::Atan2(ThrowDir2D.Y, ThrowDir2D.X)),
+	// ── 第4步：使用共享弹道解算计算初速度 ──
+	FGrenadeBallisticsInput BallisticsInput = FGrenadeBallisticsInput::FromDataAsset(
+		GrenadeData, SpawnLocation, AimDirection2D, TargetPoint, bHasTarget, Avatar);
+
+	FGrenadeBallisticsOutput BallisticsResult;
+	FGrenadeBallistics::Calculate(BallisticsInput, World, BallisticsResult);
+
+	// ── 第5步：Spawn 旋转 ──
+	const FRotator SpawnRotation = FRotator(
+		GrenadeData->LaunchAngleDeg,
+		FMath::RadiansToDegrees(FMath::Atan2(AimDirection2D.Y, AimDirection2D.X)),
 		0.0f);
 
 	const FTransform SpawnTransform(SpawnRotation, SpawnLocation);
 
-	// ── 第3步：Deferred Spawn → Init → 动态速度覆写 → FinishSpawning ──
+	// ── 第6步：Deferred Spawn → Init → FinishSpawning → 速度覆写 ──
 	AGrenadeProjectile* Grenade = World->SpawnActorDeferred<AGrenadeProjectile>(
 		GrenadeData->ProjectileClass,
 		SpawnTransform,
@@ -271,14 +160,9 @@ void UGA_ThrowGrenade::ServerSpawnGrenade(const FGameplayAbilityActorInfo* Actor
 	{
 		Grenade->InitFromGrenadeData(GrenadeData, Avatar);
 
-		// 动态弹道解算：仅当命中点有效时执行
-		if (!TargetHitPoint.IsNearlyZero())
-		{
-			const float Speed = CalculateThrowSpeed(GrenadeData, SpawnLocation, TargetHitPoint, World);
-			Grenade->SetInitialThrowSpeed(Speed);
-		}
-		// 否则 InitFromGrenadeData 已设置 DataAsset->ThrowSpeed
-
 		Grenade->FinishSpawning(SpawnTransform);
+
+		// 使用共享解算结果的速度（包含 clamp 后值，且与预览轨迹一致）
+		Grenade->SetInitialThrowVelocity(BallisticsResult.InitialVelocity);
 	}
 }

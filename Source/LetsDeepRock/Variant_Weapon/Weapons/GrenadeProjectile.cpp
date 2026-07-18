@@ -16,14 +16,14 @@
 
 AGrenadeProjectile::AGrenadeProjectile()
 {
-	// 手雷物理特性：有重力、可弹跳
-	// 在构造函数中设置合理默认值，InitFromGrenadeData 会覆写
+	// 手雷物理特性：有重力、不弹跳（产品意图：落地即停，精确落点控制）
+	// 保留引信倒计时，爆炸在 OnFuseExpired 中触发
 	if (ProjectileMovement)
 	{
 		ProjectileMovement->ProjectileGravityScale = 1.0f;
-		ProjectileMovement->bShouldBounce = true;
-		ProjectileMovement->Bounciness = 0.6f;
-		ProjectileMovement->Friction = 0.2f;
+		ProjectileMovement->bShouldBounce = false;	// ★ 关闭弹跳以确保落点接近鼠标地面点
+		ProjectileMovement->Bounciness = 0.0f;
+		ProjectileMovement->Friction = 1.0f;			// 落地后不滑行
 	}
 
 	// 手雷不碰撞 Pawn（弹跳过敌人，不与敌人发生 Overlap/Block）
@@ -62,26 +62,46 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 	TerrainDamageRadius = GrenadeData->TerrainDamageRadius;
 	AdditionalTargetEffects = GrenadeData->AdditionalTargetEffects;
 
-	// 配置投射物移动组件（初始速度在 SetInitialThrowSpeed 中可被动态覆写）
+	// 配置投射物移动组件（初始速度在 SetInitialThrowVelocity 中可被动态覆写）
 	if (ProjectileMovement)
 	{
 		ProjectileMovement->InitialSpeed = GrenadeData->ThrowSpeed;
-		ProjectileMovement->MaxSpeed = GrenadeData->ThrowSpeed;
+		// ★ MaxSpeed=0：不限制速度上限，允许重力加速到任意速度。
+		// 手雷弹道由物理精确控制，不需要人为速度截断。
+		ProjectileMovement->MaxSpeed = 0.0f;
+
 		ProjectileMovement->ProjectileGravityScale = GrenadeData->GravityScale;
-		ProjectileMovement->bShouldBounce = GrenadeData->bShouldBounce;
+		// ★ 产品意图：关闭弹跳以确保落点接近鼠标地面点。
+		// DataAsset 的 bShouldBounce 字段保留供未来使用，当前 MoveComp 强制关闭。
+		ProjectileMovement->bShouldBounce = false;
 		ProjectileMovement->SetVelocityInLocalSpace(FVector(GrenadeData->ThrowSpeed, 0.f, 0.f));
+	}
+
+	// 同步碰撞球半径（与 PredictProjectilePath 参数一致）
+	if (CollisionSphere && GrenadeData->ProjectileCollisionRadius > 0.0f)
+	{
+		CollisionSphere->SetSphereRadius(GrenadeData->ProjectileCollisionRadius);
 	}
 }
 
-void AGrenadeProjectile::SetInitialThrowSpeed(float Speed)
+void AGrenadeProjectile::SetInitialThrowVelocity(const FVector& WorldVelocity)
 {
-	if (ProjectileMovement)
+	if (!ProjectileMovement)
 	{
-		ProjectileMovement->InitialSpeed = Speed;
-		ProjectileMovement->MaxSpeed = Speed;
-		// 使用 Actor 前方（SpawnTransform 设定的瞄准方向）作为世界速度方向
-		ProjectileMovement->Velocity = GetActorForwardVector() * Speed;
+		return;
 	}
+
+	const float Speed = WorldVelocity.Size();
+	if (Speed <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	ProjectileMovement->InitialSpeed = Speed;
+	ProjectileMovement->Velocity = WorldVelocity;
+
+	// ★ MaxSpeed=0：不限制速度上限，允许重力加速
+	ProjectileMovement->MaxSpeed = 0.0f;
 }
 
 void AGrenadeProjectile::BeginPlay()
