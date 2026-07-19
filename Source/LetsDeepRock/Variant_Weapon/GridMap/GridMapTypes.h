@@ -3,7 +3,11 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Net/Serialization/FastArraySerializer.h"
 #include "GridMapTypes.generated.h"
+
+class AGridMapManager;
+class UGridMapGenerator;
 
 /**
  * 地面格子类型枚举
@@ -84,4 +88,89 @@ struct FGridMapConfig
 	// 高大树木的基础耐久
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
 	int32 LargeTreeHealth = 300;
+};
+
+/** 客户端重建确定性基础地图所需的版本化描述。 */
+USTRUCT(BlueprintType)
+struct FGridMapBaselineState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 SchemaVersion = 1;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 GenerationVersion = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	FGridMapConfig Config;
+
+	UPROPERTY(BlueprintReadOnly)
+	TSubclassOf<UGridMapGenerator> GeneratorClass;
+
+	/** 服务器实际使用的随机种子；客户端不得自行生成。 */
+	UPROPERTY(BlueprintReadOnly)
+	int32 EffectiveSeed = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bGenerated = false;
+};
+
+/** 单格相对确定性基础地图的最新权威状态。 */
+USTRUCT(BlueprintType)
+struct FGridTileDeltaItem : public FFastArraySerializerItem
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 GridX = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 GridY = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	EGridTileType TileType = EGridTileType::Empty;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Health = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 MaxHealth = 0;
+
+	/** 防止旧地图世代的 Delta 被应用到新基础地图。 */
+	UPROPERTY(BlueprintReadOnly)
+	int32 GenerationVersion = 0;
+
+	/** 同一地图世代内由服务器分配的单调递增版本。 */
+	UPROPERTY()
+	uint32 Revision = 0;
+};
+
+/** 只复制发生变化的格子，并为 Late Join 保留每格最新状态。 */
+USTRUCT(BlueprintType)
+struct FGridTileDeltaArray : public FFastArraySerializer
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FGridTileDeltaItem> Items;
+
+	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParams)
+	{
+		return FastArrayDeltaSerialize<FGridTileDeltaItem, FGridTileDeltaArray>(Items, DeltaParams, *this);
+	}
+
+	void PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize);
+	void PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize);
+
+	AGridMapManager* Owner = nullptr;
+};
+
+template<>
+struct TStructOpsTypeTraits<FGridTileDeltaArray> : public TStructOpsTypeTraitsBase2<FGridTileDeltaArray>
+{
+	enum
+	{
+		WithNetDeltaSerializer = true,
+	};
 };

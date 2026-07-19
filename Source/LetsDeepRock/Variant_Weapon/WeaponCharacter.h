@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "GridMap/GridMapTypes.h"
 #include "WeaponCharacter.generated.h"
 
 class USpringArmComponent;
@@ -83,6 +84,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Aim")
 	FVector GetAimDirection() const { return FVector(AimDirection); }
 
+	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
+	UFUNCTION(BlueprintCallable, Category = "GridMap")
+	void RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType);
+
 protected:
 
 	/** 缓存的 ASC 指针（实际拥有者是 PlayerState） */
@@ -133,4 +138,7 @@ protected:
 	/** 当前服务器确认的水平瞄准方向。 */
 	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat|Aim")
 	FVector_NetQuantizeNormal AimDirection = FVector(1.0f, 0.0f, 0.0f);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestBuildTile(FVector_NetQuantize WorldLocation, EGridTileType BuildType);
 };

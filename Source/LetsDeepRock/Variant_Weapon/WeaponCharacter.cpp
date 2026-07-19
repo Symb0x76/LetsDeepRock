@@ -23,6 +23,8 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
+#include "GridMap/GridDamageHelper.h"
+#include "GridMap/GridMapManager.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -252,6 +254,31 @@ void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponCharacter, AimDirection);
+}
+
+void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)
+{
+	if (IsDead())
+	{
+		return;
+	}
+
+	ServerRequestBuildTile(WorldLocation, BuildType);
+}
+
+void AWeaponCharacter::ServerRequestBuildTile_Implementation(
+	FVector_NetQuantize WorldLocation, EGridTileType BuildType)
+{
+	if (IsDead() || !FMath::IsFinite(WorldLocation.X) ||
+		!FMath::IsFinite(WorldLocation.Y) || !FMath::IsFinite(WorldLocation.Z))
+	{
+		return;
+	}
+
+	if (AGridMapManager* Manager = FGridDamageHelper::FindGridMapManager(this))
+	{
+		Manager->TryBuildTileAtWorldLocation(this, WorldLocation, BuildType);
+	}
 }
 
 void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)

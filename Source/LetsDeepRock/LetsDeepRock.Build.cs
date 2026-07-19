@@ -12,6 +12,7 @@ public class LetsDeepRock : ModuleRules
 			"Core",
 			"CoreUObject",
 			"Engine",
+			"NetCore",
 			"InputCore",
 			"EnhancedInput",
 			"AIModule",

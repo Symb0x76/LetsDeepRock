@@ -55,41 +55,56 @@ void UGridMapRenderer::BuildFromMapData(UGridMapData* MapData)
 
 	for (const FGridTileData& Tile : AllTiles)
 	{
-		if (Tile.TileType == EGridTileType::Empty)
-		{
-			continue; // 空地不渲染
-		}
-
-		UHierarchicalInstancedStaticMeshComponent* TargetHISM = GetHISMForType(Tile.TileType);
-		TMap<int32, int32>* TargetMap = GetInstanceMapForType(Tile.TileType);
-
-		if (!TargetHISM || !TargetMap)
-		{
-			continue;
-		}
-
-		// 计算世界位置和缩放
-		const FVector WorldPos = MapData->GridToWorld(Tile.GridX, Tile.GridY);
-		const float Height = GetHeightForType(Tile.TileType);
-
-		// Cube 默认尺寸 100x100x100，需要缩放到 TileSize x TileSize x Height
-		// UE 默认 Cube 边长 = 100 UU（实际半径50，总边长100）
-		const float ScaleXY = Config.TileSize / 100.0f;
-		const float ScaleZ = Height / 100.0f;
-
-		FTransform InstanceTransform;
-		InstanceTransform.SetLocation(FVector(WorldPos.X, WorldPos.Y, Height * 0.5f));
-		InstanceTransform.SetScale3D(FVector(ScaleXY, ScaleXY, ScaleZ));
-
-		const int32 InstanceIndex = TargetHISM->AddInstance(InstanceTransform, /*bWorldSpace=*/true);
-		const int32 Key = Tile.GridY * CachedMapWidth + Tile.GridX;
-		TargetMap->Add(Key, InstanceIndex);
+		AddTileInstance(MapData, Tile);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 渲染完成 - 树木实例=%d，岩石实例=%d，高大树木实例=%d"),
 		TreeHISM ? TreeHISM->GetInstanceCount() : 0,
 		RockHISM ? RockHISM->GetInstanceCount() : 0,
 		LargeTreeHISM ? LargeTreeHISM->GetInstanceCount() : 0);
+}
+
+void UGridMapRenderer::RefreshTileInstance(UGridMapData* MapData, int32 GridX, int32 GridY)
+{
+	if (!MapData)
+	{
+		return;
+	}
+
+	RemoveTileInstance(GridX, GridY);
+	if (const FGridTileData* Tile = MapData->GetTile(GridX, GridY))
+	{
+		AddTileInstance(MapData, *Tile);
+	}
+}
+
+void UGridMapRenderer::AddTileInstance(UGridMapData* MapData, const FGridTileData& Tile)
+{
+	if (!MapData || Tile.TileType == EGridTileType::Empty)
+	{
+		return;
+	}
+
+	UHierarchicalInstancedStaticMeshComponent* TargetHISM = GetHISMForType(Tile.TileType);
+	TMap<int32, int32>* TargetMap = GetInstanceMapForType(Tile.TileType);
+	if (!TargetHISM || !TargetMap)
+	{
+		return;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+	const FVector WorldPos = MapData->GridToWorld(Tile.GridX, Tile.GridY);
+	const float Height = GetHeightForType(Tile.TileType);
+	const float ScaleXY = Config.TileSize / 100.0f;
+	const float ScaleZ = Height / 100.0f;
+
+	FTransform InstanceTransform;
+	InstanceTransform.SetLocation(FVector(WorldPos.X, WorldPos.Y, Height * 0.5f));
+	InstanceTransform.SetScale3D(FVector(ScaleXY, ScaleXY, ScaleZ));
+
+	const int32 InstanceIndex = TargetHISM->AddInstance(InstanceTransform, true);
+	const int32 Key = Tile.GridY * CachedMapWidth + Tile.GridX;
+	TargetMap->Add(Key, InstanceIndex);
 }
 
 void UGridMapRenderer::RemoveTileInstance(int32 GridX, int32 GridY)

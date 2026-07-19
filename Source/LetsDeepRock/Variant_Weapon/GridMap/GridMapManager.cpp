@@ -1,70 +1,147 @@
-// 网格地图系统 - 管理器实现
+// 网格地图系统 - 服务器权威管理器实现
 
 #include "GridMapManager.h"
 #include "GridMapData.h"
 #include "GridMapGenerator.h"
 #include "GridMapRenderer.h"
 #include "NavigationSystem.h"
+#include "Net/UnrealNetwork.h"
+
+void FGridTileDeltaArray::PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize)
+{
+	if (!Owner)
+	{
+		return;
+	}
+
+	for (const int32 Index : AddedIndices)
+	{
+		if (Items.IsValidIndex(Index))
+		{
+			Owner->HandleReplicatedTileDelta(Items[Index]);
+		}
+	}
+}
+
+void FGridTileDeltaArray::PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize)
+{
+	if (!Owner)
+	{
+		return;
+	}
+
+	for (const int32 Index : ChangedIndices)
+	{
+		if (Items.IsValidIndex(Index))
+		{
+			Owner->HandleReplicatedTileDelta(Items[Index]);
+		}
+	}
+}
 
 AGridMapManager::AGridMapManager()
 {
 	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = true;
+	bAlwaysRelevant = true;
 
-	// 创建根组件
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
 	SetRootComponent(Root);
 
-	// 创建渲染器组件
 	MapRenderer = CreateDefaultSubobject<UGridMapRenderer>(TEXT("MapRenderer"));
-
-	// 默认使用 Simple 生成器
 	GeneratorClass = UGridMapGenerator_Simple::StaticClass();
+	TileDeltas.Owner = this;
 }
 
 void AGridMapManager::BeginPlay()
 {
 	Super::BeginPlay();
+	TileDeltas.Owner = this;
 
-	if (bAutoGenerateOnBeginPlay)
+	if (HasAuthority() && bAutoGenerateOnBeginPlay)
 	{
 		GenerateMap();
+	}
+	else if (!HasAuthority() && BaselineState.bGenerated)
+	{
+		BuildBaselineMap(BaselineState);
+		ApplyAllReplicatedDeltas();
 	}
 }
 
 void AGridMapManager::GenerateMap()
 {
-	// 1. 创建地图数据
-	MapData = NewObject<UGridMapData>(this);
-	MapData->Initialize(MapConfig);
-
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 地图数据初始化完成：%dx%d，格子尺寸=%.0f UU"),
-		MapConfig.MapWidth, MapConfig.MapHeight, MapConfig.TileSize);
-
-	// 2. 创建并执行生成器
-	if (GeneratorClass)
+	if (!HasAuthority())
 	{
-		Generator = NewObject<UGridMapGenerator>(this, GeneratorClass);
+		return;
+	}
+
+	FGridMapBaselineState NewState;
+	NewState.SchemaVersion = 1;
+	NewState.GenerationVersion = BaselineState.GenerationVersion + 1;
+	NewState.Config = MapConfig;
+	NewState.GeneratorClass = GeneratorClass;
+	NewState.bGenerated = true;
+
+	Generator = GeneratorClass ? NewObject<UGridMapGenerator>(this, GeneratorClass) : nullptr;
+	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
+	{
+		NewState.EffectiveSeed = SimpleGenerator->Seed != 0
+			? SimpleGenerator->Seed
+			: FMath::RandRange(1, MAX_int32);
+	}
+
+	BaselineState = NewState;
+	TileDeltas.Items.Reset();
+	TileDeltas.MarkArrayDirty();
+	NextTileRevision = 0;
+
+	BuildBaselineMap(BaselineState);
+	ForceNetUpdate();
+}
+
+void AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State)
+{
+	if (!State.bGenerated || State.SchemaVersion != 1)
+	{
+		return;
+	}
+
+	MapData = NewObject<UGridMapData>(this);
+	MapData->Initialize(State.Config);
+	Generator = State.GeneratorClass ? NewObject<UGridMapGenerator>(this, State.GeneratorClass) : nullptr;
+
+	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
+	{
+		SimpleGenerator->Seed = State.EffectiveSeed;
+	}
+
+	if (Generator)
+	{
 		Generator->Generate(MapData);
 	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[GridMap] 未设置 GeneratorClass，地图为全空地。"));
-	}
 
-	// 3. 触发渲染
 	if (MapRenderer)
 	{
 		MapRenderer->BuildFromMapData(MapData);
 	}
 
-	// 4. NavMesh 会自动根据碰撞体更新（HISM 带碰撞）
-	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-	if (NavSys)
+	if (HasAuthority())
 	{
-		NavSys->Build();
+		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+		{
+			NavSys->Build();
+		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 地图生成流程完成。"));
+	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
+		State.GenerationVersion, State.EffectiveSeed);
+}
+
+void AGridMapManager::OnRep_BaselineState()
+{
+	BuildBaselineMap(BaselineState);
+	ApplyAllReplicatedDeltas();
 }
 
 bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGridTileData& OutTileData) const
@@ -74,13 +151,14 @@ bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGrid
 		return false;
 	}
 
-	int32 X, Y;
-	if (!MapData->WorldToGrid(WorldLocation, X, Y))
+	int32 GridX = 0;
+	int32 GridY = 0;
+	if (!MapData->WorldToGrid(WorldLocation, GridX, GridY))
 	{
 		return false;
 	}
 
-	const FGridTileData* Tile = MapData->GetTile(X, Y);
+	const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
 	if (!Tile)
 	{
 		return false;
@@ -92,81 +170,184 @@ bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGrid
 
 bool AGridMapManager::DamageTile(int32 GridX, int32 GridY, int32 DamageAmount)
 {
-	if (!MapData)
+	if (!HasAuthority() || !MapData || DamageAmount <= 0)
 	{
 		return false;
 	}
 
-	FGridTileData* Tile = MapData->GetTileMutable(GridX, GridY);
-	if (!Tile)
+	const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+	if (!Tile || !Tile->IsDestructible())
 	{
 		return false;
 	}
 
-	// 不可破坏的格子直接返回
-	if (!Tile->IsDestructible())
-	{
-		return false;
-	}
+	const int32 NewHealth = FMath::Max(0, Tile->Health - DamageAmount);
+	const bool bDestroyed = NewHealth == 0;
+	CommitTileState(GridX, GridY,
+		bDestroyed ? EGridTileType::Empty : Tile->TileType,
+		NewHealth,
+		bDestroyed ? 0 : Tile->MaxHealth);
 
-	// 扣血
-	Tile->Health = FMath::Max(0, Tile->Health - DamageAmount);
-
-	// 判断是否被破坏
-	if (Tile->Health <= 0)
-	{
-		// 破坏：变为空地
-		Tile->TileType = EGridTileType::Empty;
-		Tile->Health = 0;
-		Tile->MaxHealth = 0;
-
-		OnTileDestroyedInternal(GridX, GridY);
-		OnTileDestroyed.Broadcast(GridX, GridY);
-
-		UE_LOG(LogTemp, Log, TEXT("[GridMap] 格子 (%d, %d) 被破坏，变为空地。"), GridX, GridY);
-		return true;
-	}
-
-	return false;
+	return bDestroyed;
 }
 
 bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, int32 DamageAmount)
 {
-	if (!MapData)
+	if (!HasAuthority() || !MapData)
 	{
 		return false;
 	}
 
-	int32 X, Y;
-	if (!MapData->WorldToGrid(WorldLocation, X, Y))
-	{
-		return false;
-	}
-
-	return DamageTile(X, Y, DamageAmount);
+	int32 GridX = 0;
+	int32 GridY = 0;
+	return MapData->WorldToGrid(WorldLocation, GridX, GridY)
+		&& DamageTile(GridX, GridY, DamageAmount);
 }
 
-void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
+bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
+	const FVector& WorldLocation, EGridTileType BuildType)
 {
-	// 移除渲染实例（同时移除碰撞，因为 HISM 碰撞和实例绑定）
-	if (MapRenderer)
+	const bool bValidBuildType = BuildType == EGridTileType::Tree ||
+		BuildType == EGridTileType::Rock || BuildType == EGridTileType::LargeTree;
+	if (!HasAuthority() || !MapData || !RequestingActor || !bValidBuildType ||
+		FVector::DistSquared2D(RequestingActor->GetActorLocation(), WorldLocation) > FMath::Square(MaxBuildDistance))
 	{
-		MapRenderer->RemoveTileInstance(GridX, GridY);
+		return false;
 	}
 
-	// 局部更新 NavMesh
-	if (MapData)
+	int32 GridX = 0;
+	int32 GridY = 0;
+	if (!MapData->WorldToGrid(WorldLocation, GridX, GridY))
 	{
-		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-		if (NavSys)
+		return false;
+	}
+
+	const FGridTileData* ExistingTile = MapData->GetTile(GridX, GridY);
+	if (!ExistingTile || ExistingTile->TileType != EGridTileType::Empty)
+	{
+		return false;
+	}
+
+	const int32 MaxHealth = GetDefaultHealthForType(BuildType);
+	CommitTileState(GridX, GridY, BuildType, MaxHealth, MaxHealth);
+	return true;
+}
+
+void AGridMapManager::CommitTileState(int32 GridX, int32 GridY, EGridTileType TileType,
+	int32 Health, int32 MaxHealth)
+{
+	if (!HasAuthority() || !MapData || !MapData->IsValidCoord(GridX, GridY))
+	{
+		return;
+	}
+
+	FGridTileDeltaItem* Delta = TileDeltas.Items.FindByPredicate(
+		[GridX, GridY](const FGridTileDeltaItem& Item)
 		{
-			// 标记局部区域脏，触发异步 NavMesh 重建
-			const FBox DirtyBounds(
-				WorldPos - FVector(MapData->GetConfig().TileSize),
-				WorldPos + FVector(MapData->GetConfig().TileSize)
-			);
-			NavSys->AddDirtyArea(DirtyBounds, ENavigationDirtyFlag::All);
+			return Item.GridX == GridX && Item.GridY == GridY;
+		});
+
+	if (!Delta)
+	{
+		Delta = &TileDeltas.Items.AddDefaulted_GetRef();
+		Delta->GridX = GridX;
+		Delta->GridY = GridY;
+	}
+
+	Delta->TileType = TileType;
+	Delta->Health = FMath::Clamp(Health, 0, FMath::Max(0, MaxHealth));
+	Delta->MaxHealth = FMath::Max(0, MaxHealth);
+	Delta->GenerationVersion = BaselineState.GenerationVersion;
+	Delta->Revision = ++NextTileRevision;
+	TileDeltas.MarkItemDirty(*Delta);
+
+	ApplyTileState(*Delta);
+	ForceNetUpdate();
+}
+
+void AGridMapManager::HandleReplicatedTileDelta(const FGridTileDeltaItem& Delta)
+{
+	if (!HasAuthority() && MapData && Delta.GenerationVersion == BaselineState.GenerationVersion)
+	{
+		ApplyTileState(Delta);
+	}
+}
+
+void AGridMapManager::ApplyAllReplicatedDeltas()
+{
+	if (!MapData)
+	{
+		return;
+	}
+
+	for (const FGridTileDeltaItem& Delta : TileDeltas.Items)
+	{
+		if (Delta.GenerationVersion == BaselineState.GenerationVersion)
+		{
+			ApplyTileState(Delta);
 		}
 	}
+}
+
+void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
+{
+	FGridTileData* Tile = MapData ? MapData->GetTileMutable(Delta.GridX, Delta.GridY) : nullptr;
+	if (!Tile)
+	{
+		return;
+	}
+
+	const EGridTileType PreviousType = Tile->TileType;
+	const bool bTypeChanged = PreviousType != Delta.TileType;
+	Tile->TileType = Delta.TileType;
+	Tile->Health = Delta.Health;
+	Tile->MaxHealth = Delta.MaxHealth;
+
+	if (bTypeChanged && MapRenderer)
+	{
+		MapRenderer->RefreshTileInstance(MapData, Delta.GridX, Delta.GridY);
+		MarkTileNavigationDirty(Delta.GridX, Delta.GridY);
+	}
+
+	OnTileChanged.Broadcast(Delta.GridX, Delta.GridY, Delta.TileType);
+	if (PreviousType != EGridTileType::Empty && Delta.TileType == EGridTileType::Empty)
+	{
+		OnTileDestroyed.Broadcast(Delta.GridX, Delta.GridY);
+	}
+}
+
+void AGridMapManager::MarkTileNavigationDirty(int32 GridX, int32 GridY)
+{
+	if (!HasAuthority() || !MapData)
+	{
+		return;
+	}
+
+	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	{
+		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
+		const FVector Extent(MapData->GetConfig().TileSize);
+		NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
+	}
+}
+
+int32 AGridMapManager::GetDefaultHealthForType(EGridTileType TileType) const
+{
+	const FGridMapConfig& Config = BaselineState.Config;
+	switch (TileType)
+	{
+	case EGridTileType::Tree:
+		return Config.TreeHealth;
+	case EGridTileType::LargeTree:
+		return Config.LargeTreeHealth;
+	default:
+		return 0;
+	}
+}
+
+void AGridMapManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AGridMapManager, BaselineState);
+	DOREPLIFETIME(AGridMapManager, TileDeltas);
 }
