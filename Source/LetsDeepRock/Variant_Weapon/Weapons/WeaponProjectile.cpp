@@ -9,6 +9,7 @@
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
 #include "GridMap/GridDamageHelper.h"
+#include "Net/UnrealNetwork.h"
 
 AWeaponProjectile::AWeaponProjectile()
 {
@@ -16,6 +17,7 @@ AWeaponProjectile::AWeaponProjectile()
 
 	// 复制：投射物需要从服务端复制到客户端
 	bReplicates = true;
+	SetReplicateMovement(true);
 
 	// 生命周期：超时自动销毁
 	InitialLifeSpan = 3.0f;
@@ -48,11 +50,7 @@ void AWeaponProjectile::BeginPlay()
 	// 使用 Native Tag 代替字符串查找
 	DamageTag = TAG_Data_Damage;
 
-	// 忽略射击者自身
-	if (InstigatorActor.IsValid())
-	{
-		CollisionSphere->IgnoreActorWhenMoving(InstigatorActor.Get(), true);
-	}
+	ApplyInitializationState();
 
 	// 绑定碰撞事件
 	if (CollisionSphere)
@@ -66,28 +64,59 @@ void AWeaponProjectile::BeginPlay()
 	}
 }
 
-void AWeaponProjectile::InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags, bool bInPenetratesTerrain)
+void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
+	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
+	bool bInPenetratesTerrain, float InProjectileSpeed)
 {
-	DamageEffectClass = InDamageGE;
-	DamageValue = InDamage;
-	InstigatorActor = InInstigator;
-	DamageTags = InDamageTags;
-	bPenetratesTerrain = bInPenetratesTerrain;
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	InitializationState.DamageEffectClass = InDamageGE;
+	InitializationState.DamageValue = InDamage;
+	InitializationState.InstigatorActor = InInstigator;
+	InitializationState.DamageTags = InDamageTags;
+	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
+	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
+	InitializationState.bInitialized = true;
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
 	SetOwner(InInstigator);
+	ApplyInitializationState();
 }
 
-void AWeaponProjectile::SetProjectileSpeed(float InSpeed)
+void AWeaponProjectile::OnRep_InitializationState()
 {
-	if (ProjectileMovement && InSpeed > 0.0f)
+	ApplyInitializationState();
+}
+
+void AWeaponProjectile::ApplyInitializationState()
+{
+	if (!InitializationState.bInitialized)
 	{
-		ProjectileMovement->InitialSpeed = InSpeed;
-		ProjectileMovement->MaxSpeed = InSpeed;
-		// 速度已设置，需要重新初始化移动方向（Velocity = Forward * Speed）
-		ProjectileMovement->SetVelocityInLocalSpace(FVector(InSpeed, 0.f, 0.f));
+		return;
 	}
+
+	if (CollisionSphere && InitializationState.InstigatorActor)
+	{
+		CollisionSphere->IgnoreActorWhenMoving(InitializationState.InstigatorActor, true);
+	}
+
+	if (ProjectileMovement && InitializationState.ProjectileSpeed > 0.0f)
+	{
+		ProjectileMovement->InitialSpeed = InitializationState.ProjectileSpeed;
+		ProjectileMovement->MaxSpeed = InitializationState.ProjectileSpeed;
+		// 速度已设置，需要重新初始化移动方向（Velocity = Forward * Speed）
+		ProjectileMovement->SetVelocityInLocalSpace(FVector(InitializationState.ProjectileSpeed, 0.f, 0.f));
+	}
+}
+
+void AWeaponProjectile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AWeaponProjectile, InitializationState);
 }
 
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -120,19 +149,19 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	}
 
 	// 投射物撞到 WorldStatic（地形方块）时，尝试施加地形伤害
-	if (DamageValue > 0.0f)
+	if (InitializationState.DamageValue > 0.0f)
 	{
 		const FVector HitLocation = ImpactResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(ImpactResult.ImpactPoint);
-		FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation, DamageValue, DamageTags);
+		FGridDamageHelper::TryApplyTerrainDamage(this, HitLocation,
+			InitializationState.DamageValue, InitializationState.DamageTags);
 	}
 
 	// 根据穿透设置决定是否销毁
-	if (bPenetratesTerrain)
+	if (InitializationState.bPenetratesTerrain)
 	{
 		// 穿透模式：恢复速度继续飞行
 		if (ProjectileMovement)
 		{
-			const FVector Dir = GetActorForwardVector();
 			ProjectileMovement->SetVelocityInLocalSpace(FVector(ProjectileMovement->MaxSpeed, 0.f, 0.f));
 		}
 	}
@@ -144,7 +173,7 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 
 void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 {
-	if (!DamageEffectClass || DamageValue <= 0.0f)
+	if (!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
 	{
 		return;
 	}
@@ -164,9 +193,9 @@ void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 
 	// 获取射击者（Source）的 ASC，用于正确的伤害归因
 	UAbilitySystemComponent* SourceASC = nullptr;
-	if (InstigatorActor.IsValid())
+	if (InitializationState.InstigatorActor)
 	{
-		if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InstigatorActor.Get()))
+		if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InitializationState.InstigatorActor))
 		{
 			SourceASC = SourceASCInterface->GetAbilitySystemComponent();
 		}
@@ -178,17 +207,19 @@ void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 
 	// 构建 EffectContext：携带因果信息（谁射的、用什么射的）
 	FGameplayEffectContextHandle Context = SpecOwnerASC->MakeEffectContext();
-	Context.AddInstigator(InstigatorActor.Get(), this);
+	Context.AddInstigator(InitializationState.InstigatorActor, this);
 
 	// 创建 GE Spec
-	FGameplayEffectSpecHandle SpecHandle = SpecOwnerASC->MakeOutgoingSpec(DamageEffectClass, 1.0f, Context);
+	FGameplayEffectSpecHandle SpecHandle = SpecOwnerASC->MakeOutgoingSpec(
+		InitializationState.DamageEffectClass, 1.0f, Context);
 	if (!SpecHandle.IsValid())
 	{
 		return;
 	}
 
 	// 注入 SetByCaller 伤害值
-	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, DamageValue);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
+		SpecHandle, DamageTag, InitializationState.DamageValue);
 
 	// 对目标应用伤害（从 Source 施加到 Target）
 	SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);

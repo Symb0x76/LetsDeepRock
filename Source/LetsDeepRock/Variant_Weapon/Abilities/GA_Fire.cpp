@@ -166,24 +166,25 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	// 俯视角射击：保持投射物水平飞行（Pitch=0）
 	SpawnRotation.Pitch = 0.0f;
 
-	// 生成投射物
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = Avatar;
-	SpawnParams.Instigator = Cast<APawn>(Avatar);
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
-		WeaponData->ProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
+	// Deferred Spawn 保证初始化状态在 BeginPlay 前写入。
+	const FTransform SpawnTransform(SpawnRotation, SpawnLocation);
+	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActorDeferred<AWeaponProjectile>(
+		WeaponData->ProjectileClass,
+		SpawnTransform,
+		Avatar,
+		Cast<APawn>(Avatar),
+		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 
 	if (Projectile)
 	{
-		// 设置伤害参数和投射物速度（包含 DamageTags 和穿透设置）
-		Projectile->InitDamageParams(
+		// BeginPlay 前一次写入全部初始化参数，随后由服务器整体复制。
+		Projectile->InitializeProjectile(
 			WeaponData->DamageEffectClass,
 			WeaponData->BaseDamage,
 			Avatar,
 			WeaponData->DamageTags,
-			WeaponData->bProjectilePenetratesTerrain);
-		Projectile->SetProjectileSpeed(WeaponData->ProjectileSpeed);
+			WeaponData->bProjectilePenetratesTerrain,
+			WeaponData->ProjectileSpeed);
+		Projectile->FinishSpawning(SpawnTransform);
 	}
 }

@@ -11,6 +11,34 @@ class USphereComponent;
 class UProjectileMovementComponent;
 class UGameplayEffect;
 
+/** 投射物生成时由服务器确定、随后整体复制的初始化状态。 */
+USTRUCT(BlueprintType)
+struct FWeaponProjectileInitializationState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	TSubclassOf<UGameplayEffect> DamageEffectClass;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float DamageValue = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	TObjectPtr<AActor> InstigatorActor = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	FGameplayTagContainer DamageTags;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float ProjectileSpeed = 3000.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	bool bPenetratesTerrain = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	bool bInitialized = false;
+};
+
 /**
  *  武器投射物基类
  *
@@ -30,11 +58,12 @@ public:
 
 	AWeaponProjectile();
 
-	/** 设置伤害参数（由 GA_Fire 在 Spawn 后立即调用） */
-	void InitDamageParams(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage, AActor* InInstigator, const FGameplayTagContainer& InDamageTags, bool bInPenetratesTerrain = false);
+	/** Deferred Spawn 完成前由服务器调用，一次写入完整初始化状态。 */
+	void InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
+		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
+		bool bInPenetratesTerrain, float InProjectileSpeed);
 
-	/** 设置投射物速度（由 GA_Fire 在 Spawn 后调用，覆盖构造函数默认值） */
-	void SetProjectileSpeed(float InSpeed);
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
 
@@ -48,26 +77,18 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
 
-	/** 伤害 GE 类（由外部设置） */
-	UPROPERTY()
-	TSubclassOf<UGameplayEffect> DamageEffectClass;
-
-	/** 伤害值（由外部设置，对应 SetByCaller Data.Damage） */
-	UPROPERTY()
-	float DamageValue = 0.0f;
-
-	/** 射击发起者（用于 EffectContext 的因果链） */
-	UPROPERTY()
-	TWeakObjectPtr<AActor> InstigatorActor;
-
-	/** 伤害携带的 Tags（用于地形伤害等类型判定） */
-	FGameplayTagContainer DamageTags;
-
-	/** 是否穿透地形障碍物 */
-	bool bPenetratesTerrain = false;
+	/** 初始化参数作为单个复制快照发送，避免客户端观察到字段组合不一致。 */
+	UPROPERTY(ReplicatedUsing = OnRep_InitializationState, BlueprintReadOnly, Category = "Projectile")
+	FWeaponProjectileInitializationState InitializationState;
 
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;
+
+	UFUNCTION()
+	void OnRep_InitializationState();
+
+	/** 将初始化快照应用到本地移动组件和碰撞忽略列表。 */
+	void ApplyInitializationState();
 
 	/** 命中处理（碰撞回调） */
 	UFUNCTION()
