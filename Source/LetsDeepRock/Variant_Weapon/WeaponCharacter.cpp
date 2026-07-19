@@ -553,7 +553,19 @@ void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
 	{
 		if (!IsDead() && AbilitySystemComponent && GrenadeAbilityClass)
 		{
-			AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
+			FVector TargetPoint = FVector::ZeroVector;
+			const bool bHasTarget = GetMouseGroundPosition(TargetPoint);
+
+			if (!HasAuthority())
+			{
+				ServerThrowGrenade(TargetPoint, bHasTarget);
+			}
+			else
+			{
+				PendingGrenadeTarget = TargetPoint;
+				bHasPendingGrenadeTarget = bHasTarget;
+				AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
+			}
 		}
 		return;
 	}
