@@ -64,6 +64,7 @@ public:
 
 	//~ AActor
 	virtual void Tick(float DeltaTime) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
@@ -77,6 +78,10 @@ public:
 
 	/** 添加输入绑定 */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
+
+	/** 返回服务器确认并复制的水平瞄准方向；射击和近战统一读取此值。 */
+	UFUNCTION(BlueprintPure, Category = "Combat|Aim")
+	FVector GetAimDirection() const { return FVector(AimDirection); }
 
 protected:
 
@@ -114,4 +119,18 @@ protected:
 
 	/** 每 Tick 将角色朝向旋转到鼠标在地面的投影位置 */
 	void RotateToMouseCursor(float DeltaTime);
+
+	/** 客户端提交本地瞄准意图，服务器校验后写入权威方向。 */
+	UFUNCTION(Server, Unreliable)
+	void ServerSetAimDirection(FVector_NetQuantizeNormal NewAimDirection);
+
+	/** 服务器写入瞄准方向并同步角色表现。 */
+	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
+
+	UFUNCTION()
+	void OnRep_AimDirection();
+
+	/** 当前服务器确认的水平瞄准方向。 */
+	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat|Aim")
+	FVector_NetQuantizeNormal AimDirection = FVector(1.0f, 0.0f, 0.0f);
 };

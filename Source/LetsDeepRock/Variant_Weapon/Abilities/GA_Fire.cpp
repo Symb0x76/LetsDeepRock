@@ -10,6 +10,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponCharacter.h"
 
 UGA_Fire::UGA_Fire()
 {
@@ -139,9 +140,12 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 		return;
 	}
 
-	// 确定生成位置：优先用武器 Actor 的枪口，否则用角色位置+朝向
+	// 确定生成位置：优先用武器 Actor 的枪口，否则用角色位置。
 	FVector SpawnLocation;
 	FRotator SpawnRotation;
+	const FVector AimDirection = Cast<AWeaponCharacter>(Avatar)
+		? Cast<AWeaponCharacter>(Avatar)->GetAimDirection().GetSafeNormal2D()
+		: Avatar->GetActorForwardVector().GetSafeNormal2D();
 
 	AWeaponBase* WeaponActor = GetWeaponActor(ActorInfo);
 	if (WeaponActor)
@@ -151,10 +155,13 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	}
 	else
 	{
-		// 后备：从角色位置 + 角色自身朝向（俯视角中角色面向鼠标，不依赖 ControlRotation）
+		// 后备：从角色位置生成，方向统一使用服务器确认的 AimDirection。
 		SpawnLocation = Avatar->GetActorLocation() + FVector(0.f, 0.f, 50.f);
-		SpawnRotation = Avatar->GetActorRotation();
+		SpawnRotation = AimDirection.Rotation();
 	}
+
+	// 即使武器枪口自身旋转滞后，投射物仍以服务器确认的瞄准方向飞行。
+	SpawnRotation = AimDirection.Rotation();
 
 	// 俯视角射击：保持投射物水平飞行（Pitch=0）
 	SpawnRotation.Pitch = 0.0f;

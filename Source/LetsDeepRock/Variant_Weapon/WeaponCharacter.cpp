@@ -22,6 +22,7 @@
 #include "Data/GameDataSubsystem.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -194,7 +195,63 @@ void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 	const FRotator CurrentRotation = GetActorRotation();
 	const FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, 15.0f);
 
-	SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
+	const FVector NewAimDirection = FVector(NewRotation.Vector()).GetSafeNormal2D();
+	if (HasAuthority())
+	{
+		SetAimDirectionAuthoritative(NewAimDirection);
+	}
+	else
+	{
+		// 本地先更新表现，再把瞄准意图发送给服务器；战斗判定不会读取客户端旋转。
+		SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
+		ServerSetAimDirection(NewAimDirection);
+	}
+}
+
+void AWeaponCharacter::SetAimDirectionAuthoritative(const FVector& NewAimDirection)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const FVector SafeDirection = NewAimDirection.GetSafeNormal2D();
+	if (SafeDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	AimDirection = SafeDirection;
+	SetActorRotation(FRotator(0.0f, SafeDirection.Rotation().Yaw, 0.0f));
+	ForceNetUpdate();
+}
+
+void AWeaponCharacter::ServerSetAimDirection_Implementation(FVector_NetQuantizeNormal NewAimDirection)
+{
+	// 服务器只接受有限、非零的水平向量，避免客户端提交非法瞄准方向。
+	const FVector Candidate = FVector(NewAimDirection);
+	if (!FMath::IsFinite(Candidate.X) || !FMath::IsFinite(Candidate.Y) ||
+		!FMath::IsFinite(Candidate.Z) || Candidate.SizeSquared2D() < KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	SetAimDirectionAuthoritative(Candidate);
+}
+
+void AWeaponCharacter::OnRep_AimDirection()
+{
+	const FVector SafeDirection = FVector(AimDirection).GetSafeNormal2D();
+	if (!SafeDirection.IsNearlyZero())
+	{
+		SetActorRotation(FRotator(0.0f, SafeDirection.Rotation().Yaw, 0.0f));
+	}
+}
+
+void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AWeaponCharacter, AimDirection);
 }
 
 void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
