@@ -37,6 +37,10 @@
 		{
 			"Name": "OnlineSubsystemNull",
 			"Enabled": true
+		},
+		{
+			"Name": "LevelSnapshots",
+			"Enabled": true
 		}
 	]
 }
