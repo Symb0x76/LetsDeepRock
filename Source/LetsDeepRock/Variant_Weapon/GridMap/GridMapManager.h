@@ -55,6 +55,12 @@ public:
 	bool DamageTile(int32 GridX, int32 GridY, int32 DamageAmount);
 	bool DamageTileAtWorldLocation(const FVector& WorldLocation, int32 DamageAmount);
 
+	/** 仅服务器对圆形范围内格子施加线性距离衰减伤害。 */
+	bool DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage);
+
+	/** 仅服务器对轴对齐矩形范围内格子施加无衰减伤害。 */
+	bool DamageTilesInRect(const FVector& Center, float HalfWidth, float HalfHeight, float MaxDamage);
+
 	/** 服务器验证玩家距离、格子状态和建造类型后提交建造 Delta。 */
 	bool TryBuildTileAtWorldLocation(AActor* RequestingActor, const FVector& WorldLocation, EGridTileType BuildType);
 

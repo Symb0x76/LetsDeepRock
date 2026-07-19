@@ -123,7 +123,14 @@ class UnrealConnection:
             UE 编辑器返回的执行结果（dict 或 str）
         """
         if not self.python_exec.is_connected():
-            await self.python_exec.connect()
+            connected = await self.python_exec.connect()
+            if not connected:
+                return {
+                    "success": False,
+                    "result": "未连接到 UE 编辑器，Python Remote Exec 连接失败",
+                    "command": code,
+                    "output": [],
+                }
         return await self.python_exec.execute(code)
 
     async def rc_call(
@@ -179,13 +186,29 @@ def _register_ping_tool():
 
         返回当前双通道（Python Remote Exec + Remote Control API）的连接状况，
         用于验证 MCP Server 是否能正常与 UE 编辑器通信。
+
+        如果两个通道均未连接，会主动尝试一次连接后再报告状态；
+        如果已有任一通道可用，不会重复连接。
         """
+        # 已有任一通道可用，不重复连接
+        if connection.python_available or connection.rc_available:
+            python_status = "已连接" if connection.python_available else "未连接"
+            rc_status = "已连接" if connection.rc_available else "未连接"
+            return (
+                "Unreal MCP Server 连接正常\n"
+                f"  - Python Remote Exec: {python_status}\n"
+                f"  - Remote Control API: {rc_status}"
+            )
+
+        # 两个通道都不可用 — 主动尝试连接
+        await connection.ensure_connected()
+
         python_status = "已连接" if connection.python_available else "未连接"
         rc_status = "已连接" if connection.rc_available else "未连接"
 
         if connection.python_available or connection.rc_available:
             return (
-                "Unreal MCP Server 连接正常\n"
+                "Unreal MCP Server 连接成功\n"
                 f"  - Python Remote Exec: {python_status}\n"
                 f"  - Remote Control API: {rc_status}"
             )

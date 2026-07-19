@@ -2,6 +2,7 @@
 
 #include "WeaponProjectile.h"
 #include "Components/SphereComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "GameFramework/ProjectileMovementComponent.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
@@ -31,6 +32,11 @@ AWeaponProjectile::AWeaponProjectile()
 	CollisionSphere->SetCollisionResponseToAllChannels(ECR_Ignore);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_Pawn, ECR_Overlap);
 	CollisionSphere->SetCollisionResponseToChannel(ECC_WorldStatic, ECR_Block);
+
+	// 网格体（纯视觉，无碰撞）
+	ProjectileMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ProjectileMesh"));
+	ProjectileMesh->SetupAttachment(CollisionSphere);
+	ProjectileMesh->SetCollisionProfileName(FName("NoCollision"));
 
 	// 投射物移动
 	ProjectileMovement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("ProjectileMovement"));

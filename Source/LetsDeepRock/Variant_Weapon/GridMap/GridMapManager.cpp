@@ -204,6 +204,94 @@ bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, in
 		&& DamageTile(GridX, GridY, DamageAmount);
 }
 
+bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage)
+{
+	if (!HasAuthority() || !MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+	int32 CenterX = 0;
+	int32 CenterY = 0;
+	MapData->WorldToGrid(Center, CenterX, CenterY);
+	const int32 GridRadius = FMath::CeilToInt(Radius / Config.TileSize) + 1;
+	const float RadiusSquared = FMath::Square(Radius);
+	bool bAnyDamage = false;
+
+	for (int32 GridY = FMath::Max(0, CenterY - GridRadius);
+		GridY <= FMath::Min(Config.MapHeight - 1, CenterY + GridRadius); ++GridY)
+	{
+		for (int32 GridX = FMath::Max(0, CenterX - GridRadius);
+			GridX <= FMath::Min(Config.MapWidth - 1, CenterX + GridRadius); ++GridX)
+		{
+			const float DistanceSquared = FVector::DistSquared2D(MapData->GridToWorld(GridX, GridY), Center);
+			if (DistanceSquared > RadiusSquared)
+			{
+				continue;
+			}
+
+			const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+			if (!Tile || !Tile->IsDestructible())
+			{
+				continue;
+			}
+
+			const float Attenuation = 1.0f - FMath::Sqrt(DistanceSquared) / Radius;
+			const int32 DamageAmount = FMath::RoundToInt(MaxDamage * FMath::Clamp(Attenuation, 0.0f, 1.0f));
+			if (DamageAmount > 0)
+			{
+				DamageTile(GridX, GridY, DamageAmount);
+				bAnyDamage = true;
+			}
+		}
+	}
+
+	return bAnyDamage;
+}
+
+bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth,
+	float HalfHeight, float MaxDamage)
+{
+	if (!HasAuthority() || !MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	const FGridMapConfig& Config = MapData->GetConfig();
+	int32 CenterX = 0;
+	int32 CenterY = 0;
+	MapData->WorldToGrid(Center, CenterX, CenterY);
+	const int32 GridHalfWidth = FMath::CeilToInt(HalfWidth / Config.TileSize);
+	const int32 GridHalfHeight = FMath::CeilToInt(HalfHeight / Config.TileSize);
+	const int32 DamageAmount = FMath::RoundToInt(MaxDamage);
+	bool bAnyDamage = false;
+
+	for (int32 GridY = FMath::Max(0, CenterY - GridHalfHeight);
+		GridY <= FMath::Min(Config.MapHeight - 1, CenterY + GridHalfHeight); ++GridY)
+	{
+		for (int32 GridX = FMath::Max(0, CenterX - GridHalfWidth);
+			GridX <= FMath::Min(Config.MapWidth - 1, CenterX + GridHalfWidth); ++GridX)
+		{
+			const FVector TileCenter = MapData->GridToWorld(GridX, GridY);
+			if (FMath::Abs(TileCenter.X - Center.X) > HalfWidth ||
+				FMath::Abs(TileCenter.Y - Center.Y) > HalfHeight)
+			{
+				continue;
+			}
+
+			const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+			if (Tile && Tile->IsDestructible() && DamageAmount > 0)
+			{
+				DamageTile(GridX, GridY, DamageAmount);
+				bAnyDamage = true;
+			}
+		}
+	}
+
+	return bAnyDamage;
+}
+
 bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
 	const FVector& WorldLocation, EGridTileType BuildType)
 {

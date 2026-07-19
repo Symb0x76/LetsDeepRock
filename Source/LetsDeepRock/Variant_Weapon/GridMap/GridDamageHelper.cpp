@@ -56,3 +56,58 @@ bool FGridDamageHelper::HasTerrainDamageTag(const FGameplayTagContainer& DamageT
 {
 	return DamageTags.HasTag(TAG_Damage_Terrain);
 }
+
+bool FGridDamageHelper::TryApplyCircularTerrainDamage(
+	const UObject* WorldContext,
+	const FVector& Center,
+	float Radius,
+	float MaxDamage,
+	const FGameplayTagContainer& DamageTags)
+{
+	// 仅 Damage.Terrain 标签的伤害才能破坏地形
+	if (!HasTerrainDamageTag(DamageTags))
+	{
+		return false;
+	}
+
+	if (Radius <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	AGridMapManager* Manager = FindGridMapManager(WorldContext);
+	if (!Manager)
+	{
+		return false;
+	}
+
+	return Manager->DamageTilesInRadius(Center, Radius, MaxDamage);
+}
+
+bool FGridDamageHelper::TryApplyRectTerrainDamage(
+	const UObject* WorldContext,
+	const FVector& Center,
+	float HalfWidth,
+	float HalfHeight,
+	float MaxDamage,
+	const FGameplayTagContainer& DamageTags)
+{
+	// 仅 Damage.Terrain 标签的伤害才能破坏地形
+	if (!HasTerrainDamageTag(DamageTags))
+	{
+		return false;
+	}
+
+	if (HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
+	{
+		return false;
+	}
+
+	AGridMapManager* Manager = FindGridMapManager(WorldContext);
+	if (!Manager)
+	{
+		return false;
+	}
+
+	return Manager->DamageTilesInRect(Center, HalfWidth, HalfHeight, MaxDamage);
+}
