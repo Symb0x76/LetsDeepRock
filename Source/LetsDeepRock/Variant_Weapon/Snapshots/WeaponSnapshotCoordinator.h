@@ -2,8 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/GameInstanceSubsystem.h"
-#include "WeaponMatchSnapshot.h"
 #include "WeaponSnapshotCoordinator.generated.h"
+
+struct FWeaponMatchSnapshot;
 
 /** 服务器权威快照入口；负责捕获一致性边界和恢复前校验。 */
 UCLASS()
@@ -23,7 +24,8 @@ public:
 	bool ValidateSnapshot(const FWeaponMatchSnapshot& Snapshot, FString& OutError) const;
 
 private:
-	bool CapturePlayers(UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const;
+	bool CapturePlayers(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const;
+	bool CaptureNPCs(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const;
 	static bool IsFiniteVector(const FVector& Value);
 
 	/** 当前服务器战局身份；跨地图保留，不能在每次 Capture 时重新生成。 */

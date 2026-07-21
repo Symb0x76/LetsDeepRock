@@ -5,6 +5,12 @@
 #include "WeaponGameState.h"
 #include "WeaponPlayerState.h"
 #include "WeaponCharacter.h"
+#include "WeaponNPC.h"
+#include "WeaponMatchSnapshot.h"
+#include "WeaponSnapshotRegistry.h"
+#include "EngineUtils.h"
+#include "Engine/GameInstance.h"
+#include "UObject/Package.h"
 
 bool UWeaponSnapshotCoordinator::ShouldCreateSubsystem(UObject* Outer) const
 {
@@ -49,7 +55,9 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 		return false;
 	}
 
-	if (!CapturePlayers(World, Candidate, OutError) || !ValidateSnapshot(Candidate, OutError))
+	if (!CapturePlayers(World, Candidate, OutError)
+		|| !CaptureNPCs(World, Candidate, OutError)
+		|| !ValidateSnapshot(Candidate, OutError))
 	{
 		return false;
 	}
@@ -58,7 +66,7 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::CapturePlayers(UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
+bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
 {
 	const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
 	for (APlayerState* BasePlayerState : GameState->PlayerArray)
@@ -94,6 +102,40 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(UWorld* World, FWeaponMatchSnaps
 		}
 	}
 
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
+{
+	const UWeaponSnapshotRegistry* Registry = World->GetSubsystem<UWeaponSnapshotRegistry>();
+	if (!Registry)
+	{
+		OutError = TEXT("服务器 World 没有 Stable ID Registry。");
+		return false;
+	}
+
+	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
+	{
+		const AWeaponNPC* Enemy = *It;
+		FWeaponStableEntityId StableEnemyId;
+		if (!Registry->FindId(Enemy, StableEnemyId))
+		{
+			OutError = FString::Printf(TEXT("Enemy %s 没有注册 Stable ID。"), *Enemy->GetName());
+			return false;
+		}
+
+		FWeaponEnemySnapshot& EnemySnapshot = Snapshot.World.LivingEnemies.AddDefaulted_GetRef();
+		EnemySnapshot.StableEnemyId = StableEnemyId;
+		EnemySnapshot.EnemyClass = FSoftClassPath(Enemy->GetClass());
+		EnemySnapshot.Location = Enemy->GetActorLocation();
+		EnemySnapshot.Rotation = Enemy->GetActorRotation();
+		EnemySnapshot.Velocity = Enemy->GetVelocity();
+		if (!IsFiniteVector(EnemySnapshot.Location) || !IsFiniteVector(EnemySnapshot.Velocity))
+		{
+			OutError = FString::Printf(TEXT("Enemy %s location/velocity includes NaN or Infinity"), *Enemy->GetName());
+			return false;
+		}
+	}
 	return true;
 }
 
