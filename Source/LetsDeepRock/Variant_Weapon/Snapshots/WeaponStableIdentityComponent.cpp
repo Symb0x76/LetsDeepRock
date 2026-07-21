@@ -21,7 +21,7 @@ void UWeaponStableIdentityComponent::BeginPlay()
 
 	if (!AllocateIfNeeded() || !RegisterWithServerRegistry())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[Snapshot] 无法为 %s 注册 Stable ID；对象不会进入可恢复注册表。"), *GetNameSafe(GetOwner()));
+		UE_LOG(LogTemp, Error, TEXT("[Snapshot] Unable to register Stable ID for %s. The object will not enter the recoverable registry."), *GetNameSafe(GetOwner()));
 	}
 }
 

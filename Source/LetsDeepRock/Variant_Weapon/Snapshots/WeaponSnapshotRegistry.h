@@ -23,7 +23,6 @@ public:
 	AActor* FindActor(const FWeaponStableEntityId& Id) const;
 	bool FindId(const AActor* Actor, FWeaponStableEntityId& OutId) const;
 	bool Contains(const FWeaponStableEntityId& Id) const;
-	void Reset();
 
 private:
 	UPROPERTY()

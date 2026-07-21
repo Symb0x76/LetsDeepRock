@@ -10,7 +10,8 @@ bool UWeaponSnapshotRegistry::ShouldCreateSubsystem(UObject* Outer) const
 
 void UWeaponSnapshotRegistry::Deinitialize()
 {
-	Reset();
+	ActorsById.Reset();
+	IdsByActor.Reset();
 	Super::Deinitialize();
 }
 
@@ -80,10 +81,4 @@ bool UWeaponSnapshotRegistry::FindId(const AActor* Actor, FWeaponStableEntityId&
 bool UWeaponSnapshotRegistry::Contains(const FWeaponStableEntityId& Id) const
 {
 	return FindActor(Id) != nullptr;
-}
-
-void UWeaponSnapshotRegistry::Reset()
-{
-	ActorsById.Reset();
-	IdsByActor.Reset();
 }

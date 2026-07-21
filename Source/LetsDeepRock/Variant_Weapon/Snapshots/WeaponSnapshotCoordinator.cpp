@@ -23,46 +23,44 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 	OutError.Reset();
 	if (!World || World->GetNetMode() == NM_Client)
 	{
-		OutError = TEXT("Snapshot 只能由服务器从有效 World 捕获。");
+		OutError = TEXT("Snapshot could only be captured from valid World on server");
 		return false;
 	}
 
 	const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
 	if (!GameState)
 	{
-		OutError = TEXT("当前 World 没有 AWeaponGameState。");
+		OutError = TEXT("Current World does not have AWeaponGameState");
 		return false;
 	}
 
-	FWeaponMatchSnapshot Candidate;
-	Candidate.SnapshotId = FGuid::NewGuid();
+	FWeaponMatchSnapshot MatchSnapshot;
+	MatchSnapshot.SnapshotId = FGuid::NewGuid();
 	if (!ActiveMatchId.IsValid())
 	{
 		ActiveMatchId = FGuid::NewGuid();
 	}
-	Candidate.MatchId = ActiveMatchId;
-	Candidate.SnapshotRevision = NextSnapshotRevision++;
-	Candidate.MapPackageName = World->GetOutermost()->GetName();
-	Candidate.MatchPhase = GameState->GetMatchPhase();
-	Candidate.ServerWorldTimeSeconds = GameState->GetServerWorldTimeSeconds();
-	Candidate.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
-	Candidate.MaxPlayers = GameState->GetMaxPlayers();
-	Candidate.CapturedAtUtc = FDateTime::UtcNow();
+	MatchSnapshot.MatchId = ActiveMatchId;
+	MatchSnapshot.SnapshotRevision = NextSnapshotRevision++;
+	MatchSnapshot.MapPackageName = World->GetOutermost()->GetName();
+	MatchSnapshot.MatchPhase = GameState->GetMatchPhase();
+	MatchSnapshot.ServerWorldTimeSeconds = GameState->GetServerWorldTimeSeconds();
+	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
+	MatchSnapshot.MaxPlayers = GameState->GetMaxPlayers();
+	MatchSnapshot.CapturedAtUtc = FDateTime::UtcNow();
 
-	if (!FMath::IsFinite(Candidate.ServerWorldTimeSeconds) || !FMath::IsFinite(Candidate.RemainingPhaseTime))
+	if (!FMath::IsFinite(MatchSnapshot.ServerWorldTimeSeconds) || !FMath::IsFinite(MatchSnapshot.RemainingPhaseTime))
 	{
-		OutError = TEXT("GameState 时间值不是有限数。");
+		OutError = TEXT("GameState time is not valid");
 		return false;
 	}
 
-	if (!CapturePlayers(World, Candidate, OutError)
-		|| !CaptureNPCs(World, Candidate, OutError)
-		|| !ValidateSnapshot(Candidate, OutError))
+	if (!CapturePlayers(World, MatchSnapshot, OutError) || !CaptureNPCs(World, MatchSnapshot, OutError) || !ValidateSnapshot(MatchSnapshot, OutError))
 	{
 		return false;
 	}
 
-	OutSnapshot = MoveTemp(Candidate);
+	OutSnapshot = MoveTemp(MatchSnapshot);
 	return true;
 }
 
@@ -97,7 +95,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 		Player.Velocity = Character->GetVelocity();
 		if (!IsFiniteVector(Player.Location) || !IsFiniteVector(Player.AimDirection) || !IsFiniteVector(Player.Velocity))
 		{
-			OutError = FString::Printf(TEXT("玩家 %s 的空间状态包含 NaN 或 Infinity。"), *Player.PlayerName);
+			OutError = FString::Printf(TEXT("Player %s Location / AimDirection / Velocity includes NaN or Infinity"), *Player.PlayerName);
 			return false;
 		}
 	}
@@ -110,7 +108,7 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 	const UWeaponSnapshotRegistry* Registry = World->GetSubsystem<UWeaponSnapshotRegistry>();
 	if (!Registry)
 	{
-		OutError = TEXT("服务器 World 没有 Stable ID Registry。");
+		OutError = TEXT("Server World does not have Stable ID Registry");
 		return false;
 	}
 
@@ -120,7 +118,7 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 		FWeaponStableEntityId StableEnemyId;
 		if (!Registry->FindId(Enemy, StableEnemyId))
 		{
-			OutError = FString::Printf(TEXT("Enemy %s 没有注册 Stable ID。"), *Enemy->GetName());
+			OutError = FString::Printf(TEXT("Enemy %s has not registered Stable ID"), *Enemy->GetName());
 			return false;
 		}
 
@@ -132,7 +130,7 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 		EnemySnapshot.Velocity = Enemy->GetVelocity();
 		if (!IsFiniteVector(EnemySnapshot.Location) || !IsFiniteVector(EnemySnapshot.Velocity))
 		{
-			OutError = FString::Printf(TEXT("Enemy %s location/velocity includes NaN or Infinity"), *Enemy->GetName());
+			OutError = FString::Printf(TEXT("Enemy %s Location / Velocity includes NaN or Infinity"), *Enemy->GetName());
 			return false;
 		}
 	}
@@ -144,13 +142,13 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Sn
 	OutError.Reset();
 	if (Snapshot.SchemaVersion != WeaponMatchSnapshotVersion || !Snapshot.SnapshotId.IsValid() || Snapshot.SnapshotRevision <= 0 || !Snapshot.MatchId.IsValid())
 	{
-		OutError = TEXT("Snapshot 版本、身份或 Revision 无效。");
+		OutError = TEXT("Snapshot version, identity or revision is invalid");
 		return false;
 	}
 
 	if (Snapshot.MaxPlayers <= 0 || Snapshot.Players.Num() > Snapshot.MaxPlayers || Snapshot.MapPackageName.IsEmpty())
 	{
-		OutError = TEXT("Snapshot 的玩家容量或地图包名无效。");
+		OutError = TEXT("Snapshot player capacity or map package name is invalid");
 		return false;
 	}
 
@@ -160,12 +158,12 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Sn
 	{
 		if (!Player.StablePlayerId.IsValid() || StableIds.Contains(Player.StablePlayerId) || Slots.Contains(Player.SlotIndex))
 		{
-			OutError = TEXT("Snapshot 中存在重复或无效的玩家 Stable ID/Slot。");
+			OutError = TEXT("Snapshot has duplicated or invalid player Stable ID/Slot");
 			return false;
 		}
 		if (Player.SlotIndex < 0 || Player.SlotIndex >= Snapshot.MaxPlayers)
 		{
-			OutError = TEXT("Snapshot 中存在越界的玩家 Slot。");
+			OutError = TEXT("Snapshot has player with out-of-bounds Slot");
 			return false;
 		}
 		StableIds.Add(Player.StablePlayerId);
@@ -176,7 +174,7 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Sn
 	{
 		if (!Grenade.Projectile.StableProjectileId.IsValid() || Grenade.bHasExploded || !FMath::IsFinite(Grenade.RemainingFuseSeconds) || Grenade.RemainingFuseSeconds < 0.0f)
 		{
-			OutError = TEXT("Snapshot 中存在无效的活动手雷。");
+			OutError = TEXT("Snapshot has invalid active grenade");
 			return false;
 		}
 	}
