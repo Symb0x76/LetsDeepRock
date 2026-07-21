@@ -5,8 +5,372 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataTable.h"
+#include "GameplayEffectTypes.h"
 #include "GameplayTagContainer.h"
 #include "DataTableRows.generated.h"
+
+/**
+ * 职业配置表行
+ * 对应 DataTable: DT_ProfessionConfig
+ */
+USTRUCT(BlueprintType)
+struct FProfessionConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Profession")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Profession")
+	FName CharacterAttributeRow;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName PrimaryWeaponId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName SecondarySlotType = TEXT("Weapon");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName SecondaryItemId;
+
+	/** 可供玩家选择的手雷配置行，英文逗号分隔 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FString GrenadeIds;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName GrenadeVariantSetId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName DefaultGrenadeId;
+};
+
+/**
+ * 武器定义表行
+ * 对应 DataTable: DT_WeaponConfig
+ */
+USTRUCT(BlueprintType)
+struct FWeaponConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon")
+	FText DisplayName;
+
+	/** 可用射击模式配置行，英文逗号分隔 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon")
+	FString FireModeIds;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weapon")
+	FName DefaultFireModeId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ammo")
+	FName AmmoType = TEXT("None");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ammo", meta = (ClampMin = 0))
+	int32 MagazineSize = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ammo", meta = (ClampMin = 0))
+	int32 ReserveAmmo = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Ammo", meta = (ClampMin = 0))
+	float ReloadDuration = 0.0f;
+
+	/** StaticMesh 资产路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	FString WeaponMesh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	FName MuzzleSocketName = TEXT("Muzzle");
+};
+
+/**
+ * 武器射击模式定义表行
+ * 对应 DataTable: DT_WeaponFireModeConfig
+ */
+USTRUCT(BlueprintType)
+struct FWeaponFireModeConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "FireMode")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "FireMode")
+	FName TriggerType = TEXT("Press");
+
+	/** GameplayAbility 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "FireMode")
+	FString FireAbilityClass;
+
+	/** Projectile Actor 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile")
+	FString ProjectileClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
+	FGameplayTag DamageTypeTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	float BaseDamage = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	float ArmorPenetration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	float WeakpointMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = 0))
+	float FireInterval = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = 0))
+	float ChargeDuration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float ProjectileSpeed = 3000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float ProjectileLifetime = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1))
+	int32 ProjectileCount = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area", meta = (ClampMin = 0))
+	float AreaDamage = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area", meta = (ClampMin = 0))
+	float AreaRadius = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area", meta = (ClampMin = 0))
+	float AreaFalloff = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement", meta = (ClampMin = 0))
+	float MoveSpeedMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
+	bool bCanFireWhileMoving = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accuracy", meta = (ClampMin = 0))
+	float SpreadAngle = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Accuracy", meta = (ClampMin = 0))
+	float Recoil = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Range", meta = (ClampMin = 0))
+	float DamageFalloffStart = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Range", meta = (ClampMin = 0))
+	float DamageFalloffEnd = 0.0f;
+};
+
+/**
+ * 手雷定义表行
+ * 对应 DataTable: DT_GrenadeConfig
+ */
+USTRUCT(BlueprintType)
+struct FGrenadeConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	FName VariantSetId;
+
+	/** GameplayAbility 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	FString ThrowAbilityClass;
+
+	/** Grenade Actor 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
+	FString GrenadeActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = 0))
+	int32 MaxCarryCount = 4;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Inventory", meta = (ClampMin = 0))
+	int32 ResupplyCount = 2;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Throw", meta = (ClampMin = 0))
+	float MaxThrowDistance = 1600.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	float AreaRadius = 250.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage", meta = (ClampMin = 0))
+	float BaseDamage = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
+	FGameplayTag DamageTypeTag;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effect")
+	FName StatusEffectId;
+};
+
+/**
+ * 异常状态效果定义表行
+ * 对应 DataTable: DT_StatusEffectConfig
+ */
+USTRUCT(BlueprintType)
+struct FStatusEffectConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	FGameplayTag StatusTag;
+
+	/** GameplayEffect 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	FString GameplayEffectClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 0))
+	float Duration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 0))
+	float TickInterval = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 0))
+	float Magnitude = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	float DamagePerTick = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	float MoveSpeedMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	float AttackSpeedMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	float ArmorModifier = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 1))
+	int32 MaxStacks = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
+	FName RefreshPolicy;
+};
+
+/**
+ * 职业工具定义表行
+ * 对应 DataTable: DT_ToolConfig
+ */
+USTRUCT(BlueprintType)
+struct FToolConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool")
+	FText DisplayName;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool")
+	FName ToolType;
+
+	/** GameplayAbility 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool")
+	FString ActivationAbilityClass;
+
+	/** Actor 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool")
+	FString SpawnedActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool", meta = (ClampMin = 0))
+	int32 MaxUseCount = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool", meta = (ClampMin = 0))
+	int32 ResupplyAmount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool", meta = (ClampMin = 0))
+	float Cooldown = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool", meta = (ClampMin = 0))
+	float SpawnDistance = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Tool")
+	FName BehaviorConfigId;
+};
+
+/**
+ * 无人机行为配置表行
+ * 对应 DataTable: DT_DroneConfig
+ */
+USTRUCT(BlueprintType)
+struct FDroneConfigRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lifetime", meta = (ClampMin = 0))
+	float Duration = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lifetime", meta = (ClampMin = 0))
+	float Cooldown = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lifetime", meta = (ClampMin = 1))
+	int32 MaxActiveCount = 1;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deploy", meta = (ClampMin = 0))
+	float SpawnDistance = 0.0f;
+
+	/** Actor 类路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Deploy")
+	FString SpawnedActorClass;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement", meta = (ClampMin = 0))
+	float HoverHeight = 150.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement", meta = (ClampMin = 0))
+	float OrbitRadius = 300.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
+	float OrbitSpeed = 45.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Vision", meta = (ClampMin = 0))
+	float VisionRadius = 800.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Vision", meta = (ClampMin = 0))
+	float DetectionInterval = 0.2f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Vision")
+	bool bRequireLineOfSight = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mark")
+	FName EnemyMarkId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mark")
+	FName ResourceMarkId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mark", meta = (ClampMin = 0))
+	float MarkDurationAfterLeaving = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mark", meta = (ClampMin = 0))
+	int32 MaxMarkedTargets = 0;
+
+	/** Niagara 资产路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	FString VisualEffect;
+
+	/** 颜色字符串，格式为 R,G,B,A */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	FString LightColor = TEXT("1,1,1,1");
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual", meta = (ClampMin = 0))
+	float LightIntensity = 5000.0f;
+
+	/** Sound 资产路径 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Visual")
+	FString LoopSound;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Detection")
+	bool bDetectEnemies = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Detection")
+	bool bDetectResources = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Detection")
+	bool bShareMarksWithTeam = true;
+};
 
 /**
  * 敌人配置表行
@@ -202,6 +566,15 @@ struct FCharacterAttributeRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Movement")
 	float DodgeDistance = 600.0f;
+
+	// --- 视野 ---
+	/** 以角色朝向为中心，向左右各扩展的角度 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Vision", meta = (ClampMin = 0, ClampMax = 180))
+	float VisionHalfAngle = 60.0f;
+
+	/** 最大视野距离（cm），0 表示不限制距离 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Vision", meta = (ClampMin = 0))
+	float VisionRange = 0.0f;
 
 	// --- 抗性 ---
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Resistance", meta = (ClampMin = 0, ClampMax = 1))
