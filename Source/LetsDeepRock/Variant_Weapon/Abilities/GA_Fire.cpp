@@ -20,8 +20,7 @@ UGA_Fire::UGA_Fire()
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 
 	// 配置 Ability Tag（用于标识和阻断）
-	// 注：UE 5.8 AbilityTags 已标记 deprecated，后续迁移到 SetAssetTags；当前仍可编译
-	AbilityTags.AddTag(TAG_Ability_Weapon_Fire);
+	SetAssetTags(FGameplayTagContainer(TAG_Ability_Weapon_Fire));
 
 	// 激活阻断 Tag：Cooldown 期间不可激活
 	ActivationBlockedTags.AddTag(TAG_Cooldown_Weapon_Fire);
