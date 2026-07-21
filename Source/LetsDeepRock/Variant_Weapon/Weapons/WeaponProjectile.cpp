@@ -114,8 +114,9 @@ void AWeaponProjectile::ApplyInitializationState()
 	{
 		ProjectileMovement->InitialSpeed = InitializationState.ProjectileSpeed;
 		ProjectileMovement->MaxSpeed = InitializationState.ProjectileSpeed;
-		// 速度已设置，需要重新初始化移动方向（Velocity = Forward * Speed）
-		ProjectileMovement->SetVelocityInLocalSpace(FVector(InitializationState.ProjectileSpeed, 0.f, 0.f));
+		// 生成阶段已经按 SpawnTransform 的朝向把局部初始速度转换到世界空间；
+		// 此处若再次调用 SetVelocityInLocalSpace，会把当前朝向叠加一次，导致偏角翻倍。
+		ProjectileMovement->Velocity = GetActorForwardVector() * InitializationState.ProjectileSpeed;
 	}
 }
 
@@ -168,7 +169,7 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 		// 穿透模式：恢复速度继续飞行
 		if (ProjectileMovement)
 		{
-			ProjectileMovement->SetVelocityInLocalSpace(FVector(ProjectileMovement->MaxSpeed, 0.f, 0.f));
+			ProjectileMovement->Velocity = GetActorForwardVector() * ProjectileMovement->MaxSpeed;
 		}
 	}
 	else
