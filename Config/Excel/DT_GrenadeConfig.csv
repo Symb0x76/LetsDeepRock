@@ -1,0 +1,5 @@
+﻿---,DisplayName,VariantSetId,ThrowAbilityClass,GrenadeActorClass,MaxCarryCount,ResupplyCount,MaxThrowDistance,AreaRadius,BaseDamage,DamageTypeTag,StatusEffectId
+Ranger_ElementGrenade_Fire,"火焰元素手雷",Ranger_ElementGrenade,"","",4,2,1600,250,30,"(TagName=""Damage.Type.Fire"")",Burning
+Ranger_ElementGrenade_Frost,"冰冻元素手雷",Ranger_ElementGrenade,"","",4,2,1600,250,26,"(TagName=""Damage.Type.Cold"")",Frozen
+Ranger_ElementGrenade_Electric,"电击元素手雷",Ranger_ElementGrenade,"","",4,2,1600,250,24,"(TagName=""Damage.Type.Electric"")",Shocked
+Ranger_ElementGrenade_Acid,"酸液元素手雷",Ranger_ElementGrenade,"","",4,2,1600,250,22,"(TagName=""Damage.Type.Acid"")",Corroded

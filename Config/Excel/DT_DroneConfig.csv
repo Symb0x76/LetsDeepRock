@@ -1,0 +1,2 @@
+﻿---,Duration,Cooldown,MaxActiveCount,SpawnDistance,SpawnedActorClass,HoverHeight,OrbitRadius,OrbitSpeed,VisionRadius,DetectionInterval,bRequireLineOfSight,EnemyMarkId,ResourceMarkId,MarkDurationAfterLeaving,MaxMarkedTargets,VisualEffect,LightColor,LightIntensity,LoopSound,bDetectEnemies,bDetectResources,bShareMarksWithTeam
+Ranger_ConstructSpriteDrone_Default,20,30,1,300,"",180,350,50,900,0.2,True,MarkedEnemy,MarkedResource,3,12,"","0.55,0.85,1,1",5000,"",True,True,True

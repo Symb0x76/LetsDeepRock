@@ -1,0 +1,5 @@
+﻿---,DisplayName,StatusTag,GameplayEffectClass,Duration,TickInterval,Magnitude,DamagePerTick,MoveSpeedMultiplier,AttackSpeedMultiplier,ArmorModifier,MaxStacks,RefreshPolicy
+Burning,"灼烧","(TagName=""Status.Burning"")","",6,1,1,5,1,1,0,1,RefreshDuration
+Frozen,"冰冻","(TagName=""Status.Frozen"")","",4,0,1,0,0.55,0.8,0,1,RefreshDuration
+Shocked,"感电","(TagName=""Status.Shocked"")","",3,0.5,1,2,0.7,0.7,0,1,RefreshDuration
+Corroded,"腐蚀","(TagName=""Status.Corroded"")","",8,1,1,3,1,1,-15,1,RefreshDuration
