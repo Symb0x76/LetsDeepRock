@@ -60,7 +60,17 @@ struct LETSDEEPROCK_API FWeaponStableEntityId
 	{
 		return Kind == Other.Kind && Namespace == Other.Namespace && Value == Other.Value;
 	}
+
+	bool operator!=(const FWeaponStableEntityId& Other) const
+	{
+		return !(*this == Other);
+	}
 };
+
+FORCEINLINE uint32 GetTypeHash(const FWeaponStableEntityId& Id)
+{
+	return HashCombine(HashCombine(GetTypeHash(Id.Kind), GetTypeHash(Id.Namespace)), GetTypeHash(Id.Value));
+}
 
 /** 用 GameplayTag 标识的浮点数，主要用于可扩展属性和 SetByCaller 数值。 */
 USTRUCT(BlueprintType)
