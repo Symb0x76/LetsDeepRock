@@ -5,10 +5,15 @@
 #include "GridMapGenerator.h"
 #include "GridMapRenderer.h"
 #include "NavigationSystem.h"
+#include "DrawDebugHelpers.h"
+#include "GameFramework/PlayerController.h"
+#include "UObject/UObjectIterator.h"
+#include "Variant_Weapon/Vision/VisionSourceComponent.h"
+#include "Variant_Weapon/WeaponPlayerState.h"
 
 AGridMapManager::AGridMapManager()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	PrimaryActorTick.bCanEverTick = true;
 
 	// 创建根组件
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
@@ -31,11 +36,38 @@ void AGridMapManager::BeginPlay()
 	}
 }
 
+void AGridMapManager::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	VisionUpdateAccumulator += DeltaSeconds;
+	const bool bSampleNow = VisionUpdateAccumulator >= VisionUpdateInterval;
+	if (bSampleNow)
+	{
+		VisionUpdateAccumulator = 0.0f;
+		SampleVisionSourceState();
+	}
+
+	const bool bWasDirty = bVisionDirty;
+	if (bVisionDirty)
+	{
+		RebuildLocalVisibility();
+	}
+
+	// 事件驱动重建后，调试图形仍按采样频率刷新自身的短持续时间。
+	if (bDrawVisionDebug && (bSampleNow || bWasDirty))
+	{
+		DrawVisionDebug();
+	}
+}
+
 void AGridMapManager::GenerateMap()
 {
 	// 1. 创建地图数据
 	MapData = NewObject<UGridMapData>(this);
 	MapData->Initialize(MapConfig);
+	VisibleTiles.Init(false, MapData->GetTotalTiles());
+	MarkVisionDirty();
 
 	UE_LOG(LogTemp, Log, TEXT("[GridMap] 地图数据初始化完成：%dx%d，格子尺寸=%.0f UU"),
 		MapConfig.MapWidth, MapConfig.MapHeight, MapConfig.TileSize);
@@ -259,8 +291,313 @@ bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth, 
 	return bAnyDamage;
 }
 
+bool AGridMapManager::IsTileVisible(int32 GridX, int32 GridY) const
+{
+	if (!MapData || !MapData->IsValidCoord(GridX, GridY))
+	{
+		return false;
+	}
+
+	const int32 Index = GridY * MapData->GetConfig().MapWidth + GridX;
+	return VisibleTiles.IsValidIndex(Index) && VisibleTiles[Index];
+}
+
+int32 AGridMapManager::GetVisibleTileCount() const
+{
+	int32 Count = 0;
+	for (TConstSetBitIterator<> It(VisibleTiles); It; ++It)
+	{
+		++Count;
+	}
+	return Count;
+}
+
+void AGridMapManager::MarkVisionDirty()
+{
+	bVisionDirty = true;
+}
+
+void AGridMapManager::SampleVisionSourceState()
+{
+	const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	const AWeaponPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!LocalPC || !LocalPC->IsLocalController() || !LocalPS)
+	{
+		return;
+	}
+
+	const int32 LocalTeamId = LocalPS->GetTeamId();
+	if (!bHasSampledLocalTeam || LastSampledLocalTeamId != LocalTeamId)
+	{
+		bHasSampledLocalTeam = true;
+		LastSampledLocalTeamId = LocalTeamId;
+		MarkVisionDirty();
+	}
+
+	TArray<FVisionSourceSnapshot> NewSnapshots;
+	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
+	{
+		UVisionSourceComponent* Source = *It;
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		{
+			continue;
+		}
+
+		FVisionSourceSnapshot& Snapshot = NewSnapshots.AddDefaulted_GetRef();
+		Snapshot.Source = Source;
+		Snapshot.Shape = static_cast<uint8>(Source->Shape);
+		Snapshot.Range = Source->Range;
+		Snapshot.HalfAngle = Source->HalfAngle;
+		Snapshot.TeamId = Source->TeamId;
+		if (MapData)
+		{
+			MapData->WorldToGrid(Source->GetVisionLocation(), Snapshot.GridX, Snapshot.GridY);
+		}
+		const FVector Direction = Source->GetVisionDirection();
+		Snapshot.Direction = FVector2D(Direction.X, Direction.Y).GetSafeNormal();
+	}
+
+	bool bChanged = NewSnapshots.Num() != VisionSourceSnapshots.Num();
+	const float DirectionDotThreshold = FMath::Cos(FMath::DegreesToRadians(VisionDirectionChangeDegrees));
+	for (const FVisionSourceSnapshot& NewSnapshot : NewSnapshots)
+	{
+		const FVisionSourceSnapshot* OldSnapshot = VisionSourceSnapshots.FindByPredicate(
+			[&NewSnapshot](const FVisionSourceSnapshot& Candidate)
+			{
+				return Candidate.Source == NewSnapshot.Source;
+			});
+
+		if (!OldSnapshot
+			|| OldSnapshot->Shape != NewSnapshot.Shape
+			|| OldSnapshot->Range != NewSnapshot.Range
+			|| OldSnapshot->HalfAngle != NewSnapshot.HalfAngle
+			|| OldSnapshot->TeamId != NewSnapshot.TeamId
+			|| OldSnapshot->GridX != NewSnapshot.GridX
+			|| OldSnapshot->GridY != NewSnapshot.GridY
+			|| (NewSnapshot.Shape == static_cast<uint8>(EVisionSourceShape::Cone)
+				&& (OldSnapshot->Direction.IsNearlyZero() != NewSnapshot.Direction.IsNearlyZero()
+					|| (!NewSnapshot.Direction.IsNearlyZero()
+						&& FVector2D::DotProduct(OldSnapshot->Direction, NewSnapshot.Direction) < DirectionDotThreshold))))
+		{
+			bChanged = true;
+			break;
+		}
+	}
+
+	if (bChanged)
+	{
+		// 仅在触发重建时更新基准，使小于阈值的连续旋转可以累计到约 2 度。
+		VisionSourceSnapshots = MoveTemp(NewSnapshots);
+		MarkVisionDirty();
+	}
+}
+
+void AGridMapManager::RebuildLocalVisibility()
+{
+	if (!MapData || MapData->GetTotalTiles() == 0)
+	{
+		return;
+	}
+
+	const APlayerController* LocalPC = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	const AWeaponPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!LocalPC || !LocalPC->IsLocalController() || !LocalPS)
+	{
+		// PlayerState 到达前保留 dirty，确保一旦可用就立即完成首次计算。
+		return;
+	}
+
+	bVisionDirty = false;
+	VisibleTiles.Init(false, MapData->GetTotalTiles());
+
+	const int32 LocalTeamId = LocalPS->GetTeamId();
+	const FGridMapConfig& Config = MapData->GetConfig();
+
+	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
+	{
+		UVisionSourceComponent* Source = *It;
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		{
+			continue;
+		}
+
+		const FVector SourceLocation = Source->GetVisionLocation();
+		int32 SourceX = 0;
+		int32 SourceY = 0;
+		if (!MapData->WorldToGrid(SourceLocation, SourceX, SourceY))
+		{
+			continue;
+		}
+
+		const bool bUnlimited = Source->Range <= 0.0f;
+		const int32 GridRadius = bUnlimited
+			? FMath::Max(Config.MapWidth, Config.MapHeight)
+			: FMath::CeilToInt(Source->Range / Config.TileSize) + 1;
+		const int32 MinX = bUnlimited ? 0 : FMath::Max(0, SourceX - GridRadius);
+		const int32 MaxX = bUnlimited ? Config.MapWidth - 1 : FMath::Min(Config.MapWidth - 1, SourceX + GridRadius);
+		const int32 MinY = bUnlimited ? 0 : FMath::Max(0, SourceY - GridRadius);
+		const int32 MaxY = bUnlimited ? Config.MapHeight - 1 : FMath::Min(Config.MapHeight - 1, SourceY + GridRadius);
+		const float RangeSq = Source->Range * Source->Range;
+		const float ConeThreshold = FMath::Cos(FMath::DegreesToRadians(Source->HalfAngle));
+		FVector2D Forward(Source->GetVisionDirection().X, Source->GetVisionDirection().Y);
+		Forward.Normalize();
+
+		for (int32 Y = MinY; Y <= MaxY; ++Y)
+		{
+			for (int32 X = MinX; X <= MaxX; ++X)
+			{
+				const FVector TileCenter = MapData->GridToWorld(X, Y);
+				const FVector2D ToTile(TileCenter.X - SourceLocation.X, TileCenter.Y - SourceLocation.Y);
+				const float DistanceSq = ToTile.SizeSquared();
+				if (!bUnlimited && DistanceSq > RangeSq)
+				{
+					continue;
+				}
+
+				if (Source->Shape == EVisionSourceShape::Cone && DistanceSq > KINDA_SMALL_NUMBER)
+				{
+					const float Dot = FVector2D::DotProduct(Forward, ToTile.GetSafeNormal());
+					if (Dot < ConeThreshold)
+					{
+						continue;
+					}
+				}
+
+				if (HasLineOfSight(SourceX, SourceY, X, Y))
+				{
+					VisibleTiles[Y * Config.MapWidth + X] = true;
+				}
+			}
+		}
+	}
+
+}
+
+bool AGridMapManager::HasLineOfSight(int32 SourceX, int32 SourceY, int32 TargetX, int32 TargetY) const
+{
+	if (SourceX == TargetX && SourceY == TargetY)
+	{
+		return true;
+	}
+	const FGridTileData* SourceTile = MapData->GetTile(SourceX, SourceY);
+	if (SourceTile && SourceTile->BlocksVision())
+	{
+		return false;
+	}
+
+	auto IsBlockingBeforeTarget = [this, TargetX, TargetY](int32 X, int32 Y)
+	{
+		if (X == TargetX && Y == TargetY)
+		{
+			return false;
+		}
+		const FGridTileData* Tile = MapData->GetTile(X, Y);
+		return Tile && Tile->BlocksVision();
+	};
+
+	int32 X = SourceX;
+	int32 Y = SourceY;
+	const int32 DeltaX = TargetX - SourceX;
+	const int32 DeltaY = TargetY - SourceY;
+	const int32 StepX = FMath::Sign(DeltaX);
+	const int32 StepY = FMath::Sign(DeltaY);
+	const int32 AbsX = FMath::Abs(DeltaX);
+	const int32 AbsY = FMath::Abs(DeltaY);
+	int32 CountX = 0;
+	int32 CountY = 0;
+
+	while (CountX < AbsX || CountY < AbsY)
+	{
+		const int32 DecisionX = (1 + 2 * CountX) * AbsY;
+		const int32 DecisionY = (1 + 2 * CountY) * AbsX;
+		if (DecisionX == DecisionY)
+		{
+			// 射线恰好穿过角点时，两侧接触格都属于 supercover。
+			if (IsBlockingBeforeTarget(X + StepX, Y) || IsBlockingBeforeTarget(X, Y + StepY))
+			{
+				return false;
+			}
+			X += StepX;
+			Y += StepY;
+			++CountX;
+			++CountY;
+		}
+		else if (DecisionX < DecisionY)
+		{
+			X += StepX;
+			++CountX;
+		}
+		else
+		{
+			Y += StepY;
+			++CountY;
+		}
+
+		if (IsBlockingBeforeTarget(X, Y))
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
+void AGridMapManager::DrawVisionDebug() const
+{
+	if (!MapData || MapData->GetTotalTiles() == 0)
+	{
+		return;
+	}
+
+	const float Duration = VisionUpdateInterval + 0.03f;
+	const float TileSize = MapData->GetConfig().TileSize;
+	int32 DrawnTiles = 0;
+	for (TConstSetBitIterator<> It(VisibleTiles); It && DrawnTiles < MaxDebugDrawTiles; ++It, ++DrawnTiles)
+	{
+		const int32 Index = It.GetIndex();
+		const int32 X = Index % MapData->GetConfig().MapWidth;
+		const int32 Y = Index / MapData->GetConfig().MapWidth;
+		DrawDebugBox(GetWorld(), MapData->GridToWorld(X, Y) + FVector(0.0f, 0.0f, 10.0f),
+			FVector(TileSize * 0.45f, TileSize * 0.45f, 5.0f), FColor::Green, false, Duration, 0, 1.0f);
+	}
+
+	const APlayerController* LocalPC = GetWorld()->GetFirstPlayerController();
+	const AWeaponPlayerState* LocalPS = LocalPC ? LocalPC->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!LocalPC || !LocalPC->IsLocalController() || !LocalPS)
+	{
+		return;
+	}
+
+	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
+	{
+		const UVisionSourceComponent* Source = *It;
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalPS->GetTeamId())
+		{
+			continue;
+		}
+
+		const FVector Location = Source->GetVisionLocation() + FVector(0.0f, 0.0f, 20.0f);
+		const float DebugRange = Source->Range > 0.0f
+			? Source->Range
+			: FMath::Max(MapConfig.MapWidth, MapConfig.MapHeight) * MapConfig.TileSize;
+		if (Source->Shape == EVisionSourceShape::Circle)
+		{
+			DrawDebugCircle(GetWorld(), Location, DebugRange, 64, FColor::Cyan, false, Duration, 0, 2.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
+		}
+		else
+		{
+			const FVector Direction = Source->GetVisionDirection().GetSafeNormal2D();
+			const FVector Left = Direction.RotateAngleAxis(-Source->HalfAngle, FVector::UpVector);
+			const FVector Right = Direction.RotateAngleAxis(Source->HalfAngle, FVector::UpVector);
+			DrawDebugLine(GetWorld(), Location, Location + Left * DebugRange, FColor::Cyan, false, Duration, 0, 2.0f);
+			DrawDebugLine(GetWorld(), Location, Location + Right * DebugRange, FColor::Cyan, false, Duration, 0, 2.0f);
+		}
+	}
+}
+
 void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
 {
+	MarkVisionDirty();
 	// 移除渲染实例（同时移除碰撞，因为 HISM 碰撞和实例绑定）
 	if (MapRenderer)
 	{

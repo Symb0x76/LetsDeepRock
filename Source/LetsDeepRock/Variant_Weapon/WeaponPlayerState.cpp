@@ -8,6 +8,7 @@
 #include "Attributes/WeaponMovementSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "Attributes/WeaponResourceSet.h"
+#include "Net/UnrealNetwork.h"
 
 AWeaponPlayerState::AWeaponPlayerState()
 {
@@ -41,4 +42,18 @@ AWeaponPlayerState::AWeaponPlayerState()
 UAbilitySystemComponent* AWeaponPlayerState::GetAbilitySystemComponent() const
 {
 	return AbilitySystemComponent;
+}
+
+void AWeaponPlayerState::SetTeamId(int32 InTeamId)
+{
+	if (HasAuthority())
+	{
+		TeamId = InTeamId;
+	}
+}
+
+void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AWeaponPlayerState, TeamId);
 }

@@ -26,6 +26,7 @@
 #include "Data/GameDataSubsystem.h"
 #include "Abilities/GameplayAbility.h"
 #include "Abilities/GA_ThrowGrenade.h"
+#include "Vision/VisionSourceComponent.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -45,6 +46,8 @@ AWeaponCharacter::AWeaponCharacter()
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
 	Camera->SetupAttachment(SpringArm);
 	Camera->SetFieldOfView(75.0f);
+
+	VisionSource = CreateDefaultSubobject<UVisionSourceComponent>(TEXT("VisionSource"));
 
 	// 配置角色移动（俯视角约束到平面）
 	GetCharacterMovement()->GravityScale = 1.5f;
@@ -120,22 +123,27 @@ void AWeaponCharacter::InitAbilitySystem()
 		AbilitySystemComponent->InitAbilityActorInfo(PS, this);
 	}
 
-	// 仅服务端、且仅首次初始化属性（避免重生时重复覆盖）
-	if (HasAuthority() && !bAttributesInitialized)
+	VisionSource->TeamId = PS->GetTeamId();
+
+	// 配置表查询在服务端和本地客户端都执行，保证本地视野参数一致。
+	const FCharacterAttributeRow* CharacterRow = nullptr;
+	if (UGameInstance* GI = GetGameInstance())
 	{
-		// 从 GameDataSubsystem 获取角色属性配置
-		if (UGameInstance* GI = GetGameInstance())
+		if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
 		{
-			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
-			{
-				const FCharacterAttributeRow* Row = DataSys->GetCharacterAttributes(CharacterConfigRowName);
-				if (Row)
-				{
-					FAttributeInitHelper::InitializePlayerAttributes(AbilitySystemComponent, *Row);
-					bAttributesInitialized = true;
-				}
-			}
+			CharacterRow = DataSys->GetCharacterAttributes(CharacterConfigRowName);
 		}
+	}
+	if (CharacterRow)
+	{
+		VisionSource->ConfigureCone(CharacterRow->VisionRange, CharacterRow->VisionHalfAngle);
+	}
+
+	// 仅服务端、且仅首次初始化属性（避免重生时重复覆盖）
+	if (HasAuthority() && !bAttributesInitialized && CharacterRow)
+	{
+		FAttributeInitHelper::InitializePlayerAttributes(AbilitySystemComponent, *CharacterRow);
+		bAttributesInitialized = true;
 	}
 
 	// 仅服务端订阅死亡事件（AddUniqueDynamic 语义：这里用普通委托，先移除再添加避免重复绑定）
@@ -159,6 +167,12 @@ void AWeaponCharacter::InitAbilitySystem()
 void AWeaponCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+
+	// TeamId 可能在 PlayerState 到达后继续复制变化，保持本地视野来源同步。
+	if (const AWeaponPlayerState* PS = GetPlayerState<AWeaponPlayerState>())
+	{
+		VisionSource->TeamId = PS->GetTeamId();
+	}
 
 	// 每帧让角色面向鼠标位置
 	RotateToMouseCursor(DeltaTime);
