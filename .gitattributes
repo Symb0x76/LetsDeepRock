@@ -9,8 +9,8 @@
 # 备注：若未来仓库体积膨胀，可再迁移到 LFS（把下方规则改为 filter=lfs ...）。
 # ==============================================================================
 
-# --- 默认：自动判定文本文件的换行符，仓库内统一为 LF ---
-* text=auto
+# --- 默认：自动判定文本文件，工作区统一使用 CRLF ---
+* text=auto eol=crlf
 
 # ==============================================================================
 # Unreal 资源文件 —— 明确标记为二进制（禁止换行符转换 / 禁止文本 diff）
@@ -58,18 +58,30 @@
 # 其他二进制
 *.bin     binary
 *.pdf     binary
+*.xlsx    binary
+*.xlsm    binary
+*.xls     binary
 
 # ==============================================================================
 # 源码 / 文本文件 —— 明确按文本处理（换行符归一化）
 # ==============================================================================
-*.cpp      text
-*.h        text
-*.hpp      text
-*.c        text
-*.cs       text
-*.ini      text
-*.uproject text
-*.uplugin  text
-*.md       text
-*.txt      text
-*.json     text
+*.cpp      text eol=crlf
+*.h        text eol=crlf
+*.hpp      text eol=crlf
+*.c        text eol=crlf
+*.cs       text eol=crlf
+*.ini      text eol=crlf
+*.uproject text eol=crlf
+*.uplugin  text eol=crlf
+*.md       text eol=crlf
+*.txt      text eol=crlf
+*.json     text eol=crlf
+*.csv      text eol=crlf
+*.py       text eol=crlf
+*.pyw      text eol=crlf
+*.ps1      text eol=crlf
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.xml      text eol=crlf
+*.yaml     text eol=crlf
+*.yml      text eol=crlf
