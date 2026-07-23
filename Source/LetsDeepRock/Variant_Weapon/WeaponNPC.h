@@ -14,7 +14,6 @@ class UAbilitySystemComponent;
 class UWeaponHealthSet;
 class UWeaponResistanceSet;
 class UWeaponMovementSet;
-class UWeaponStableIdentityComponent;
 
 /**
  *  武器系统敌人 NPC
@@ -39,7 +38,6 @@ public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
-	UWeaponStableIdentityComponent* GetStableIdentityComponent() const { return StableIdentityComponent; }
 
 protected:
 
@@ -60,10 +58,6 @@ protected:
 	/** 移动属性集 */
 	UPROPERTY()
 	TObjectPtr<UWeaponMovementSet> MovementSet;
-
-	/** 服务器分配的 NPC 稳定身份，跨 World 恢复时作为 FWeaponEnemySnapshot 的外键。 */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Snapshot|Identity")
-	TObjectPtr<UWeaponStableIdentityComponent> StableIdentityComponent;
 
 	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName） */
 	UPROPERTY(EditAnywhere, Category = "DataTable")

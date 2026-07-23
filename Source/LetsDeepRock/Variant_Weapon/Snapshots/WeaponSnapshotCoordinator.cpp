@@ -7,16 +7,8 @@
 #include "WeaponCharacter.h"
 #include "WeaponNPC.h"
 #include "WeaponMatchSnapshot.h"
-#include "WeaponSnapshotRegistry.h"
 #include "EngineUtils.h"
-#include "Engine/GameInstance.h"
 #include "UObject/Package.h"
-
-bool UWeaponSnapshotCoordinator::ShouldCreateSubsystem(UObject* Outer) const
-{
-	const UGameInstance* GameInstance = Cast<UGameInstance>(Outer);
-	return GameInstance && GameInstance->GetWorld() && GameInstance->GetWorld()->GetNetMode() != NM_Client;
-}
 
 bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnapshot& OutSnapshot, FString& OutError)
 {
@@ -35,23 +27,20 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 	}
 
 	FWeaponMatchSnapshot MatchSnapshot;
-	MatchSnapshot.SnapshotId = FGuid::NewGuid();
 	if (!ActiveMatchId.IsValid())
 	{
 		ActiveMatchId = FGuid::NewGuid();
 	}
 	MatchSnapshot.MatchId = ActiveMatchId;
-	MatchSnapshot.SnapshotRevision = NextSnapshotRevision++;
+	MatchSnapshot.Revision = NextSnapshotRevision++;
 	MatchSnapshot.MapPackageName = World->GetOutermost()->GetName();
 	MatchSnapshot.MatchPhase = GameState->GetMatchPhase();
-	MatchSnapshot.ServerWorldTimeSeconds = GameState->GetServerWorldTimeSeconds();
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
 	MatchSnapshot.MaxPlayers = GameState->GetMaxPlayers();
-	MatchSnapshot.CapturedAtUtc = FDateTime::UtcNow();
 
-	if (!FMath::IsFinite(MatchSnapshot.ServerWorldTimeSeconds) || !FMath::IsFinite(MatchSnapshot.RemainingPhaseTime))
+	if (!FMath::IsFinite(MatchSnapshot.RemainingPhaseTime))
 	{
-		OutError = TEXT("GameState time is not valid");
+		OutError = TEXT("GameState remaining phase time is not valid");
 		return false;
 	}
 
@@ -76,9 +65,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 		}
 
 		FWeaponPlayerSnapshot& Player = Snapshot.Players.AddDefaulted_GetRef();
-		Player.StablePlayerId.Kind = EWeaponStableEntityKind::Player;
-		Player.StablePlayerId.Namespace = TEXT("PlayerState");
-		Player.StablePlayerId.Value = PlayerState->GetPlayerName();
+		Player.PlayerId = PlayerState->GetPlayerName();
 		Player.PlayerName = PlayerState->GetPlayerName();
 		Player.SlotIndex = PlayerState->GetPlayerSlotIndex();
 		Player.bIsReady = PlayerState->GetIsPlayerReady();
@@ -89,6 +76,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 			continue;
 		}
 
+		Player.bHasPawn = true;
 		Player.Location = Character->GetActorLocation();
 		Player.Rotation = Character->GetActorRotation();
 		Player.AimDirection = Character->GetAimDirection();
@@ -105,25 +93,10 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 
 bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
 {
-	const UWeaponSnapshotRegistry* Registry = World->GetSubsystem<UWeaponSnapshotRegistry>();
-	if (!Registry)
-	{
-		OutError = TEXT("Server World does not have Stable ID Registry");
-		return false;
-	}
-
 	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
 	{
 		const AWeaponNPC* Enemy = *It;
-		FWeaponStableEntityId StableEnemyId;
-		if (!Registry->FindId(Enemy, StableEnemyId))
-		{
-			OutError = FString::Printf(TEXT("Enemy %s has not registered Stable ID"), *Enemy->GetName());
-			return false;
-		}
-
-		FWeaponEnemySnapshot& EnemySnapshot = Snapshot.World.LivingEnemies.AddDefaulted_GetRef();
-		EnemySnapshot.StableEnemyId = StableEnemyId;
+		FWeaponEnemySnapshot& EnemySnapshot = Snapshot.Enemies.AddDefaulted_GetRef();
 		EnemySnapshot.EnemyClass = FSoftClassPath(Enemy->GetClass());
 		EnemySnapshot.Location = Enemy->GetActorLocation();
 		EnemySnapshot.Rotation = Enemy->GetActorRotation();
@@ -140,7 +113,7 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Snapshot, FString& OutError) const
 {
 	OutError.Reset();
-	if (Snapshot.SchemaVersion != WeaponMatchSnapshotVersion || !Snapshot.SnapshotId.IsValid() || Snapshot.SnapshotRevision <= 0 || !Snapshot.MatchId.IsValid())
+	if (Snapshot.SchemaVersion != WeaponMatchSnapshotVersion || Snapshot.Revision <= 0 || !Snapshot.MatchId.IsValid())
 	{
 		OutError = TEXT("Snapshot version, identity or revision is invalid");
 		return false;
@@ -152,13 +125,13 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Sn
 		return false;
 	}
 
-	TSet<FWeaponStableEntityId> StableIds;
+	TSet<FString> PlayerIds;
 	TSet<int32> Slots;
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
-		if (!Player.StablePlayerId.IsValid() || StableIds.Contains(Player.StablePlayerId) || Slots.Contains(Player.SlotIndex))
+		if (Player.PlayerId.IsEmpty() || PlayerIds.Contains(Player.PlayerId) || Slots.Contains(Player.SlotIndex))
 		{
-			OutError = TEXT("Snapshot has duplicated or invalid player Stable ID/Slot");
+			OutError = TEXT("Snapshot has duplicated or invalid player ID/Slot");
 			return false;
 		}
 		if (Player.SlotIndex < 0 || Player.SlotIndex >= Snapshot.MaxPlayers)
@@ -166,15 +139,21 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Sn
 			OutError = TEXT("Snapshot has player with out-of-bounds Slot");
 			return false;
 		}
-		StableIds.Add(Player.StablePlayerId);
+		if (Player.bHasPawn && (!IsFiniteVector(Player.Location) || !IsFiniteVector(Player.AimDirection) || !IsFiniteVector(Player.Velocity)))
+		{
+			OutError = TEXT("Snapshot has player Pawn state containing NaN or Infinity");
+			return false;
+		}
+
+		PlayerIds.Add(Player.PlayerId);
 		Slots.Add(Player.SlotIndex);
 	}
 
-	for (const FWeaponGrenadeProjectileSnapshot& Grenade : Snapshot.World.ActiveGrenades)
+	for (const FWeaponEnemySnapshot& Enemy : Snapshot.Enemies)
 	{
-		if (!Grenade.Projectile.StableProjectileId.IsValid() || Grenade.bHasExploded || !FMath::IsFinite(Grenade.RemainingFuseSeconds) || Grenade.RemainingFuseSeconds < 0.0f)
+		if (!Enemy.EnemyClass.IsValid() || !IsFiniteVector(Enemy.Location) || !IsFiniteVector(Enemy.Velocity))
 		{
-			OutError = TEXT("Snapshot has invalid active grenade");
+			OutError = TEXT("Snapshot has invalid enemy class or movement state");
 			return false;
 		}
 	}

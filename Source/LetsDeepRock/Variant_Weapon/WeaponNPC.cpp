@@ -16,7 +16,6 @@
 #include "GameDataSubsystem.h"
 #include "AI/EnemyAIController.h"
 #include "BrainComponent.h"
-#include "Snapshots/WeaponStableIdentityComponent.h"
 
 AWeaponNPC::AWeaponNPC()
 {
@@ -31,7 +30,6 @@ AWeaponNPC::AWeaponNPC()
 
 	ResistanceSet = CreateDefaultSubobject<UWeaponResistanceSet>(TEXT("ResistanceSet"));
 	MovementSet = CreateDefaultSubobject<UWeaponMovementSet>(TEXT("MovementSet"));
-	StableIdentityComponent = CreateDefaultSubobject<UWeaponStableIdentityComponent>(TEXT("StableIdentity"));
 
 	// AI Controller 配置：使用 EnemyAIController，自动 Possess
 	AIControllerClass = AEnemyAIController::StaticClass();
@@ -46,11 +44,6 @@ UAbilitySystemComponent* AWeaponNPC::GetAbilitySystemComponent() const
 void AWeaponNPC::BeginPlay()
 {
 	Super::BeginPlay();
-
-	if (HasAuthority() && StableIdentityComponent)
-	{
-		StableIdentityComponent->InitializeRuntimeIdentity(EWeaponStableEntityKind::Enemy);
-	}
 
 	if (AbilitySystemComponent)
 	{

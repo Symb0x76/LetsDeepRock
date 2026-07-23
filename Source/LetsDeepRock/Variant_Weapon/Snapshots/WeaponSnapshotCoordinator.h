@@ -13,14 +13,10 @@ class LETSDEEPROCK_API UWeaponSnapshotCoordinator : public UGameInstanceSubsyste
 	GENERATED_BODY()
 
 public:
-	virtual bool ShouldCreateSubsystem(UObject* Outer) const override;
-
-	/** 只允许服务器从当前 World 捕获根战局和玩家基础状态。 */
-	UFUNCTION(BlueprintCallable, Category = "Snapshot")
+	/** 只允许服务器从当前 World 捕获已有 owner 的最小战局状态。 */
 	bool CaptureSnapshot(UWorld* World, FWeaponMatchSnapshot& OutSnapshot, FString& OutError);
 
-	/** 在 Restore 前检查身份、时间、槽位、引用和 GridMap 版本。 */
-	UFUNCTION(BlueprintCallable, Category = "Snapshot")
+	/** 在 Restore 前检查版本、身份、槽位和数值有效性。 */
 	bool ValidateSnapshot(const FWeaponMatchSnapshot& Snapshot, FString& OutError) const;
 
 private:
@@ -30,5 +26,5 @@ private:
 
 	/** 当前服务器战局身份；跨地图保留，不能在每次 Capture 时重新生成。 */
 	FGuid ActiveMatchId;
-	mutable int64 NextSnapshotRevision = 1;
+	int64 NextSnapshotRevision = 1;
 };
