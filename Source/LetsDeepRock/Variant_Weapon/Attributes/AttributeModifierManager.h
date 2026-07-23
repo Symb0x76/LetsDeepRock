@@ -23,7 +23,7 @@ struct FAttributeModifierDef
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	FGameplayTag AttributeTag;
 
-	/** 运算类型：Additive=加算, Multiplicitive=乘算, Division=除算, Override=覆盖 */
+	/** 运算类型：Additive=加算, Multiplicative=乘算, Division=除算, Override=覆盖 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly)
 	TEnumAsByte<EGameplayModOp::Type> ModOp = EGameplayModOp::Additive;
 
@@ -71,6 +71,9 @@ public:
 	/** 检查指定来源是否已激活 */
 	UFUNCTION(BlueprintCallable, Category = "Attributes")
 	bool HasModifiers(FName SourceId) const;
+
+	/** Tag→FGameplayAttribute 全量映射表，供 Snapshot 等子系统遍历所有可捕获属性。 */
+	static const TMap<FGameplayTag, FGameplayAttribute>& GetAttributeTagMap();
 
 private:
 	/** 获取 Owner 的 ASC */

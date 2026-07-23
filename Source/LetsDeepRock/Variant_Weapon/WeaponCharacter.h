@@ -111,12 +111,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Aim")
 	FVector GetAimDirection() const { return FVector(AimDirection); }
 
+	FName GetCharacterConfigRowName() const { return CharacterConfigRowName; }
+	
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	void RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType);
-
-	// === 手雷 Pending Target（GA 消费接口） ===
-
+	
 	/** GA 调用：消费一次性 pending 手雷目标，返回 true 表示有有效目标 */
 	bool ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOutValid) const;
 

@@ -2,10 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "WeaponGameState.h"
-#include "WeaponMatchSnapshot.generated.h"
+#include "WeaponSnapshot.generated.h"
 
+class UGameplayEffect;
+class UWeaponDataAsset;
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponMatchSnapshotVersion = 1;
+inline constexpr int32 WeaponSnapshotVersion = 1;
 
 /** State currently owned by one connected player. */
 USTRUCT()
@@ -16,7 +18,8 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 	/** Temporary identity fallback. Replace the player name with an OSS account ID before migration ships. */
 	UPROPERTY(SaveGame)
 	FString PlayerId;
-
+	
+	/* TODO: Determine whether to keep Player Name */
 	UPROPERTY(SaveGame)
 	FString PlayerName;
 
@@ -29,6 +32,9 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 	/** Lobby players may not have a Pawn yet. */
 	UPROPERTY(SaveGame)
 	bool bHasPawn = false;
+	
+	UPROPERTY(SaveGame)
+	int32 TeamId = 0;
 
 	UPROPERTY(SaveGame)
 	FVector Location = FVector::ZeroVector;
@@ -41,6 +47,18 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 
 	UPROPERTY(SaveGame)
 	FVector Velocity = FVector::ZeroVector;
+	
+	UPROPERTY(SaveGame)
+	FName CharacterConfigRowName = NAME_None;
+	
+	UPROPERTY(SaveGame)
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY(SaveGame)
+	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY(SaveGame)
+	FWeaponAttributeState AttributeState;
 };
 
 /** Minimal state needed to respawn one living enemy. */
@@ -57,9 +75,29 @@ struct LETSDEEPROCK_API FWeaponEnemySnapshot
 
 	UPROPERTY(SaveGame)
 	FRotator Rotation = FRotator::ZeroRotator;
+	
+	UPROPERTY(SaveGame)
+	FVector AimDirection = FVector(1.0f, 0.0f, 0.0f);
 
 	UPROPERTY(SaveGame)
 	FVector Velocity = FVector::ZeroVector;
+	
+	UPROPERTY(SaveGame)
+	FName EnemyConfigRowName = NAME_None;
+
+	UPROPERTY(SaveGame)
+	FWeaponAttributeState AttributeState;
+};
+
+USTRUCT()
+struct FWeaponAttributeState
+{
+	GENERATED_BODY()
+
+	// 所有需要快照的属性值，key 为 GameplayTag（如 "Attr.Health"）
+	// Capture 时遍历 AttributeSet 获取当前值，Restore 时 SetNumericAttributeBase 写入
+	UPROPERTY(SaveGame)
+	TMap<FGameplayTag, float> Values;
 };
 
 /**
@@ -67,12 +105,12 @@ struct LETSDEEPROCK_API FWeaponEnemySnapshot
  * New domains should be added after their owner exposes a tested Capture/Restore pair.
  */
 USTRUCT()
-struct LETSDEEPROCK_API FWeaponMatchSnapshot
+struct LETSDEEPROCK_API FWeaponSnapshot
 {
 	GENERATED_BODY()
 
 	UPROPERTY(SaveGame)
-	int32 SchemaVersion = WeaponMatchSnapshotVersion;
+	int32 SchemaVersion = WeaponSnapshotVersion;
 
 	/** Stable for the lifetime of one match, including server travel. */
 	UPROPERTY(SaveGame)

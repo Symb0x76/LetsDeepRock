@@ -1,16 +1,18 @@
 #include "WeaponSnapshotCoordinator.h"
 
+#include "AbilitySystemComponent.h"
+#include "AttributeModifierManager.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
 #include "WeaponGameState.h"
 #include "WeaponPlayerState.h"
 #include "WeaponCharacter.h"
 #include "WeaponNPC.h"
-#include "WeaponMatchSnapshot.h"
+#include "WeaponSnapshot.h"
 #include "EngineUtils.h"
 #include "UObject/Package.h"
 
-bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnapshot& OutSnapshot, FString& OutError)
+bool UWeaponSnapshotCoordinator::CaptureSnapshot(const UWorld* World, FWeaponSnapshot& OutSnapshot, FString& OutError)
 {
 	OutError.Reset();
 	if (!World || World->GetNetMode() == NM_Client)
@@ -26,7 +28,7 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 		return false;
 	}
 
-	FWeaponMatchSnapshot MatchSnapshot;
+	FWeaponSnapshot MatchSnapshot;
 	if (!ActiveMatchId.IsValid())
 	{
 		ActiveMatchId = FGuid::NewGuid();
@@ -53,7 +55,7 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(UWorld* World, FWeaponMatchSnap
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
+bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError) const
 {
 	const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
 	for (APlayerState* BasePlayerState : GameState->PlayerArray)
@@ -66,9 +68,11 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 
 		FWeaponPlayerSnapshot& Player = Snapshot.Players.AddDefaulted_GetRef();
 		Player.PlayerId = PlayerState->GetPlayerName();
-		Player.PlayerName = PlayerState->GetPlayerName();
+		Player.PlayerName = PlayerState->GetPlayerName();	/* TODO: Determine whether to keep Player Name */
 		Player.SlotIndex = PlayerState->GetPlayerSlotIndex();
 		Player.bIsReady = PlayerState->GetIsPlayerReady();
+		Player.TeamId = PlayerState->GetTeamId();
+		Player.AttributeState.Values = CaptureAttributeValues(PlayerState->GetAbilitySystemComponent());
 
 		const AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerState->GetPawn());
 		if (!Character)
@@ -77,6 +81,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 		}
 
 		Player.bHasPawn = true;
+		Player.CharacterConfigRowName = Character->GetCharacterConfigRowName();
 		Player.Location = Character->GetActorLocation();
 		Player.Rotation = Character->GetActorRotation();
 		Player.AimDirection = Character->GetAimDirection();
@@ -91,7 +96,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponMatc
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSnapshot& Snapshot, FString& OutError) const
+bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError)
 {
 	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
 	{
@@ -101,6 +106,9 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 		EnemySnapshot.Location = Enemy->GetActorLocation();
 		EnemySnapshot.Rotation = Enemy->GetActorRotation();
 		EnemySnapshot.Velocity = Enemy->GetVelocity();
+		EnemySnapshot.AimDirection = Enemy->GetActorForwardVector();
+		EnemySnapshot.EnemyConfigRowName = Enemy->GetEnemyConfigRowName();
+		EnemySnapshot.AttributeState.Values = CaptureAttributeValues(Enemy->GetAbilitySystemComponent());
 		if (!IsFiniteVector(EnemySnapshot.Location) || !IsFiniteVector(EnemySnapshot.Velocity))
 		{
 			OutError = FString::Printf(TEXT("Enemy %s Location / Velocity includes NaN or Infinity"), *Enemy->GetName());
@@ -110,10 +118,40 @@ bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponMatchSn
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponMatchSnapshot& Snapshot, FString& OutError) const
+TMap<FGameplayTag, float> UWeaponSnapshotCoordinator::CaptureAttributeValues(const UAbilitySystemComponent* ASC)
+{
+	TMap<FGameplayTag, float> Result;
+	if (!ASC)
+	{
+		return Result;
+	}
+	for (const auto& [Tag, Attr] : UAttributeModifierManager::GetAttributeTagMap())
+	{
+		Result.Add(Tag, ASC->GetNumericAttribute(Attr));
+	}
+	return Result;
+}
+
+void UWeaponSnapshotCoordinator::RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values)
+{
+	if (!ASC)
+	{
+		return;
+	}
+	for (const auto& [Tag, Value] : Values)
+	{
+		if (const FGameplayAttribute* Attr = UAttributeModifierManager::GetAttributeTagMap().Find(Tag))
+		{
+			ASC->SetNumericAttributeBase(*Attr, Value);
+		}
+	}
+}
+
+
+bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponSnapshot& Snapshot, FString& OutError)
 {
 	OutError.Reset();
-	if (Snapshot.SchemaVersion != WeaponMatchSnapshotVersion || Snapshot.Revision <= 0 || !Snapshot.MatchId.IsValid())
+	if (Snapshot.SchemaVersion != WeaponSnapshotVersion || Snapshot.Revision <= 0 || !Snapshot.MatchId.IsValid())
 	{
 		OutError = TEXT("Snapshot version, identity or revision is invalid");
 		return false;
