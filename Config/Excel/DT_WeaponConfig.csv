@@ -1,0 +1,2 @@
+﻿---,DisplayName,FireModeIds,DefaultFireModeId,AmmoType,MagazineSize,ReserveAmmo,ReloadDuration,WeaponMesh,MuzzleSocketName
+Ranger_ArcaneCrossbow,"奥术连弩","Ranger_ArcaneCrossbow_RapidBolt,Ranger_ArcaneCrossbow_ChargedMissile",Ranger_ArcaneCrossbow_RapidBolt,None,0,0,0,"",Muzzle

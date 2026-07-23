@@ -10,6 +10,7 @@
 class UGridMapData;
 class UGridMapGenerator;
 class UGridMapRenderer;
+class UVisionSourceComponent;
 
 /**
  * 网格地图的唯一权威入口。
@@ -64,6 +65,27 @@ public:
 	/** 服务器验证玩家距离、格子状态和建造类型后提交建造 Delta。 */
 	bool TryBuildTileAtWorldLocation(AActor* RequestingActor, const FVector& WorldLocation, EGridTileType BuildType);
 
+	/** 查询本地玩家队伍当前是否可见指定格子。 */
+	UFUNCTION(BlueprintPure, Category = "GridMap|Vision")
+	bool IsTileVisible(int32 GridX, int32 GridY) const;
+
+	UFUNCTION(BlueprintPure, Category = "GridMap|Vision")
+	int32 GetVisibleTileCount() const;
+
+	/** 地形或外部状态变化后请求下一帧重新计算视野。 */
+	UFUNCTION(BlueprintCallable, Category = "GridMap|Vision")
+	void MarkVisionDirty();
+
+	/** 是否绘制本地视野调试图形。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Vision|Debug")
+	bool bDrawVisionDebug = false;
+
+	/** 绿色格直接来自实际视野使用的同一 bitset；单次绘制可能被此上限截断。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Vision|Debug", meta = (ClampMin = "0"))
+	int32 MaxDebugDrawTiles = 2000;
+
+	// ===== 事件 =====
+
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnTileDestroyed, int32, GridX, int32, GridY);
 
 	UPROPERTY(BlueprintAssignable, Category = "GridMap|Events")
@@ -81,6 +103,7 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
 
 private:
 	UPROPERTY()
@@ -112,4 +135,36 @@ private:
 	void ApplyAllReplicatedDeltas();
 	void MarkTileNavigationDirty(int32 GridX, int32 GridY);
 	int32 GetDefaultHealthForType(EGridTileType TileType) const;
+
+	/** 仅本地维护的当前队伍可见位图，不参与复制。 */
+	TBitArray<> VisibleTiles;
+
+	float VisionUpdateAccumulator = 0.0f;
+	bool bVisionDirty = true;
+	static constexpr float VisionUpdateInterval = 0.15f;
+	static constexpr float VisionDirectionChangeDegrees = 2.0f;
+
+	struct FVisionSourceSnapshot
+	{
+		TWeakObjectPtr<UVisionSourceComponent> Source;
+		uint8 Shape = 0;
+		float Range = 0.0f;
+		float HalfAngle = 0.0f;
+		int32 TeamId = 0;
+		int32 GridX = INDEX_NONE;
+		int32 GridY = INDEX_NONE;
+		FVector2D Direction = FVector2D::ZeroVector;
+	};
+
+	TArray<FVisionSourceSnapshot> VisionSourceSnapshots;
+	int32 LastSampledLocalTeamId = 0;
+	bool bHasSampledLocalTeam = false;
+
+	void SampleVisionSourceState();
+	void RebuildLocalVisibility();
+	bool HasLineOfSight(int32 SourceX, int32 SourceY, int32 TargetX, int32 TargetY) const;
+	void DrawVisionDebug() const;
+
+	/** 内部：破坏格子后的清理工作（移除渲染实例、更新 NavMesh） */
+	void OnTileDestroyedInternal(int32 GridX, int32 GridY);
 };

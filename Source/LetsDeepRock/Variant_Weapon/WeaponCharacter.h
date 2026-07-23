@@ -19,6 +19,7 @@ class UWeaponEquipmentComponent;
 class UGameplayAbility;
 class UGrenadeTrajectoryPreviewComponent;
 class UWeaponGrenadeDataAsset;
+class UVisionSourceComponent;
 struct FGrenadeBallisticsOutput;
 
 /**
@@ -44,6 +45,10 @@ class AWeaponCharacter : public ACharacter, public IAbilitySystemInterface
 	/** 玩家相机 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	UCameraComponent* Camera;
+
+	/** 角色锥形视野来源。 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UVisionSourceComponent> VisionSource;
 
 protected:
 

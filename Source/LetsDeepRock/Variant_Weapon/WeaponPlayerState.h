@@ -66,6 +66,13 @@ public:
 
 	//~ IAbilitySystemInterface
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	UFUNCTION(BlueprintPure, Category = "Vision")
+	int32 GetTeamId() const { return TeamId; }
+
+	UFUNCTION(BlueprintCallable, Category = "Vision")
+	void SetTeamId(int32 InTeamId);
 
 	/** 类型化访问 HealthSet */
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
@@ -81,8 +88,6 @@ public:
 
 	/** 类型化访问 ResourceSet */
 	UWeaponResourceSet* GetResourceSet() const { return ResourceSet; }
-	
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 	UFUNCTION(BlueprintPure, Category = "Player")
 	int32 GetPlayerSlotIndex() const { return LobbyState.SlotIndex; }
@@ -113,6 +118,9 @@ protected:
 	void ServerSetPlayerReady(bool bNewIsReady);
 
 	void ApplyPlayerReadyRequest(bool bNewIsReady);
+
+	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Vision")
+	int32 TeamId = 0;
 
 	/** 能力系统组件（在 PlayerState 上创建并复制） */
 	UPROPERTY(VisibleAnywhere, Category = "GAS")

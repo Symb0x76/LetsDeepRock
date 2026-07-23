@@ -23,7 +23,7 @@ UGA_Melee::UGA_Melee()
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 
 	// 配置 Ability Tag
-	AbilityTags.AddTag(TAG_Ability_Weapon_Melee);
+	SetAssetTags(FGameplayTagContainer(TAG_Ability_Weapon_Melee));
 
 	// 激活阻断 Tag：Cooldown 期间不可激活
 	ActivationBlockedTags.AddTag(TAG_Cooldown_Weapon_Melee);

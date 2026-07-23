@@ -1,0 +1,2 @@
+﻿---,DisplayName,ToolType,ActivationAbilityClass,SpawnedActorClass,MaxUseCount,ResupplyAmount,Cooldown,SpawnDistance,BehaviorConfigId
+Ranger_ConstructSpriteDrone,"构装精灵无人机",Drone,"","",1,0,0,300,Ranger_ConstructSpriteDrone_Default

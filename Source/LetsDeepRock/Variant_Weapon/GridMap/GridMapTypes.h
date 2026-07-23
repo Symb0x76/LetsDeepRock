@@ -54,6 +54,12 @@ struct FGridTileData
 		return TileType == EGridTileType::Empty;
 	}
 
+	/** Empty 不遮挡视线，其余当前地形类型均遮挡。 */
+	bool BlocksVision() const
+	{
+		return TileType != EGridTileType::Empty;
+	}
+
 	/** 判断该格子是否可被破坏 */
 	bool IsDestructible() const
 	{

@@ -18,7 +18,7 @@ UGA_NPC_Melee::UGA_NPC_Melee()
 	InstancingPolicy = EGameplayAbilityInstancingPolicy::InstancedPerActor;
 
 	// 配置 Ability Tag（复用近战标识）
-	AbilityTags.AddTag(TAG_Ability_Weapon_Melee);
+	SetAssetTags(FGameplayTagContainer(TAG_Ability_Weapon_Melee));
 
 	// 死亡时阻断
 	ActivationBlockedTags.AddTag(TAG_State_Dead);

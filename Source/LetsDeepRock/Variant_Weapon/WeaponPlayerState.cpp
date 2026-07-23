@@ -55,6 +55,15 @@ void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	
 	// 注册子类复制规则
 	DOREPLIFETIME(AWeaponPlayerState, LobbyState);
+	DOREPLIFETIME(AWeaponPlayerState, TeamId);
+}
+
+void AWeaponPlayerState::SetTeamId(int32 InTeamId)
+{
+	if (HasAuthority())
+	{
+		TeamId = InTeamId;
+	}
 }
 
 void AWeaponPlayerState::SetPlayerSlotIndex(const int32 NewSlotIndex)

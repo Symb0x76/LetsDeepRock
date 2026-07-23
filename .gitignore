@@ -91,7 +91,10 @@ AGENTS.md
 
 # --- opencode 本地配置 ---
 opencode.json
-.opencode/
+.opencode/*
+!.opencode/.gitignore
+!.opencode/skills/
+!.opencode/skills/**
 
 # --- 构建脚本本地配置（每个成员各自的引擎路径）---
 ue_root.cfg

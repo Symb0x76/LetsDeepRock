@@ -1,0 +1,2 @@
+﻿---,DisplayName,CharacterAttributeRow,PrimaryWeaponId,SecondarySlotType,SecondaryItemId,GrenadeIds,GrenadeVariantSetId,DefaultGrenadeId
+Ranger,"游侠",Ranger,Ranger_ArcaneCrossbow,Tool,Ranger_ConstructSpriteDrone,"Ranger_ElementGrenade_Fire,Ranger_ElementGrenade_Frost,Ranger_ElementGrenade_Electric,Ranger_ElementGrenade_Acid",Ranger_ElementGrenade,Ranger_ElementGrenade_Fire
