@@ -9,6 +9,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
+#include "GameFramework/Pawn.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Net/UnrealNetwork.h"
 
@@ -18,7 +19,7 @@ AWeaponProjectile::AWeaponProjectile()
 
 	// 复制：投射物需要从服务端复制到客户端
 	bReplicates = true;
-	SetReplicateMovement(true);
+	AActor::SetReplicateMovement(true);
 
 	// 生命周期：超时自动销毁
 	InitialLifeSpan = 3.0f;
@@ -90,7 +91,8 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
 	SetOwner(InInstigator);
-	ApplyInitializationState();
+	// ApplyInitializationState 由 FinishSpawning→BeginPlay（服务端）或 OnRep（客户端）统一触发，
+	// 避免 Deferred Spawn 期间 GetActorForwardVector 读到 ExecuteConstruction 前的中间旋转。
 }
 
 void AWeaponProjectile::OnRep_InitializationState()
@@ -116,7 +118,10 @@ void AWeaponProjectile::ApplyInitializationState()
 		ProjectileMovement->MaxSpeed = InitializationState.ProjectileSpeed;
 		// 生成阶段已经按 SpawnTransform 的朝向把局部初始速度转换到世界空间；
 		// 此处若再次调用 SetVelocityInLocalSpace，会把当前朝向叠加一次，导致偏角翻倍。
-		ProjectileMovement->Velocity = GetActorForwardVector() * InitializationState.ProjectileSpeed;
+		const FVector SpawnForward = GetActorForwardVector();
+		ProjectileMovement->Velocity = SpawnForward * InitializationState.ProjectileSpeed;
+		UE_LOG(LogTemp, Warning, TEXT("[Projectile] SpawnForward=(%.2f, %.2f) Vel=(%.2f, %.2f) RotYaw=%.1f"),
+			SpawnForward.X, SpawnForward.Y, ProjectileMovement->Velocity.X, ProjectileMovement->Velocity.Y, GetActorRotation().Yaw);
 	}
 }
 
@@ -198,7 +203,7 @@ void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 		return;
 	}
 
-	// 获取射击者（Source）的 ASC，用于正确的伤害归因
+	// 获取射击者（Source）的 ASC，用于正确伤害归因
 	UAbilitySystemComponent* SourceASC = nullptr;
 	if (InitializationState.InstigatorActor)
 	{

@@ -8,9 +8,9 @@
 #include "Weapons/WeaponProjectile.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/PlayerController.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponCharacter.h"
+#include "Engine/World.h"
 
 UGA_Fire::UGA_Fire()
 {
@@ -146,8 +146,7 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 		? Cast<AWeaponCharacter>(Avatar)->GetAimDirection().GetSafeNormal2D()
 		: Avatar->GetActorForwardVector().GetSafeNormal2D();
 
-	AWeaponBase* WeaponActor = GetWeaponActor(ActorInfo);
-	if (WeaponActor)
+	if (AWeaponBase* WeaponActor = GetWeaponActor(ActorInfo))
 	{
 		SpawnLocation = WeaponActor->GetMuzzleLocation();
 		SpawnRotation = WeaponActor->GetMuzzleRotation();
@@ -165,11 +164,16 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	// 俯视角射击：保持投射物水平飞行（Pitch=0）
 	SpawnRotation.Pitch = 0.0f;
 
+	UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] AimDir=(%.2f, %.2f) Yaw=%.1f SpawnYaw=%.1f CharFwd=(%.2f, %.2f)"),
+		AimDirection.X, AimDirection.Y,
+		AimDirection.Rotation().Yaw, SpawnRotation.Yaw,
+		Avatar->GetActorForwardVector().X, Avatar->GetActorForwardVector().Y);
+
 	// Deferred Spawn 保证初始化状态在 BeginPlay 前写入。
 	const FTransform SpawnTransform(SpawnRotation, SpawnLocation);
 	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActorDeferred<AWeaponProjectile>(
 		WeaponData->ProjectileClass,
-		SpawnTransform,
+		FTransform::Identity,
 		Avatar,
 		Cast<APawn>(Avatar),
 		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
