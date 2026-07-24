@@ -9,6 +9,7 @@
 #include "WeaponCharacter.h"
 #include "GameFramework/Character.h"
 #include "WeaponGameplayTags.h"
+#include "Engine/World.h"
 
 UGA_ThrowGrenade::UGA_ThrowGrenade()
 {
