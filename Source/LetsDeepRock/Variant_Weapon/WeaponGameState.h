@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @Author: Symb0x76 9667434@qq.com
  * @Date: 2026-07-13 11:37:24
  * @LastEditors: Symb0x76 9667434@qq.com
@@ -20,14 +20,15 @@ enum class EWeaponMatchPhase : uint8
 	/* 等待阶段 */
 	Waiting = 0 UMETA(DisplayName = "Waiting"),
 	
+	/* 开局倒计时 */
+	Starting = 1 UMETA(DisplayName = "Starting"),
+	
 	/* 游戏中 */
-	InGame = 1 UMETA(DisplayName = "In Game"),
+	InGame = 2 UMETA(DisplayName = "In Game"),
 	
 	/* 结算 */
-	Ending = 2 UMETA(DisplayName = "Ending"),
-
-	/* 开局倒计时；追加到末尾以保持已有枚举序号稳定 */
-	Starting = 3 UMETA(DisplayName = "Starting"),
+	Ending = 3 UMETA(DisplayName = "Ending"),
+	
 };
 
 /** 客户端显示战局阶段所需的完整快照。 */
@@ -44,7 +45,7 @@ struct FWeaponReplicatedMatchState
 	float PhaseEndServerTime = 0.0f;
 };
 
-// 定义 反射 可多监听 一参数 委托
+// 定义 反射 可多监听 单参数 委托
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FOnWeaponMatchPhaseChanged,	// 委托类型名
 	EWeaponMatchPhase,	// 事件携带的数据类型
@@ -101,11 +102,10 @@ protected:
 	FWeaponReplicatedMatchState MatchState;
 	
 	UFUNCTION()
-	void OnRep_MatchState();
+	void OnRep_MatchState() const;
 
 private:
 	friend class AWeaponGameMode;
-
-	/** 只有服务器 GameMode 可以提交阶段转移。 */
+	friend class UWeaponSnapshotCoordinator;
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
 };

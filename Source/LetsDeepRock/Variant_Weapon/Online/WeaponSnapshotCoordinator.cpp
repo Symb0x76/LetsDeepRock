@@ -4,7 +4,9 @@
 #include "AttributeModifierManager.h"
 #include "Engine/World.h"
 #include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerController.h"
 #include "WeaponGameState.h"
+#include "WeaponGameMode.h"
 #include "WeaponPlayerState.h"
 #include "WeaponCharacter.h"
 #include "WeaponNPC.h"
@@ -179,7 +181,7 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponSnapshot& Snapsho
 		}
 		if (Player.bHasPawn && (!IsFiniteVector(Player.Location) || !IsFiniteVector(Player.AimDirection) || !IsFiniteVector(Player.Velocity)))
 		{
-			OutError = TEXT("Snapshot has player Pawn state containing NaN or Infinity");
+			OutError = TEXT("Snapshot has player Pawn state containing NaN or infinity");
 			return false;
 		}
 
@@ -189,10 +191,145 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponSnapshot& Snapsho
 
 	for (const FWeaponEnemySnapshot& Enemy : Snapshot.Enemies)
 	{
-		if (!Enemy.EnemyClass.IsValid() || !IsFiniteVector(Enemy.Location) || !IsFiniteVector(Enemy.Velocity))
+		if (!Enemy.EnemyClass.IsValid() || !IsFiniteVector(Enemy.Location) || !IsFiniteVector(Enemy.Velocity) || !IsFiniteVector(Enemy.AimDirection))
 		{
 			OutError = TEXT("Snapshot has invalid enemy class or movement state");
 			return false;
+		}
+		for (const auto& [Tag, Value] : Enemy.AttributeState.Values)
+		{
+			if (!FMath::IsFinite(Value))
+			{
+				OutError = FString::Printf(TEXT("Enemy attribute %s contains NaN or infinity"), *Tag.ToString());
+				return false;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::RestoreSnapshot(const FWeaponSnapshot& Snapshot, FString& OutError)
+{
+	OutError.Reset();
+	if (!ValidateSnapshot(Snapshot, OutError))
+	{
+		return false;
+	}
+
+	const UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		OutError = TEXT("Snapshot could only be restored from valid World on server");
+		return false;
+	}
+
+	AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
+	if (!GameState)
+	{
+		OutError = TEXT("Current World does not have AWeaponGameState");
+		return false;
+	}
+
+	GameState->SetMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
+
+	if (!RestorePlayers(Snapshot, OutError) || !RestoreNPCs(Snapshot, OutError))
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::RestorePlayers(const FWeaponSnapshot& Snapshot, FString& OutError) const
+{
+	const UWorld* World = GetWorld();
+	AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
+	AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>();
+
+	for (APlayerState* BasePlayerState : GameState->PlayerArray)
+	{
+		AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState);
+		if (!PlayerState)
+		{
+			continue;
+		}
+
+		const FWeaponPlayerSnapshot* Snap = Snapshot.Players.FindByPredicate(
+			[&](const FWeaponPlayerSnapshot& P) { return P.PlayerId == PlayerState->GetPlayerName(); });
+		if (!Snap)
+		{
+			continue;
+		}
+
+		PlayerState->SetPlayerReady(Snap->bIsReady);
+		PlayerState->SetTeamId(Snap->TeamId);
+
+		if (Snap->bHasPawn)
+		{
+			APlayerController* PlayerController = PlayerState->GetPlayerController();
+			if (!PlayerController)
+			{
+				continue;
+			}
+
+			AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerController->GetPawn());
+			if (!Character && GameMode)
+			{
+				if (APawn* NewPawn = GameMode->SpawnDefaultPawnFor(PlayerController, nullptr))
+				{
+					PlayerController->Possess(NewPawn);
+					Character = Cast<AWeaponCharacter>(NewPawn);
+				}
+			}
+
+			if (Character)
+			{
+				Character->SetActorLocation(Snap->Location);
+				Character->SetActorRotation(Snap->Rotation);
+			}
+		}
+
+		RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), Snap->AttributeState.Values);
+	}
+
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::RestoreNPCs(const FWeaponSnapshot& Snapshot, FString& OutError) const
+{
+	UWorld* World = GetWorld();
+
+	TArray<AWeaponNPC*> ExistingNPCs;
+	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
+	{
+		ExistingNPCs.Add(*It);
+	}
+	for (AWeaponNPC* NPC : ExistingNPCs)
+	{
+		NPC->Destroy();
+	}
+
+	for (const FWeaponEnemySnapshot& EnemySnap : Snapshot.Enemies)
+	{
+		UClass* EnemyClass = EnemySnap.EnemyClass.TryLoadClass<AWeaponNPC>();
+		if (!EnemyClass)
+		{
+			continue;
+		}
+
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+
+		if (AWeaponNPC* Enemy = World->SpawnActor<AWeaponNPC>(EnemyClass, EnemySnap.Location, EnemySnap.Rotation, Params))
+		{
+			RestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values);
+
+			if (!IsFiniteVector(Enemy->GetActorLocation()))
+			{
+				OutError = TEXT("Restored enemy at infinite location");
+				return false;
+			}
 		}
 	}
 

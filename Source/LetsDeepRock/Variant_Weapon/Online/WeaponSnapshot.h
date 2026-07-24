@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "WeaponGameState.h"
 #include "WeaponSnapshot.generated.h"
 
@@ -8,6 +9,17 @@ class UGameplayEffect;
 class UWeaponDataAsset;
 /** Snapshot contract version. Increment only when the serialized layout changes. */
 inline constexpr int32 WeaponSnapshotVersion = 1;
+
+USTRUCT()
+struct FWeaponAttributeState
+{
+	GENERATED_BODY()
+
+	// 所有需要快照的属性值，key 为 GameplayTag（如 "Attr.Health"）
+	// Capture 时遍历 AttributeSet 获取当前值，Restore 时 SetNumericAttributeBase 写入
+	UPROPERTY(SaveGame)
+	TMap<FGameplayTag, float> Values;
+};
 
 /** State currently owned by one connected player. */
 USTRUCT()
@@ -87,17 +99,6 @@ struct LETSDEEPROCK_API FWeaponEnemySnapshot
 
 	UPROPERTY(SaveGame)
 	FWeaponAttributeState AttributeState;
-};
-
-USTRUCT()
-struct FWeaponAttributeState
-{
-	GENERATED_BODY()
-
-	// 所有需要快照的属性值，key 为 GameplayTag（如 "Attr.Health"）
-	// Capture 时遍历 AttributeSet 获取当前值，Restore 时 SetNumericAttributeBase 写入
-	UPROPERTY(SaveGame)
-	TMap<FGameplayTag, float> Values;
 };
 
 /**

@@ -76,7 +76,7 @@ float AWeaponGameState::GetRemainingPhaseTime() const
 		FMath::Max(0.0f, MatchState.PhaseEndServerTime - GetServerWorldTimeSeconds()) : 0.0f;
 }
 
-void AWeaponGameState::OnRep_MatchState()
+void AWeaponGameState::OnRep_MatchState() const
 {
 	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 }
@@ -84,7 +84,6 @@ void AWeaponGameState::OnRep_MatchState()
 void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
 	DOREPLIFETIME(AWeaponGameState, MatchState);
 }
