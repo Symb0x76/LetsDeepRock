@@ -7,7 +7,6 @@
 #include "AbilitySystemInterface.h"
 #include "AbilitySystemComponent.h"
 #include "WeaponGameplayTags.h"
-#include "WeaponNPC.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Kismet/GameplayStatics.h"
 
@@ -61,12 +60,16 @@ void UBTService_UpdatePerception::TickNode(UBehaviorTreeComponent& OwnerComp, ui
 	}
 
 	// --- GAS 状态更新 ---
-	AWeaponNPC* NPC = Cast<AWeaponNPC>(Pawn);
-	if (NPC && NPC->GetHealthSet())
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Pawn))
 	{
-		const UWeaponHealthSet* HealthSet = NPC->GetHealthSet();
-		const float MaxHealth = HealthSet->GetMaxHealth();
-		const float HealthPct = (MaxHealth > 0.0f) ? (HealthSet->GetHealth() / MaxHealth) : 0.0f;
-		BB->SetValueAsFloat(HealthPercentKey.SelectedKeyName, HealthPct);
+		if (UAbilitySystemComponent* ASC = ASI->GetAbilitySystemComponent())
+		{
+			if (const UWeaponHealthSet* HealthSet = ASC->GetSet<UWeaponHealthSet>())
+			{
+				const float MaxHealth = HealthSet->GetMaxHealth();
+				const float HealthPct = (MaxHealth > 0.0f) ? (HealthSet->GetHealth() / MaxHealth) : 0.0f;
+				BB->SetValueAsFloat(HealthPercentKey.SelectedKeyName, HealthPct);
+			}
+		}
 	}
 }
