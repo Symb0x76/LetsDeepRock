@@ -26,9 +26,9 @@ public:
 
 private:
 	bool CapturePlayers(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError) const;
-	bool CaptureNPCs(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError);
+	bool CaptureEnemies(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError);
 	bool RestorePlayers(const FWeaponSnapshot& Snapshot, FString& OutError) const;
-	bool RestoreNPCs(const FWeaponSnapshot& Snapshot, FString& OutError) const;
+	bool RestoreEnemies(const FWeaponSnapshot& Snapshot, FString& OutError) const;
 	static TMap<FGameplayTag, float> CaptureAttributeValues(const UAbilitySystemComponent* ASC);
 	static void RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
 	static bool IsFiniteVector(const FVector& Value);

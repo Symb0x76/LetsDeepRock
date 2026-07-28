@@ -36,7 +36,6 @@ public:
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
 
-	FName GetEnemyConfigRowName() const { return EnemyConfigRowName; }
 
 protected:
 

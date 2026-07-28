@@ -22,6 +22,8 @@ public:
 
 	AEnemyCharacter();
 
+	FName GetEnemyConfigRowName() const { return EnemyConfigRowName; }
+
 protected:
 
 	virtual void BeginPlay() override;

@@ -9,7 +9,7 @@
 #include "WeaponGameMode.h"
 #include "WeaponPlayerState.h"
 #include "WeaponCharacter.h"
-#include "WeaponNPC.h"
+#include "EnemyCharacter.h"
 #include "WeaponSnapshot.h"
 #include "EngineUtils.h"
 #include "UObject/Package.h"
@@ -48,7 +48,7 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(const UWorld* World, FWeaponSna
 		return false;
 	}
 
-	if (!CapturePlayers(World, MatchSnapshot, OutError) || !CaptureNPCs(World, MatchSnapshot, OutError) || !ValidateSnapshot(MatchSnapshot, OutError))
+	if (!CapturePlayers(World, MatchSnapshot, OutError) || !CaptureEnemies(World, MatchSnapshot, OutError) || !ValidateSnapshot(MatchSnapshot, OutError))
 	{
 		return false;
 	}
@@ -98,11 +98,11 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponSnap
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::CaptureNPCs(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError)
+bool UWeaponSnapshotCoordinator::CaptureEnemies(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError)
 {
-	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
+	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
 	{
-		const AWeaponNPC* Enemy = *It;
+		const AEnemyCharacter* Enemy = *It;
 		FWeaponEnemySnapshot& EnemySnapshot = Snapshot.Enemies.AddDefaulted_GetRef();
 		EnemySnapshot.EnemyClass = FSoftClassPath(Enemy->GetClass());
 		EnemySnapshot.Location = Enemy->GetActorLocation();
@@ -233,7 +233,7 @@ bool UWeaponSnapshotCoordinator::RestoreSnapshot(const FWeaponSnapshot& Snapshot
 
 	GameState->SetMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 
-	if (!RestorePlayers(Snapshot, OutError) || !RestoreNPCs(Snapshot, OutError))
+	if (!RestorePlayers(Snapshot, OutError) || !RestoreEnemies(Snapshot, OutError))
 	{
 		return false;
 	}
@@ -296,23 +296,23 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(const FWeaponSnapshot& Snapshot,
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::RestoreNPCs(const FWeaponSnapshot& Snapshot, FString& OutError) const
+bool UWeaponSnapshotCoordinator::RestoreEnemies(const FWeaponSnapshot& Snapshot, FString& OutError) const
 {
 	UWorld* World = GetWorld();
 
-	TArray<AWeaponNPC*> ExistingNPCs;
-	for (TActorIterator<AWeaponNPC> It(World); It; ++It)
+	TArray<AEnemyCharacter*> ExistingEnemies;
+	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
 	{
-		ExistingNPCs.Add(*It);
+		ExistingEnemies.Add(*It);
 	}
-	for (AWeaponNPC* NPC : ExistingNPCs)
+	for (AEnemyCharacter* Enemy : ExistingEnemies)
 	{
-		NPC->Destroy();
+		Enemy->Destroy();
 	}
 
 	for (const FWeaponEnemySnapshot& EnemySnap : Snapshot.Enemies)
 	{
-		UClass* EnemyClass = EnemySnap.EnemyClass.TryLoadClass<AWeaponNPC>();
+		UClass* EnemyClass = EnemySnap.EnemyClass.TryLoadClass<AEnemyCharacter>();
 		if (!EnemyClass)
 		{
 			continue;
@@ -321,7 +321,7 @@ bool UWeaponSnapshotCoordinator::RestoreNPCs(const FWeaponSnapshot& Snapshot, FS
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
-		if (AWeaponNPC* Enemy = World->SpawnActor<AWeaponNPC>(EnemyClass, EnemySnap.Location, EnemySnap.Rotation, Params))
+		if (AEnemyCharacter* Enemy = World->SpawnActor<AEnemyCharacter>(EnemyClass, EnemySnap.Location, EnemySnap.Rotation, Params))
 		{
 			RestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values);
 
