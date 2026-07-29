@@ -9,6 +9,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "OnlineSubsystemUtils.h"
 #include "UObject/UObjectGlobals.h"
+#include "WeaponGameState.h"
+#include "UObject/Package.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeaponSession, Log, All);
 
@@ -140,6 +142,13 @@ bool UWeaponSessionSubsystem::BeginCreateSession()
 	if (!Sessions.IsValid())
 	{
 		FailPendingAction(TEXT("Online Session interface is unavailable."));
+		return false;
+	}
+
+	AWeaponGameState* GameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!GameState || !GameState->SetMaxPlayersAuthority(PendingHostMaxPlayers))
+	{
+		FailPendingAction(TEXT("Failed to apply host capacity to AWeaponGameState."));
 		return false;
 	}
 

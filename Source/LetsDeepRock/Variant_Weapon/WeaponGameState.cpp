@@ -52,6 +52,25 @@ int32 AWeaponGameState::GetConnectedPlayerCount() const
 	return PlayerArray.Num();
 }
 
+bool AWeaponGameState::SetMaxPlayersAuthority(const int32 NewMaxPlayers)
+{
+	if (!HasAuthority() || NewMaxPlayers < 1 || NewMaxPlayers > 4 || PlayerArray.Num() > NewMaxPlayers)
+	{
+		return false;
+	}
+	for (const APlayerState* PlayerState : PlayerArray)
+	{
+		if (const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState); WeaponPlayerState && WeaponPlayerState->GetPlayerSlotIndex() >= NewMaxPlayers)
+		{
+			return false;
+		}
+	}
+
+	MaxPlayers = NewMaxPlayers;
+	ForceNetUpdate();
+	return true;
+}
+
 void AWeaponGameState::SetMatchPhase(const EWeaponMatchPhase NewPhase, const float PhaseDuration)
 {
 	if (!HasAuthority())

@@ -37,12 +37,12 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 		UnequipWeapon();
 	}
 
-	const int32 NewWeaponIndex = EquipmentState.WeaponInventory.IndexOfByKey(InWeaponData);
+	const int32 NewWeaponIndex = DefaultWeapons.IndexOfByKey(InWeaponData);
 	if (NewWeaponIndex == INDEX_NONE)
 	{
 		return;
 	}
-	EquipmentState.CurrentWeaponIndex = NewWeaponIndex;
+	CurrentWeaponIndex = NewWeaponIndex;
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -84,28 +84,26 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 
 UWeaponDataAsset* UWeaponEquipmentComponent::GetCurrentWeaponData() const
 {
-	return EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex) ?
-		EquipmentState.WeaponInventory[EquipmentState.CurrentWeaponIndex] : nullptr;
+	return DefaultWeapons.IsValidIndex(CurrentWeaponIndex) ? DefaultWeapons[CurrentWeaponIndex] : nullptr;
 }
 
-void UWeaponEquipmentComponent::OnRep_EquipmentState()
+void UWeaponEquipmentComponent::OnRep_CurrentWeaponIndex()
 {
 	ensureMsgf(
-		EquipmentState.CurrentWeaponIndex == INDEX_NONE ||
-		EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex),
-		TEXT("Replicated weapon index is outside the replicated inventory."));
+		CurrentWeaponIndex == INDEX_NONE || DefaultWeapons.IsValidIndex(CurrentWeaponIndex),
+		TEXT("Replicated weapon index is outside DefaultWeapons."));
 	NotifyEquipmentChanged();
 }
 
 void UWeaponEquipmentComponent::NotifyEquipmentChanged()
 {
-	OnEquipmentChanged.Broadcast(EquipmentState.CurrentWeaponIndex);
+	OnEquipmentChanged.Broadcast(CurrentWeaponIndex);
 }
 
 void UWeaponEquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-	DOREPLIFETIME(UWeaponEquipmentComponent, EquipmentState);
+	DOREPLIFETIME(UWeaponEquipmentComponent, CurrentWeaponIndex);
 }
 
 void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 NewIndex)
@@ -116,13 +114,13 @@ void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 Ne
 void UWeaponEquipmentComponent::SwitchWeaponAuthority(const int32 NewIndex)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() ||
-		!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) ||
-		NewIndex == EquipmentState.CurrentWeaponIndex)
+		!DefaultWeapons.IsValidIndex(NewIndex) ||
+		NewIndex == CurrentWeaponIndex)
 	{
 		return;
 	}
 
-	EquipWeapon(EquipmentState.WeaponInventory[NewIndex]);
+	EquipWeapon(DefaultWeapons[NewIndex]);
 }
 
 void UWeaponEquipmentComponent::UnequipWeapon()
@@ -171,12 +169,11 @@ UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
 	return nullptr;
 }
 
-// ---- 多武器库存与切换实现 ----
+// ---- 固定武器表与切换实现 ----
 
 void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 {
-	if (!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) ||
-		NewIndex == EquipmentState.CurrentWeaponIndex)
+	if (!DefaultWeapons.IsValidIndex(NewIndex) || NewIndex == CurrentWeaponIndex)
 	{
 		return;
 	}
@@ -198,96 +195,56 @@ void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 
 void UWeaponEquipmentComponent::SwitchToNext()
 {
-	if (EquipmentState.WeaponInventory.Num() <= 1)
+	if (DefaultWeapons.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex + 1) % EquipmentState.WeaponInventory.Num();
+	const int32 NewIndex = (CurrentWeaponIndex + 1) % DefaultWeapons.Num();
 	SwitchWeapon(NewIndex);
 }
 
 void UWeaponEquipmentComponent::SwitchToPrevious()
 {
-	if (EquipmentState.WeaponInventory.Num() <= 1)
+	if (DefaultWeapons.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex - 1 + EquipmentState.WeaponInventory.Num()) % EquipmentState.WeaponInventory.Num();
+	const int32 NewIndex = (CurrentWeaponIndex - 1 + DefaultWeapons.Num()) % DefaultWeapons.Num();
 	SwitchWeapon(NewIndex);
 }
 
-void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponData)
+bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIndex)
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		(SavedWeaponIndex != INDEX_NONE && !DefaultWeapons.IsValidIndex(SavedWeaponIndex)))
 	{
-		return;
+		return false;
 	}
 
-	// 不重复添加
-	if (EquipmentState.WeaponInventory.Contains(WeaponData))
+	TSet<UWeaponDataAsset*> UniqueWeapons;
+	for (UWeaponDataAsset* WeaponData : DefaultWeapons)
 	{
-		return;
+		if (!WeaponData || UniqueWeapons.Contains(WeaponData))
+		{
+			return false;
+		}
+		UniqueWeapons.Add(WeaponData);
 	}
 
-	EquipmentState.WeaponInventory.Add(WeaponData);
+	UnequipWeapon();
+	CurrentWeaponIndex = INDEX_NONE;
 
-	// 如果是第一把武器，自动装备
-	if (EquipmentState.CurrentWeaponIndex == INDEX_NONE)
+	if (SavedWeaponIndex != INDEX_NONE)
 	{
-		SwitchWeapon(0);
+		EquipWeapon(DefaultWeapons[SavedWeaponIndex]);
 	}
 	else
 	{
 		GetOwner()->ForceNetUpdate();
 		NotifyEquipmentChanged();
 	}
-}
 
-void UWeaponEquipmentComponent::RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData)
-{
-	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
-	{
-		return;
-	}
-
-	const int32 RemoveIndex = EquipmentState.WeaponInventory.IndexOfByKey(WeaponData);
-	if (RemoveIndex == INDEX_NONE)
-	{
-		return;
-	}
-
-	// 如果移除的是当前装备的武器
-	if (RemoveIndex == EquipmentState.CurrentWeaponIndex)
-	{
-		UnequipWeapon();
-		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
-
-		// 库存还有武器则切到第 0 个，否则没有武器
-		if (EquipmentState.WeaponInventory.Num() > 0)
-		{
-			SwitchWeapon(0);
-		}
-		else
-		{
-			EquipmentState.CurrentWeaponIndex = INDEX_NONE;
-			GetOwner()->ForceNetUpdate();
-			NotifyEquipmentChanged();
-		}
-	}
-	else
-	{
-		// 移除的不是当前装备的武器，只从数组移除
-		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
-
-		// 如果移除的武器索引在当前武器之前，需要前移索引
-		if (RemoveIndex < EquipmentState.CurrentWeaponIndex)
-		{
-			--EquipmentState.CurrentWeaponIndex;
-		}
-
-		GetOwner()->ForceNetUpdate();
-		NotifyEquipmentChanged();
-	}
+	return true;
 }

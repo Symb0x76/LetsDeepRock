@@ -74,6 +74,51 @@ UAbilitySystemComponent* AWeaponCharacter::GetAbilitySystemComponent() const
 	return AbilitySystemComponent;
 }
 
+const FCharacterAttributeRow* AWeaponCharacter::ResolveCharacterConfigRow() const
+{
+	if (const UGameInstance* GameInstance = GetGameInstance())
+	{
+		if (const UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
+		{
+			return DataSubsystem->GetCharacterAttributes(CharacterConfigRowName);
+		}
+	}
+	return nullptr;
+}
+
+void AWeaponCharacter::RefreshCharacterConfigPresentation()
+{
+	if (const FCharacterAttributeRow* CharacterRow = ResolveCharacterConfigRow())
+	{
+		VisionSource->ConfigureCone(CharacterRow->VisionRange, CharacterRow->VisionHalfAngle);
+	}
+}
+
+bool AWeaponCharacter::SetCharacterConfigRowNameAuthoritative(const FName NewRowName)
+{
+	if (!HasAuthority() || NewRowName.IsNone())
+	{
+		return false;
+	}
+
+	const FName PreviousRowName = CharacterConfigRowName;
+	CharacterConfigRowName = NewRowName;
+	if (!ResolveCharacterConfigRow())
+	{
+		CharacterConfigRowName = PreviousRowName;
+		return false;
+	}
+
+	RefreshCharacterConfigPresentation();
+	ForceNetUpdate();
+	return true;
+}
+
+void AWeaponCharacter::OnRep_CharacterConfigRowName()
+{
+	RefreshCharacterConfigPresentation();
+}
+
 void AWeaponCharacter::PossessedBy(AController* NewController)
 {
 	Super::PossessedBy(NewController);
@@ -81,12 +126,12 @@ void AWeaponCharacter::PossessedBy(AController* NewController)
 	// 服务端：Pawn 被 Possess、PlayerState 已就绪，初始化 ASC ActorInfo
 	InitAbilitySystem();
 
-	// 服务端：ASC 就绪后，将默认武器列表加入库存并装备第 0 个
+	// 服务端：ASC 就绪后装备静态 DefaultWeapons 中的第一把武器。
 	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
 	{
-		for (UWeaponDataAsset* WeaponData : EquipComp->GetDefaultWeapons())
+		if (UWeaponDataAsset* DefaultWeapon = EquipComp->GetDefaultWeaponData())
 		{
-			EquipComp->AddWeaponToInventory(WeaponData);
+			EquipComp->EquipWeapon(DefaultWeapon);
 		}
 	}
 }
@@ -120,14 +165,7 @@ void AWeaponCharacter::InitAbilitySystem()
 	VisionSource->TeamId = PS->GetTeamId();
 
 	// 配置表查询在服务端和本地客户端都执行，保证本地视野参数一致。
-	const FCharacterAttributeRow* CharacterRow = nullptr;
-	if (UGameInstance* GI = GetGameInstance())
-	{
-		if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
-		{
-			CharacterRow = DataSys->GetCharacterAttributes(CharacterConfigRowName);
-		}
-	}
+	const FCharacterAttributeRow* CharacterRow = ResolveCharacterConfigRow();
 	if (CharacterRow)
 	{
 		VisionSource->ConfigureCone(CharacterRow->VisionRange, CharacterRow->VisionHalfAngle);
@@ -282,6 +320,7 @@ void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponCharacter, AimDirection);
+	DOREPLIFETIME(AWeaponCharacter, CharacterConfigRowName);
 }
 
 void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)

@@ -18,6 +18,7 @@ class UAbilitySystemComponent;
 class UWeaponEquipmentComponent;
 class UGameplayAbility;
 class UGrenadeTrajectoryPreviewComponent;
+struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
 struct FGrenadeBallisticsOutput;
@@ -115,6 +116,7 @@ public:
 	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
 
 	FName GetCharacterConfigRowName() const { return CharacterConfigRowName; }
+	bool SetCharacterConfigRowNameAuthoritative(FName NewRowName);
 	
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
@@ -139,8 +141,14 @@ protected:
 	virtual void HandleHealthDepleted(AActor* OwningActor);
 
 	/** 角色配置表行名（策划在蓝图中指定） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attributes")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_CharacterConfigRowName, Category = "Attributes")
 	FName CharacterConfigRowName = FName("Default");
+
+	const FCharacterAttributeRow* ResolveCharacterConfigRow() const;
+	void RefreshCharacterConfigPresentation();
+
+	UFUNCTION()
+	void OnRep_CharacterConfigRowName();
 
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;

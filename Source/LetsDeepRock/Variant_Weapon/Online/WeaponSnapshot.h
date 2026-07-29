@@ -5,10 +5,8 @@
 #include "WeaponGameState.h"
 #include "WeaponSnapshot.generated.h"
 
-class UGameplayEffect;
-class UWeaponDataAsset;
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 2;
+inline constexpr int32 WeaponSnapshotVersion = 4;
 
 USTRUCT()
 struct FWeaponAttributeState
@@ -61,9 +59,6 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 	FName CharacterConfigRowName = NAME_None;
 	
 	UPROPERTY(SaveGame)
-	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
-
-	UPROPERTY(SaveGame)
 	int32 CurrentWeaponIndex = INDEX_NONE;
 
 	UPROPERTY(SaveGame)
@@ -114,12 +109,6 @@ struct LETSDEEPROCK_API FWeaponSnapshot
 	/** Monotonically increasing inside one MatchId. */
 	UPROPERTY(SaveGame)
 	int64 Revision = 0;
-
-	UPROPERTY(SaveGame)
-	FString MapPackageName;
-
-	UPROPERTY(SaveGame)
-	int32 MaxPlayers = 4;
 
 	UPROPERTY(SaveGame)
 	EWeaponMatchPhase MatchPhase = EWeaponMatchPhase::Waiting;

@@ -11,22 +11,6 @@
 class AWeaponBase;
 class UAbilitySystemComponent;
 
-/**
- * 服务端权威的装备状态。将库存和当前索引放进同一复制属性，
- * 客户端不会观察到「新索引配旧库存」的中间状态。
- */
-USTRUCT()
-struct FWeaponEquipmentState
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
-
-	UPROPERTY()
-	int32 CurrentWeaponIndex = INDEX_NONE;
-};
-
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponEquipmentChanged, int32, NewWeaponIndex);
 
 /**
@@ -67,10 +51,7 @@ public:
 	/** 获取默认武器配置（供 WeaponCharacter::PossessedBy 调用） */
 	UWeaponDataAsset* GetDefaultWeaponData() const { return DefaultWeapons.Num() > 0 ? DefaultWeapons[0] : nullptr; }
 
-	/** 获取默认武器列表（供 WeaponCharacter 初始化库存用） */
-	const TArray<UWeaponDataAsset*>& GetDefaultWeapons() const { return DefaultWeapons; }
-
-	// ---- 多武器库存与切换 ----
+	// ---- 固定武器表与选择 ----
 
 	/** 切换到指定索引的武器（0-based） */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
@@ -84,19 +65,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void SwitchToPrevious();
 
-	/** 获取武器库存 */
-	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return EquipmentState.WeaponInventory; }
-
 	/** 获取当前武器索引 */
-	int32 GetCurrentWeaponIndex() const { return EquipmentState.CurrentWeaponIndex; }
+	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
 
-	/** 向库存添加一把武器（如果已存在则不重复添加） */
-	UFUNCTION(BlueprintCallable, Category = "Weapon")
-	void AddWeaponToInventory(UWeaponDataAsset* WeaponData);
-
-	/** 从库存移除一把武器（如果是当前装备则自动切换） */
-	UFUNCTION(BlueprintCallable, Category = "Weapon")
-	void RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData);
+	/** 服务端根据静态 DefaultWeapons 恢复选择；INDEX_NONE 表示不装备。 */
+	bool RestoreWeaponSelection(int32 SavedWeaponIndex);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -124,7 +97,7 @@ private:
 
 	/** 当前复制状态到达客户端时调用。 */
 	UFUNCTION()
-	void OnRep_EquipmentState();
+	void OnRep_CurrentWeaponIndex();
 
 	/** 服务端不会触发 OnRep，因此状态改变后主动通知本地 UI。 */
 	void NotifyEquipmentChanged();
@@ -142,7 +115,7 @@ private:
 	/** 已授予的近战 Ability Handle */
 	FGameplayAbilitySpecHandle MeleeAbilityHandle;
 
-	/** 服务端权威装备状态，复制到 owner 和其他观察者。 */
-	UPROPERTY(ReplicatedUsing = OnRep_EquipmentState)
-	FWeaponEquipmentState EquipmentState;
+	/** DefaultWeapons 是静态配置；只有选择索引属于运行时复制状态。 */
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeaponIndex)
+	int32 CurrentWeaponIndex = INDEX_NONE;
 };

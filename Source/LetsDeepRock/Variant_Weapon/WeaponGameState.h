@@ -13,6 +13,7 @@
 #include "WeaponGameState.generated.h"
 
 class AWeaponGameMode;
+class UWeaponSessionSubsystem;
 
 UENUM(BlueprintType)
 enum class EWeaponMatchPhase : uint8
@@ -107,5 +108,7 @@ protected:
 private:
 	friend class AWeaponGameMode;
 	friend class UWeaponSnapshotCoordinator;
+	friend class UWeaponSessionSubsystem;
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
+	bool SetMaxPlayersAuthority(int32 NewMaxPlayers);
 };
