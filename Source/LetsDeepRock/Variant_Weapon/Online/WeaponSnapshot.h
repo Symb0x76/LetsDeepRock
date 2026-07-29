@@ -8,7 +8,7 @@
 class UGameplayEffect;
 class UWeaponDataAsset;
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 1;
+inline constexpr int32 WeaponSnapshotVersion = 2;
 
 USTRUCT()
 struct FWeaponAttributeState
@@ -55,9 +55,6 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 	FRotator Rotation = FRotator::ZeroRotator;
 
 	UPROPERTY(SaveGame)
-	FVector AimDirection = FVector(1.0f, 0.0f, 0.0f);
-
-	UPROPERTY(SaveGame)
 	FVector Velocity = FVector::ZeroVector;
 	
 	UPROPERTY(SaveGame)
@@ -87,9 +84,6 @@ struct LETSDEEPROCK_API FWeaponEnemySnapshot
 
 	UPROPERTY(SaveGame)
 	FRotator Rotation = FRotator::ZeroRotator;
-	
-	UPROPERTY(SaveGame)
-	FVector AimDirection = FVector(1.0f, 0.0f, 0.0f);
 
 	UPROPERTY(SaveGame)
 	FVector Velocity = FVector::ZeroVector;

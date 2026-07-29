@@ -111,6 +111,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Combat|Aim")
 	FVector GetAimDirection() const { return FVector(AimDirection); }
 
+	/** 服务器写入瞄准方向，并同步角色的水平 Rotation。 */
+	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
+
 	FName GetCharacterConfigRowName() const { return CharacterConfigRowName; }
 	
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
@@ -189,9 +192,6 @@ protected:
 	/** 客户端提交本地瞄准意图，服务器校验后写入权威方向。 */
 	UFUNCTION(Server, Unreliable)
 	void ServerSetAimDirection(FVector_NetQuantizeNormal NewAimDirection);
-
-	/** 服务器写入瞄准方向并同步角色表现。 */
-	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
 
 	UFUNCTION()
 	void OnRep_AimDirection();

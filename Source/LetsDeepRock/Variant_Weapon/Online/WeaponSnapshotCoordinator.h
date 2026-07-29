@@ -32,6 +32,7 @@ private:
 	static TMap<FGameplayTag, float> CaptureAttributeValues(const UAbilitySystemComponent* ASC);
 	static void RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
 	static bool IsFiniteVector(const FVector& Value);
+	static bool IsFiniteRotator(const FRotator& Value);
 
 	/** 当前服务器战局身份；跨地图保留，不能在每次 Capture 时重新生成 */
 	FGuid ActiveMatchId;

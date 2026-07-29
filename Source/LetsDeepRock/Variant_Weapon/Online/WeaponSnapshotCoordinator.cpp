@@ -85,12 +85,11 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(const UWorld* World, FWeaponSnap
 		Player.bHasPawn = true;
 		Player.CharacterConfigRowName = Character->GetCharacterConfigRowName();
 		Player.Location = Character->GetActorLocation();
-		Player.Rotation = Character->GetActorRotation();
-		Player.AimDirection = Character->GetAimDirection();
+		Player.Rotation = FRotator(0.0f, Character->GetActorRotation().Yaw, 0.0f);
 		Player.Velocity = Character->GetVelocity();
-		if (!IsFiniteVector(Player.Location) || !IsFiniteVector(Player.AimDirection) || !IsFiniteVector(Player.Velocity))
+		if (!IsFiniteVector(Player.Location) || !IsFiniteRotator(Player.Rotation) || !IsFiniteVector(Player.Velocity))
 		{
-			OutError = FString::Printf(TEXT("Player %s Location / AimDirection / Velocity includes NaN or Infinity"), *Player.PlayerName);
+			OutError = FString::Printf(TEXT("Player %s Location / Rotation / Velocity includes NaN or Infinity"), *Player.PlayerName);
 			return false;
 		}
 	}
@@ -106,14 +105,13 @@ bool UWeaponSnapshotCoordinator::CaptureEnemies(const UWorld* World, FWeaponSnap
 		FWeaponEnemySnapshot& EnemySnapshot = Snapshot.Enemies.AddDefaulted_GetRef();
 		EnemySnapshot.EnemyClass = FSoftClassPath(Enemy->GetClass());
 		EnemySnapshot.Location = Enemy->GetActorLocation();
-		EnemySnapshot.Rotation = Enemy->GetActorRotation();
+		EnemySnapshot.Rotation = FRotator(0.0f, Enemy->GetActorRotation().Yaw, 0.0f);
 		EnemySnapshot.Velocity = Enemy->GetVelocity();
-		EnemySnapshot.AimDirection = Enemy->GetActorForwardVector();
 		EnemySnapshot.EnemyConfigRowName = Enemy->GetEnemyConfigRowName();
 		EnemySnapshot.AttributeState.Values = CaptureAttributeValues(Enemy->GetAbilitySystemComponent());
-		if (!IsFiniteVector(EnemySnapshot.Location) || !IsFiniteVector(EnemySnapshot.Velocity))
+		if (!IsFiniteVector(EnemySnapshot.Location) || !IsFiniteRotator(EnemySnapshot.Rotation) || !IsFiniteVector(EnemySnapshot.Velocity))
 		{
-			OutError = FString::Printf(TEXT("Enemy %s Location / Velocity includes NaN or Infinity"), *Enemy->GetName());
+			OutError = FString::Printf(TEXT("Enemy %s Location / Rotation / Velocity includes NaN or Infinity"), *Enemy->GetName());
 			return false;
 		}
 	}
@@ -179,7 +177,7 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponSnapshot& Snapsho
 			OutError = TEXT("Snapshot has player with out-of-bounds Slot");
 			return false;
 		}
-		if (Player.bHasPawn && (!IsFiniteVector(Player.Location) || !IsFiniteVector(Player.AimDirection) || !IsFiniteVector(Player.Velocity)))
+		if (Player.bHasPawn && (!IsFiniteVector(Player.Location) || !IsFiniteRotator(Player.Rotation) || !IsFiniteVector(Player.Velocity)))
 		{
 			OutError = TEXT("Snapshot has player Pawn state containing NaN or infinity");
 			return false;
@@ -191,7 +189,7 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(const FWeaponSnapshot& Snapsho
 
 	for (const FWeaponEnemySnapshot& Enemy : Snapshot.Enemies)
 	{
-		if (!Enemy.EnemyClass.IsValid() || !IsFiniteVector(Enemy.Location) || !IsFiniteVector(Enemy.Velocity) || !IsFiniteVector(Enemy.AimDirection))
+		if (!Enemy.EnemyClass.IsValid() || !IsFiniteVector(Enemy.Location) || !IsFiniteRotator(Enemy.Rotation) || !IsFiniteVector(Enemy.Velocity))
 		{
 			OutError = TEXT("Snapshot has invalid enemy class or movement state");
 			return false;
@@ -286,7 +284,7 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(const FWeaponSnapshot& Snapshot,
 			if (Character)
 			{
 				Character->SetActorLocation(Snap->Location);
-				Character->SetActorRotation(Snap->Rotation);
+				Character->SetAimDirectionAuthoritative(Snap->Rotation.Vector());
 			}
 		}
 
@@ -339,4 +337,9 @@ bool UWeaponSnapshotCoordinator::RestoreEnemies(const FWeaponSnapshot& Snapshot,
 bool UWeaponSnapshotCoordinator::IsFiniteVector(const FVector& Value)
 {
 	return FMath::IsFinite(Value.X) && FMath::IsFinite(Value.Y) && FMath::IsFinite(Value.Z);
+}
+
+bool UWeaponSnapshotCoordinator::IsFiniteRotator(const FRotator& Value)
+{
+	return FMath::IsFinite(Value.Pitch) && FMath::IsFinite(Value.Yaw) && FMath::IsFinite(Value.Roll);
 }
