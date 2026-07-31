@@ -3,10 +3,64 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "WeaponHostMigrationTypes.generated.h"
 
 inline constexpr int32 WeaponMigrationProtocolVersion = 1;
 inline constexpr int32 WeaponMigrationSHA256Bytes = 32;
+
+UENUM()
+enum class EWeaponMigrationRole : uint8
+{
+	None,
+	ActiveHost,
+	BackupA,
+	BackupB,
+};
+
+/** One stable player occupying one migration role for the current authority term. */
+USTRUCT()
+struct FWeaponMigrationRoleMember
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FUniqueNetIdRepl PlayerId;
+
+	UPROPERTY()
+	int32 OriginalSlot = INDEX_NONE;
+
+	bool IsAssigned() const { return PlayerId.IsValid() && OriginalSlot != INDEX_NONE; }
+	bool IdentifiesSameMember(const FWeaponMigrationRoleMember& Other) const;
+};
+
+/** Cross-travel role and fencing state published by the current Active Host. */
+USTRUCT()
+struct FWeaponMigrationRoleAssignment
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FGuid MatchId;
+
+	UPROPERTY()
+	uint64 AuthorityEpoch = 0;
+
+	UPROPERTY()
+	uint64 RosterRevision = 0;
+
+	UPROPERTY()
+	FWeaponMigrationRoleMember ActiveHost;
+
+	UPROPERTY()
+	FWeaponMigrationRoleMember BackupA;
+
+	UPROPERTY()
+	FWeaponMigrationRoleMember BackupB;
+
+	EWeaponMigrationRole ResolveRole(const FUniqueNetIdRepl& PlayerId) const;
+	bool IdentifiesSameAssignment(const FWeaponMigrationRoleAssignment& Other) const;
+};
 
 /** Metadata shared by every chunk of one immutable serialized SaveGame payload. */
 USTRUCT()

@@ -18,6 +18,9 @@ class LETSDEEPROCK_API UWeaponSnapshotCoordinator : public UGameInstanceSubsyste
 	GENERATED_BODY()
 
 public:
+	/** Stable logical match identity shared by Snapshot capture and migration role fencing. */
+	FGuid GetOrCreateActiveMatchId();
+
 	/** 捕获服务器权威状态以及恢复 World/Session 所需的固定配置 */
 	bool CaptureSaveGame(const UWorld* World, UWeaponMatchSaveGame*& OutSaveGame, FString& OutError);
 	static bool ValidateSaveGame(const UWeaponMatchSaveGame* SaveGame, FString& OutError);

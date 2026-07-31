@@ -8,9 +8,49 @@
 #include "WeaponPlayerController.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerState.h"
 #include "HAL/PlatformMisc.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
+
+bool FWeaponMigrationRoleMember::IdentifiesSameMember(
+	const FWeaponMigrationRoleMember& Other) const
+{
+	return PlayerId == Other.PlayerId && OriginalSlot == Other.OriginalSlot;
+}
+
+EWeaponMigrationRole FWeaponMigrationRoleAssignment::ResolveRole(
+	const FUniqueNetIdRepl& PlayerId) const
+{
+	if (!PlayerId.IsValid())
+	{
+		return EWeaponMigrationRole::None;
+	}
+	if (ActiveHost.PlayerId == PlayerId)
+	{
+		return EWeaponMigrationRole::ActiveHost;
+	}
+	if (BackupA.PlayerId == PlayerId)
+	{
+		return EWeaponMigrationRole::BackupA;
+	}
+	if (BackupB.PlayerId == PlayerId)
+	{
+		return EWeaponMigrationRole::BackupB;
+	}
+	return EWeaponMigrationRole::None;
+}
+
+bool FWeaponMigrationRoleAssignment::IdentifiesSameAssignment(
+	const FWeaponMigrationRoleAssignment& Other) const
+{
+	return MatchId == Other.MatchId &&
+		AuthorityEpoch == Other.AuthorityEpoch &&
+		RosterRevision == Other.RosterRevision &&
+		ActiveHost.IdentifiesSameMember(Other.ActiveHost) &&
+		BackupA.IdentifiesSameMember(Other.BackupA) &&
+		BackupB.IdentifiesSameMember(Other.BackupB);
+}
 
 bool FWeaponMigrationPayloadEnvelope::IdentifiesSamePayload(
 	const FWeaponMigrationPayloadEnvelope& Other) const
@@ -54,6 +94,257 @@ void UWeaponHostMigrationSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+bool UWeaponHostMigrationSubsystem::PrepareAuthorityTerm(
+	const FGuid& MatchId,
+	const FWeaponMigrationRoleMember& ActiveHost,
+	const uint64 RosterRevision,
+	uint64& OutAuthorityEpoch,
+	FString& OutError)
+{
+	OutAuthorityEpoch = 0;
+	OutError.Reset();
+
+	FWeaponMigrationRoleAssignment ProposedAssignment;
+	ProposedAssignment.MatchId = MatchId;
+	ProposedAssignment.AuthorityEpoch = 1;
+	ProposedAssignment.RosterRevision = RosterRevision;
+	ProposedAssignment.ActiveHost = ActiveHost;
+	if (!ValidateRoleAssignment(ProposedAssignment, OutError))
+	{
+		return false;
+	}
+
+	if (!bHasCurrentRoleAssignment || CurrentRoleAssignment.MatchId != MatchId)
+	{
+		StopHostSnapshotTransport();
+		ResetPayloadBuffers();
+		CommonCommittedAck = FWeaponMigrationPayloadAck();
+		bHasCommonCommittedPayload = false;
+		LastLocalSaveRevision = 0;
+		CurrentRoleAssignment = MoveTemp(ProposedAssignment);
+		bHasCurrentRoleAssignment = true;
+		bCurrentRoleAssignmentIsProvisional = true;
+		OutAuthorityEpoch = CurrentRoleAssignment.AuthorityEpoch;
+		return true;
+	}
+
+	if (!CurrentRoleAssignment.ActiveHost.IdentifiesSameMember(ActiveHost))
+	{
+		OutError = TEXT("A different Active Host must first begin its deterministic candidate authority term");
+		return false;
+	}
+	if (RosterRevision < CurrentRoleAssignment.RosterRevision)
+	{
+		OutError = TEXT("Authority role preparation cannot move RosterRevision backwards");
+		return false;
+	}
+
+	OutAuthorityEpoch = CurrentRoleAssignment.AuthorityEpoch;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::BeginCandidateAuthorityTerm(
+	const FUniqueNetIdRepl& CandidatePlayerId,
+	const uint64 ExpectedAuthorityEpoch,
+	uint64& OutCandidateEpoch,
+	FString& OutError)
+{
+	OutCandidateEpoch = 0;
+	OutError.Reset();
+	if (!bHasCurrentRoleAssignment ||
+		ExpectedAuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch)
+	{
+		OutError = TEXT("Candidate term does not match the current AuthorityEpoch");
+		return false;
+	}
+
+	const EWeaponMigrationRole CandidateRole =
+		CurrentRoleAssignment.ResolveRole(CandidatePlayerId);
+	const uint64 EpochIncrement = CandidateRole == EWeaponMigrationRole::BackupA
+		? 1
+		: CandidateRole == EWeaponMigrationRole::BackupB ? 2 : 0;
+	if (EpochIncrement == 0 || CurrentRoleAssignment.AuthorityEpoch > MAX_uint64 - EpochIncrement)
+	{
+		OutError = TEXT("Only the assigned Backup A/B can begin a non-overflowing candidate term");
+		return false;
+	}
+
+	const FWeaponMigrationRoleMember Candidate = CandidateRole == EWeaponMigrationRole::BackupA
+		? CurrentRoleAssignment.BackupA
+		: CurrentRoleAssignment.BackupB;
+	StopHostSnapshotTransport();
+	DiscardPendingPayload();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ChunkAssemblyTimerHandle);
+	}
+	CurrentRoleAssignment.AuthorityEpoch += EpochIncrement;
+	CurrentRoleAssignment.ActiveHost = Candidate;
+	CurrentRoleAssignment.BackupA = FWeaponMigrationRoleMember();
+	CurrentRoleAssignment.BackupB = FWeaponMigrationRoleMember();
+	bCurrentRoleAssignmentIsProvisional = true;
+	OutCandidateEpoch = CurrentRoleAssignment.AuthorityEpoch;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::SetAuthorityRoleAssignment(
+	const FWeaponMigrationRoleAssignment& Assignment,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!ValidateRoleAssignment(Assignment, OutError))
+	{
+		return false;
+	}
+	if (!bHasCurrentRoleAssignment ||
+		Assignment.MatchId != CurrentRoleAssignment.MatchId ||
+		Assignment.AuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
+		!Assignment.ActiveHost.IdentifiesSameMember(CurrentRoleAssignment.ActiveHost))
+	{
+		OutError = TEXT("Authority assignment does not match the prepared Match/Epoch/Active Host term");
+		return false;
+	}
+	if (Assignment.RosterRevision < CurrentRoleAssignment.RosterRevision)
+	{
+		OutError = TEXT("Authority assignment cannot move RosterRevision backwards");
+		return false;
+	}
+	if (!bCurrentRoleAssignmentIsProvisional &&
+		Assignment.RosterRevision == CurrentRoleAssignment.RosterRevision &&
+		!Assignment.IdentifiesSameAssignment(CurrentRoleAssignment))
+	{
+		OutError = TEXT("Conflicting migration roles cannot share one RosterRevision");
+		return false;
+	}
+
+	CurrentRoleAssignment = Assignment;
+	bCurrentRoleAssignmentIsProvisional = false;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::AcceptRoleAssignment(
+	const FWeaponMigrationRoleAssignment& Assignment,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!ValidateRoleAssignment(Assignment, OutError))
+	{
+		return false;
+	}
+	if (!bHasCurrentRoleAssignment)
+	{
+		CurrentRoleAssignment = Assignment;
+		bHasCurrentRoleAssignment = true;
+		bCurrentRoleAssignmentIsProvisional = false;
+		return true;
+	}
+	if (Assignment.MatchId != CurrentRoleAssignment.MatchId)
+	{
+		OutError = TEXT("Migration role assignment belongs to a different MatchId");
+		return false;
+	}
+	if (Assignment.AuthorityEpoch < CurrentRoleAssignment.AuthorityEpoch)
+	{
+		OutError = TEXT("Migration role assignment belongs to a stale AuthorityEpoch");
+		return false;
+	}
+	if (Assignment.RosterRevision < CurrentRoleAssignment.RosterRevision)
+	{
+		OutError = TEXT("Migration role assignment moves RosterRevision backwards");
+		return false;
+	}
+
+	if (Assignment.AuthorityEpoch == CurrentRoleAssignment.AuthorityEpoch)
+	{
+		if (!Assignment.ActiveHost.IdentifiesSameMember(CurrentRoleAssignment.ActiveHost) ||
+			Assignment.RosterRevision < CurrentRoleAssignment.RosterRevision)
+		{
+			OutError = TEXT("Same-term migration assignment conflicts with Active Host or RosterRevision");
+			return false;
+		}
+		if (Assignment.RosterRevision == CurrentRoleAssignment.RosterRevision &&
+			!Assignment.IdentifiesSameAssignment(CurrentRoleAssignment))
+		{
+			OutError = TEXT("Same RosterRevision contains conflicting migration roles");
+			return false;
+		}
+	}
+	else
+	{
+		const bool bExpectedBackupA = CurrentRoleAssignment.BackupA.IsAssigned() &&
+			CurrentRoleAssignment.AuthorityEpoch < MAX_uint64 &&
+			Assignment.AuthorityEpoch == CurrentRoleAssignment.AuthorityEpoch + 1 &&
+			Assignment.ActiveHost.IdentifiesSameMember(CurrentRoleAssignment.BackupA);
+		const bool bExpectedBackupB = CurrentRoleAssignment.BackupB.IsAssigned() &&
+			CurrentRoleAssignment.AuthorityEpoch <= MAX_uint64 - 2 &&
+			Assignment.AuthorityEpoch == CurrentRoleAssignment.AuthorityEpoch + 2 &&
+			Assignment.ActiveHost.IdentifiesSameMember(CurrentRoleAssignment.BackupB);
+		if (!bExpectedBackupA && !bExpectedBackupB)
+		{
+			OutError = TEXT("New authority term is not the deterministic Backup A/B successor");
+			return false;
+		}
+	}
+
+	StopHostSnapshotTransport();
+	DiscardPendingPayload();
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ChunkAssemblyTimerHandle);
+	}
+	CurrentRoleAssignment = Assignment;
+	bCurrentRoleAssignmentIsProvisional = false;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::AcceptCommonCommittedAnnouncement(
+	const FUniqueNetIdRepl& ReceiverPlayerId,
+	const FWeaponMigrationPayloadAck& Ack,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!bHasCurrentRoleAssignment ||
+		Ack.MatchId != CurrentRoleAssignment.MatchId ||
+		Ack.AuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
+		Ack.RosterRevision != CurrentRoleAssignment.RosterRevision ||
+		Ack.SnapshotRevision <= 0 || Ack.PayloadHash.Num() != WeaponMigrationSHA256Bytes)
+	{
+		OutError = TEXT("CommonCommitted announcement does not match the current role assignment");
+		return false;
+	}
+
+	const EWeaponMigrationRole ReceiverRole = GetRoleForPlayer(ReceiverPlayerId);
+	if (ReceiverRole == EWeaponMigrationRole::BackupA ||
+		ReceiverRole == EWeaponMigrationRole::BackupB)
+	{
+		FWeaponMigrationPayloadAck LocalCommittedAck;
+		if (!GetCommittedAck(LocalCommittedAck) || !LocalCommittedAck.IdentifiesSamePayload(Ack))
+		{
+			OutError = TEXT("Assigned Backup cannot accept CommonCommitted without identical local bytes");
+			return false;
+		}
+	}
+
+	if (bHasCommonCommittedPayload &&
+		Ack.MatchId == CommonCommittedAck.MatchId &&
+		Ack.SnapshotRevision < CommonCommittedAck.SnapshotRevision)
+	{
+		OutError = TEXT("CommonCommitted announcement moves SnapshotRevision backwards");
+		return false;
+	}
+	CommonCommittedAck = Ack;
+	bHasCommonCommittedPayload = true;
+	return true;
+}
+
+EWeaponMigrationRole UWeaponHostMigrationSubsystem::GetRoleForPlayer(
+	const FUniqueNetIdRepl& PlayerId) const
+{
+	return bHasCurrentRoleAssignment
+		? CurrentRoleAssignment.ResolveRole(PlayerId)
+		: EWeaponMigrationRole::None;
+}
+
 bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
 	AWeaponPlayerController* BackupA,
 	AWeaponPlayerController* BackupB,
@@ -62,9 +353,6 @@ bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
 {
 	OutError.Reset();
 	StopHostSnapshotTransport();
-	bHasCommonCommittedPayload = false;
-	CommonCommittedAck = FWeaponMigrationPayloadAck();
-	LastLocalSaveRevision = 0;
 
 	UWorld* World = BackupA ? BackupA->GetWorld() : nullptr;
 	if (!World || World->GetNetMode() == NM_Client || BackupA == BackupB ||
@@ -78,6 +366,17 @@ bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
 	if (SuppliedAuthorityEpoch == 0)
 	{
 		OutError = TEXT("Host transport requires a non-zero externally supplied AuthorityEpoch");
+		return false;
+	}
+	const APlayerState* BackupAPlayerState = BackupA->GetPlayerState<APlayerState>();
+	const APlayerState* BackupBPlayerState = BackupB->GetPlayerState<APlayerState>();
+	if (!bHasCurrentRoleAssignment ||
+		SuppliedAuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
+		!BackupAPlayerState || !BackupBPlayerState ||
+		BackupAPlayerState->GetUniqueId() != CurrentRoleAssignment.BackupA.PlayerId ||
+		BackupBPlayerState->GetUniqueId() != CurrentRoleAssignment.BackupB.PlayerId)
+	{
+		OutError = TEXT("Host transport controllers do not match the current fenced Backup A/B assignment");
 		return false;
 	}
 	if (GetLocalHostSaveSlotName().IsEmpty())
@@ -113,6 +412,15 @@ void UWeaponHostMigrationSubsystem::StopHostSnapshotTransport()
 	HostBackupB.Reset();
 	HostWorld.Reset();
 	HostAuthorityEpoch = 0;
+}
+
+bool UWeaponHostMigrationSubsystem::IsHostSnapshotTransportConfigured(
+	const AWeaponPlayerController* BackupA,
+	const AWeaponPlayerController* BackupB,
+	const uint64 AuthorityEpoch) const
+{
+	return HostWorld.IsValid() && HostBackupA.Get() == BackupA && HostBackupB.Get() == BackupB &&
+		HostAuthorityEpoch == AuthorityEpoch;
 }
 
 bool UWeaponHostMigrationSubsystem::CaptureAndDistributeSnapshot(FString& OutError)
@@ -170,6 +478,7 @@ bool UWeaponHostMigrationSubsystem::CaptureAndDistributeSnapshot(FString& OutErr
 }
 
 bool UWeaponHostMigrationSubsystem::ReceivePayloadChunk(
+	const FUniqueNetIdRepl& ReceiverPlayerId,
 	const FWeaponMigrationPayloadEnvelope& Envelope,
 	const TArray<uint8>& ChunkBytes,
 	bool& bOutAckReady,
@@ -179,6 +488,17 @@ bool UWeaponHostMigrationSubsystem::ReceivePayloadChunk(
 	bOutAckReady = false;
 	OutAck = FWeaponMigrationPayloadAck();
 	OutError.Reset();
+	const EWeaponMigrationRole ReceiverRole = GetRoleForPlayer(ReceiverPlayerId);
+	if ((ReceiverRole != EWeaponMigrationRole::BackupA &&
+		 ReceiverRole != EWeaponMigrationRole::BackupB) ||
+		!ValidateCurrentEnvelope(Envelope, OutError))
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("Migration chunks are accepted only by the currently assigned Backup A/B");
+		}
+		return false;
+	}
 
 	const bool bHadPending = PendingPayload.bActive;
 	const FWeaponMigrationPayloadEnvelope PreviousPendingEnvelope = PendingPayload.Envelope;
@@ -247,14 +567,37 @@ bool UWeaponHostMigrationSubsystem::RecordBackupAcknowledgement(
 		OutError = TEXT("Migration ACK sender is not the configured Backup A or Backup B");
 		return false;
 	}
+	const APlayerState* SenderPlayerState = Sender->GetPlayerState<APlayerState>();
+	const EWeaponMigrationRole SenderRole = SenderPlayerState
+		? GetRoleForPlayer(SenderPlayerState->GetUniqueId())
+		: EWeaponMigrationRole::None;
+	if ((bFromBackupA && SenderRole != EWeaponMigrationRole::BackupA) ||
+		(bFromBackupB && SenderRole != EWeaponMigrationRole::BackupB))
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("Migration ACK sender no longer owns its fenced Backup role");
+		}
+		return false;
+	}
 	if (bHasCommonCommittedPayload && Ack.IdentifiesSamePayload(CommonCommittedAck))
 	{
 		return true;
 	}
-	if (!OutgoingTransfer.bActive || OutgoingTransfer.bWaitingForLocalSave ||
-		!Ack.IdentifiesPayload(OutgoingTransfer.Envelope))
+	if (bHasCommonCommittedPayload && Ack.MatchId == CommonCommittedAck.MatchId &&
+		Ack.SnapshotRevision < CommonCommittedAck.SnapshotRevision)
 	{
-		OutError = TEXT("Migration ACK does not identify the current outgoing payload");
+		OutError = TEXT("Migration ACK would move CommonCommitted SnapshotRevision backwards");
+		return false;
+	}
+	if (!OutgoingTransfer.bActive || OutgoingTransfer.bWaitingForLocalSave ||
+		!Ack.IdentifiesPayload(OutgoingTransfer.Envelope) ||
+		!ValidateCurrentEnvelope(OutgoingTransfer.Envelope, OutError))
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("Migration ACK does not identify the current outgoing payload");
+		}
 		return false;
 	}
 
@@ -284,6 +627,7 @@ bool UWeaponHostMigrationSubsystem::RecordBackupAcknowledgement(
 		CommonCommittedAck.SnapshotRevision,
 		*CommonCommittedAck.MatchId.ToString(),
 		CommonCommittedAck.AuthorityEpoch);
+	BroadcastCommonCommittedAck();
 	ResetOutgoingTransfer();
 	return true;
 }
@@ -332,6 +676,15 @@ bool UWeaponHostMigrationSubsystem::BuildPayloadEnvelope(
 	OutEnvelope.SnapshotSchemaVersion = SaveGame->Snapshot.SchemaVersion;
 	OutEnvelope.PayloadByteCount = PayloadBytes.Num();
 	OutEnvelope.ChunkCount = FMath::DivideAndRoundUp(PayloadBytes.Num(), GetChunkPayloadBytes());
+	if (bHasCurrentRoleAssignment &&
+		(OutEnvelope.MatchId != CurrentRoleAssignment.MatchId ||
+		 OutEnvelope.AuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
+		 OutEnvelope.RosterRevision != CurrentRoleAssignment.RosterRevision))
+	{
+		OutEnvelope = FWeaponMigrationPayloadEnvelope();
+		OutError = TEXT("Captured SaveGame does not match the current fenced migration role assignment");
+		return false;
+	}
 	if (!ComputePayloadHash(PayloadBytes, OutEnvelope.PayloadHash))
 	{
 		OutEnvelope = FWeaponMigrationPayloadEnvelope();
@@ -632,18 +985,115 @@ bool UWeaponHostMigrationSubsystem::HashesEqual(
 		FMemory::Memcmp(A.GetData(), B.GetData(), WeaponMigrationSHA256Bytes) == 0;
 }
 
+bool UWeaponHostMigrationSubsystem::ValidateRoleAssignment(
+	const FWeaponMigrationRoleAssignment& Assignment,
+	FString& OutError)
+{
+	const auto IsMemberValid = [](const FWeaponMigrationRoleMember& Member, const bool bRequired)
+	{
+		if (!Member.IsAssigned())
+		{
+			return !bRequired && !Member.PlayerId.IsValid() && Member.OriginalSlot == INDEX_NONE;
+		}
+		return Member.OriginalSlot >= 0 && Member.OriginalSlot < 4;
+	};
+
+	if (!Assignment.MatchId.IsValid() || Assignment.AuthorityEpoch == 0 ||
+		Assignment.RosterRevision == 0 || Assignment.RosterRevision == MAX_uint64 ||
+		!IsMemberValid(Assignment.ActiveHost, true) ||
+		!IsMemberValid(Assignment.BackupA, false) ||
+		!IsMemberValid(Assignment.BackupB, false) ||
+		(Assignment.BackupB.IsAssigned() && !Assignment.BackupA.IsAssigned()))
+	{
+		OutError = TEXT("Migration role assignment identity, revision or member shape is invalid");
+		return false;
+	}
+
+	TSet<FUniqueNetIdRepl> PlayerIds;
+	TSet<int32> Slots;
+	const FWeaponMigrationRoleMember* Members[] =
+	{
+		&Assignment.ActiveHost,
+		&Assignment.BackupA,
+		&Assignment.BackupB,
+	};
+	for (const FWeaponMigrationRoleMember* Member : Members)
+	{
+		if (!Member->IsAssigned())
+		{
+			continue;
+		}
+		if (PlayerIds.Contains(Member->PlayerId) || Slots.Contains(Member->OriginalSlot))
+		{
+			OutError = TEXT("Migration roles contain duplicate PlayerId or OriginalSlot values");
+			return false;
+		}
+		PlayerIds.Add(Member->PlayerId);
+		Slots.Add(Member->OriginalSlot);
+	}
+	if (Assignment.BackupA.IsAssigned() && Assignment.BackupB.IsAssigned() &&
+		Assignment.BackupA.OriginalSlot >= Assignment.BackupB.OriginalSlot)
+	{
+		OutError = TEXT("Backup A/B must be ordered by ascending stable OriginalSlot");
+		return false;
+	}
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::ValidateCurrentEnvelope(
+	const FWeaponMigrationPayloadEnvelope& Envelope,
+	FString& OutError) const
+{
+	if (!bHasCurrentRoleAssignment || bCurrentRoleAssignmentIsProvisional ||
+		Envelope.MatchId != CurrentRoleAssignment.MatchId ||
+		Envelope.AuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
+		Envelope.RosterRevision != CurrentRoleAssignment.RosterRevision)
+	{
+		OutError = TEXT("Migration payload belongs to a stale or unpublished role assignment");
+		return false;
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::BroadcastCommonCommittedAck()
+{
+	UWorld* World = HostWorld.Get();
+	if (!World || !bHasCommonCommittedPayload)
+	{
+		return;
+	}
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		if (AWeaponPlayerController* PlayerController = Cast<AWeaponPlayerController>(It->Get()))
+		{
+			PlayerController->ClientConfirmMigrationCommonCommitted(CommonCommittedAck);
+		}
+	}
+}
+
 bool UWeaponHostMigrationSubsystem::IsHostTransportReady(FString& OutError) const
 {
 	UWorld* World = HostWorld.Get();
 	const AWeaponPlayerController* BackupA = HostBackupA.Get();
 	const AWeaponPlayerController* BackupB = HostBackupB.Get();
 	if (!World || World->GetNetMode() == NM_Client || HostAuthorityEpoch == 0 ||
+		!bHasCurrentRoleAssignment || bCurrentRoleAssignmentIsProvisional ||
+		HostAuthorityEpoch != CurrentRoleAssignment.AuthorityEpoch ||
 		!BackupA || !BackupB || BackupA == BackupB ||
 		BackupA->GetWorld() != World || BackupB->GetWorld() != World ||
 		!BackupA->HasAuthority() || !BackupB->HasAuthority() ||
 		!BackupA->GetNetConnection() || !BackupB->GetNetConnection())
 	{
 		OutError = TEXT("Configured Host backup transport is no longer valid");
+		return false;
+	}
+	const APlayerState* BackupAPlayerState = BackupA->GetPlayerState<APlayerState>();
+	const APlayerState* BackupBPlayerState = BackupB->GetPlayerState<APlayerState>();
+	if (!BackupAPlayerState || !BackupBPlayerState ||
+		BackupAPlayerState->GetUniqueId() != CurrentRoleAssignment.BackupA.PlayerId ||
+		BackupBPlayerState->GetUniqueId() != CurrentRoleAssignment.BackupB.PlayerId)
+	{
+		OutError = TEXT("Configured Host controllers no longer own the fenced Backup A/B roles");
 		return false;
 	}
 	return true;

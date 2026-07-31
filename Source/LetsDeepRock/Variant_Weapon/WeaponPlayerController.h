@@ -32,6 +32,14 @@ public:
 		const FWeaponMigrationPayloadEnvelope& Envelope,
 		const TArray<uint8>& ChunkBytes);
 
+	/** Server -> every client: current fixed roles and authority fencing term. */
+	UFUNCTION(Client, Reliable)
+	void ClientUpdateMigrationRoleAssignment(const FWeaponMigrationRoleAssignment& Assignment);
+
+	/** Server -> every client: A and B both ACKed this exact recovery payload. */
+	UFUNCTION(Client, Reliable)
+	void ClientConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
+
 protected:
 
 	/** 默认输入映射上下文 */

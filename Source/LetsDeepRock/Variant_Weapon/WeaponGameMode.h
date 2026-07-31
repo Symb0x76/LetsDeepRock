@@ -124,6 +124,7 @@ private:
 	void CleanupCompletedAttributionTombstones(const FUniqueNetIdRepl& PlayerId);
 	void ApplyGameplayRecoveryBarrierToWorld(bool bBlocked);
 	void ArmMatchPhaseTimer(EWeaponMatchPhase Phase, float RemainingPhaseTime);
+	bool RefreshHostMigrationRoles(FString& OutError);
 
 	struct FWeaponAttributionTombstone
 	{

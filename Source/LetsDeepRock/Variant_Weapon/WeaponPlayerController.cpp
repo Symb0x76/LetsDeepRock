@@ -4,6 +4,7 @@
 #include "WeaponPlayerController.h"
 #include "EnhancedInputSubsystems.h"
 #include "Engine/GameInstance.h"
+#include "GameFramework/PlayerState.h"
 #include "InputMappingContext.h"
 #include "LetsDeepRock.h"
 #include "Online/WeaponHostMigrationSubsystem.h"
@@ -63,7 +64,12 @@ void AWeaponPlayerController::ClientReceiveMigrationPayloadChunk_Implementation(
 	bool bAckReady = false;
 	FWeaponMigrationPayloadAck Ack;
 	FString Error;
+	const APlayerState* LocalPlayerState = GetPlayerState<APlayerState>();
+	const FUniqueNetIdRepl ReceiverPlayerId = LocalPlayerState
+		? LocalPlayerState->GetUniqueId()
+		: FUniqueNetIdRepl();
 	if (!MigrationSubsystem->ReceivePayloadChunk(
+		ReceiverPlayerId,
 		Envelope,
 		ChunkBytes,
 		bAckReady,
@@ -83,6 +89,45 @@ void AWeaponPlayerController::ClientReceiveMigrationPayloadChunk_Implementation(
 	if (bAckReady)
 	{
 		ServerAcknowledgeMigrationPayload(Ack);
+	}
+}
+
+void AWeaponPlayerController::ClientUpdateMigrationRoleAssignment_Implementation(
+	const FWeaponMigrationRoleAssignment& Assignment)
+{
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	FString Error;
+	if (!MigrationSubsystem || !MigrationSubsystem->AcceptRoleAssignment(Assignment, Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("Migration role assignment rejected for Epoch %llu: %s"),
+			Assignment.AuthorityEpoch,
+			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
+	}
+}
+
+void AWeaponPlayerController::ClientConfirmMigrationCommonCommitted_Implementation(
+	const FWeaponMigrationPayloadAck& Ack)
+{
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	const APlayerState* LocalPlayerState = GetPlayerState<APlayerState>();
+	const FUniqueNetIdRepl ReceiverPlayerId = LocalPlayerState
+		? LocalPlayerState->GetUniqueId()
+		: FUniqueNetIdRepl();
+	FString Error;
+	if (!MigrationSubsystem ||
+		!MigrationSubsystem->AcceptCommonCommittedAnnouncement(ReceiverPlayerId, Ack, Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("CommonCommitted announcement rejected for revision %lld: %s"),
+			Ack.SnapshotRevision,
+			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
 	}
 }
 

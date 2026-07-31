@@ -2,7 +2,7 @@
 
 Updated: 2026-07-31
 
-Status: Accepted design contract; payload transport is implemented, while role election and recovery-session orchestration remain pending.
+Status: Accepted design contract; payload transport plus fixed-role/Epoch fencing are implemented, while recovery-session orchestration remains pending.
 
 ## 1. Purpose
 
@@ -42,6 +42,8 @@ Each identifier answers one question and must not be reused for another purpose.
 
 Messages, ACKs, sessions and `RecoveryReady` events with a stale MatchId, AuthorityEpoch or RecoveryAttemptId must be ignored.
 
+The initial Listen Host owns Epoch 1. Within one term, roster changes may republish A/B roles but do not change Epoch. If the Active Host fails, the assigned Backup A candidate uses `previous Epoch + 1`; Backup B uses `previous Epoch + 2` only after A fails. This prevents A and B from publishing conflicting candidates under the same Epoch. Existing clients accept a higher term only when its Active PlayerId and exact increment match that deterministic predecessor relation; they reject a different Active Host inside the same Epoch.
+
 ## 4. Player identity and roster contract
 
 Player identity uses the valid `FUniqueNetIdRepl` carried by the connection and `APlayerState`. `PlayerName` is presentation only and must never be used as a recovery key or fallback.
@@ -57,6 +59,8 @@ One roster entry has exactly one recovery disposition:
 - `Departed`: explicitly left, exceeded the grace period, or was removed by policy; it does not block Restore.
 
 Host/Backup/Candidate role and gameplay alive/dead state are orthogonal to this disposition.
+
+The current server derives roles only from connected `Ready` roster entries. Its one local Listen Host controller is `ActiveHost`; every other eligible player is ordered by stable `OriginalSlot`, with the lowest assigned to Backup A and the next to Backup B. Reconnect order, RTT and PlayerName never participate. The complete assignment carries MatchId, AuthorityEpoch and RosterRevision and is sent reliably to every connected client, whose `UWeaponHostMigrationSubsystem` retains it across Travel.
 
 The default `Pending` grace period is 60 seconds and remains configurable.
 
@@ -163,7 +167,7 @@ Invalid or incomplete Pending data is discarded without modifying the previous C
 
 The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. Transport and timeout code may discard Pending, but cannot mutate Committed.
 
-The Host supplies two already-selected remote `AWeaponPlayerController` instances and a non-zero current Epoch to the subsystem. The subsystem performs `CaptureSaveGame -> SerializeSaveGame -> envelope`, completes the local asynchronous SaveGame write, then sends one reliable application chunk per Tick through each owning controller. A Backup promotes locally before its controller emits the Server ACK. Assembly timeout discards only Pending; ACK timeout discards only the Host's outgoing transfer record. Deterministic A/B selection and current-term Epoch fencing remain the next orchestration layer.
+The GameMode supplies the two deterministically selected remote `AWeaponPlayerController` instances and the current non-zero Epoch to the subsystem. The subsystem verifies their stable PlayerIds against the current A/B assignment, performs `CaptureSaveGame -> SerializeSaveGame -> envelope`, completes the local asynchronous SaveGame write, then sends one reliable application chunk per Tick through each owning controller. A receiver accepts chunks only when its own stable identity is the current A or B and MatchId/Epoch/RosterRevision exactly match the published assignment. A Backup promotes locally before its controller emits the Server ACK. Assembly timeout discards only Pending; ACK timeout discards only the Host's outgoing transfer record.
 
 ## 10. Common committed revision
 
@@ -175,6 +179,8 @@ The Active Host tracks the latest identical SnapshotRevision/hash ACKed by both 
 - Backup B's Committed bytes remain immutable while A attempts recovery.
 
 The concrete Host aggregator records ACKs only from its configured A/B controllers and only when MatchId, Epoch, SnapshotRevision, RosterRevision and hash identify the current outgoing payload. Duplicate ACKs are idempotent. It publishes `CommonCommittedRevision` only after both role-specific flags are true; an ACK timeout preserves the previous common value.
+
+After both ACKs, the Host reliably announces the complete CommonCommitted ACK metadata to every connected client. An assigned Backup accepts that announcement only if its own immutable Committed bytes identify the same payload. Ordinary clients retain the metadata for later recovery-session routing but do not become candidates and do not receive full payload bytes.
 
 After a successful migration, the new Active Host replenishes Backup A/B roles by stable original Slot where population permits. Reduced redundancy must be visible in logs/UI.
 
@@ -236,10 +242,10 @@ It must never advertise the old MatchId as a competing authority when the migrat
 
 ```text
 Active Host fails
--> Backup A creates a gated Recovery Session
+-> Backup A begins Epoch N+1 and creates a gated Recovery Session
 -> A restores CommonCommittedRevision
 -> if A fails before RecoveryReady, discard A's Recovery World
--> Backup B restores the identical bytes in a clean World
+-> Backup B begins Epoch N+2 and restores the identical bytes in a clean World
 -> if B also fails, survivors return to Lobby
 ```
 

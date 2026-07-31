@@ -17,8 +17,9 @@ class UWorld;
  * Pending may be replaced or discarded while chunks arrive. Committed changes only after the
  * assembled bytes pass SHA-256, SaveGame deserialization and pure Snapshot validation.
  * PlayerController RPCs carry chunks and ACKs because this subsystem is not replicated. The
- * subsystem owns pacing, timeout policy, A/B ACK aggregation and the local Host SaveGame; fixed
- * role selection and authority-term election remain external.
+ * subsystem owns cross-travel roles, Epoch fencing, pacing, timeout policy, A/B ACK aggregation
+ * and the local Host SaveGame. GameMode derives A/B from the Ready roster; recovery-session
+ * orchestration decides when an assigned candidate may begin its prepared successor term.
  */
 UCLASS(Config = Game, DefaultConfig)
 class LETSDEEPROCK_API UWeaponHostMigrationSubsystem : public UGameInstanceSubsystem
@@ -28,6 +29,44 @@ class LETSDEEPROCK_API UWeaponHostMigrationSubsystem : public UGameInstanceSubsy
 public:
 	virtual void Deinitialize() override;
 
+	/** Create Epoch 1 for a new MatchId, or reuse the term of the same Active Host. */
+	bool PrepareAuthorityTerm(
+		const FGuid& MatchId,
+		const FWeaponMigrationRoleMember& ActiveHost,
+		uint64 RosterRevision,
+		uint64& OutAuthorityEpoch,
+		FString& OutError);
+
+	/** Prepare the deterministic A=old+1 or B=old+2 candidate term without publishing it. */
+	bool BeginCandidateAuthorityTerm(
+		const FUniqueNetIdRepl& CandidatePlayerId,
+		uint64 ExpectedAuthorityEpoch,
+		uint64& OutCandidateEpoch,
+		FString& OutError);
+
+	/** Install the complete assignment computed from the authoritative Ready roster. */
+	bool SetAuthorityRoleAssignment(
+		const FWeaponMigrationRoleAssignment& Assignment,
+		FString& OutError);
+
+	/** Accept a Host-published assignment only when Match/Epoch ordering is valid. */
+	bool AcceptRoleAssignment(
+		const FWeaponMigrationRoleAssignment& Assignment,
+		FString& OutError);
+
+	/** Accept the Host's proof that both backups committed one identical payload. */
+	bool AcceptCommonCommittedAnnouncement(
+		const FUniqueNetIdRepl& ReceiverPlayerId,
+		const FWeaponMigrationPayloadAck& Ack,
+		FString& OutError);
+
+	const FWeaponMigrationRoleAssignment* GetCurrentRoleAssignment() const
+	{
+		return bHasCurrentRoleAssignment ? &CurrentRoleAssignment : nullptr;
+	}
+	bool IsCurrentRoleAssignmentProvisional() const { return bCurrentRoleAssignmentIsProvisional; }
+	EWeaponMigrationRole GetRoleForPlayer(const FUniqueNetIdRepl& PlayerId) const;
+
 	/** Begin periodic Host capture for externally selected remote Backup A/B controllers. */
 	bool StartHostSnapshotTransport(
 		AWeaponPlayerController* BackupA,
@@ -36,12 +75,17 @@ public:
 		FString& OutError);
 
 	void StopHostSnapshotTransport();
+	bool IsHostSnapshotTransportConfigured(
+		const AWeaponPlayerController* BackupA,
+		const AWeaponPlayerController* BackupB,
+		uint64 AuthorityEpoch) const;
 
 	/** Capture, validate and serialize one revision; local async save completes before chunk send. */
 	bool CaptureAndDistributeSnapshot(FString& OutError);
 
 	/** Backup receive entry used by its owning PlayerController Client RPC. */
 	bool ReceivePayloadChunk(
+		const FUniqueNetIdRepl& ReceiverPlayerId,
 		const FWeaponMigrationPayloadEnvelope& Envelope,
 		const TArray<uint8>& ChunkBytes,
 		bool& bOutAckReady,
@@ -135,6 +179,12 @@ private:
 	void InitializePendingPayload(const FWeaponMigrationPayloadEnvelope& Envelope);
 	static bool ComputePayloadHash(const TArray<uint8>& PayloadBytes, TArray<uint8>& OutHash);
 	static bool HashesEqual(const TArray<uint8>& A, const TArray<uint8>& B);
+	static bool ValidateRoleAssignment(
+		const FWeaponMigrationRoleAssignment& Assignment,
+		FString& OutError);
+	bool ValidateCurrentEnvelope(
+		const FWeaponMigrationPayloadEnvelope& Envelope,
+		FString& OutError) const;
 	bool IsHostTransportReady(FString& OutError) const;
 	void HandleSnapshotInterval();
 	void HandleLocalSaveComplete(uint64 RequestSerial, bool bSuccess);
@@ -143,6 +193,7 @@ private:
 	void HandleChunkAssemblyTimeout();
 	void ResetOutgoingTransfer();
 	void ClearHostTimers();
+	void BroadcastCommonCommittedAck();
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Host Migration|Timing", meta = (ClampMin = 0.1))
 	float SnapshotIntervalSeconds = 5.0f;
@@ -172,6 +223,7 @@ private:
 	FCommittedPayloadBuffer CommittedPayload;
 	FOutgoingPayloadTransfer OutgoingTransfer;
 	FWeaponMigrationPayloadAck CommonCommittedAck;
+	FWeaponMigrationRoleAssignment CurrentRoleAssignment;
 	TWeakObjectPtr<AWeaponPlayerController> HostBackupA;
 	TWeakObjectPtr<AWeaponPlayerController> HostBackupB;
 	TWeakObjectPtr<UWorld> HostWorld;
@@ -179,6 +231,8 @@ private:
 	uint64 LocalSaveRequestSerial = 0;
 	int64 LastLocalSaveRevision = 0;
 	bool bHasCommonCommittedPayload = false;
+	bool bHasCurrentRoleAssignment = false;
+	bool bCurrentRoleAssignmentIsProvisional = false;
 	FTimerHandle SnapshotCaptureTimerHandle;
 	FTimerHandle ChunkSendTimerHandle;
 	FTimerHandle TransferAckTimerHandle;

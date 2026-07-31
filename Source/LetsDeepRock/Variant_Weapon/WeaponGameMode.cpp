@@ -2,6 +2,7 @@
 
 
 #include "WeaponGameMode.h"
+#include "LetsDeepRock.h"
 #include "WeaponCharacter.h"
 #include "NPCBase.h"
 #include "Drone.h"
@@ -14,6 +15,9 @@
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponGameState.h"
+#include "Online/WeaponHostMigrationSubsystem.h"
+#include "Online/WeaponSnapshotCoordinator.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 
@@ -21,6 +25,169 @@ AWeaponGameMode::AWeaponGameMode()
 {
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
+}
+
+bool AWeaponGameMode::RefreshHostMigrationRoles(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !World || !WeaponGameState)
+	{
+		OutError = TEXT("Migration roles require an authoritative Weapon server World");
+		return false;
+	}
+	if (WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return true;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GameInstance ? GameInstance->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	UWeaponSnapshotCoordinator* SnapshotCoordinator =
+		GameInstance ? GameInstance->GetSubsystem<UWeaponSnapshotCoordinator>() : nullptr;
+	if (!MigrationSubsystem || !SnapshotCoordinator)
+	{
+		OutError = TEXT("Migration role or Snapshot subsystem is unavailable");
+		return false;
+	}
+
+	struct FConnectedMigrationMember
+	{
+		FWeaponMigrationRoleMember Member;
+		AWeaponPlayerController* Controller = nullptr;
+	};
+
+	FConnectedMigrationMember ActiveHost;
+	TArray<FConnectedMigrationMember> BackupCandidates;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		AWeaponPlayerController* Controller = Cast<AWeaponPlayerController>(It->Get());
+		AWeaponPlayerState* PlayerState = Controller
+			? Controller->GetPlayerState<AWeaponPlayerState>()
+			: nullptr;
+		const FUniqueNetIdRepl PlayerId = PlayerState
+			? PlayerState->GetUniqueId()
+			: FUniqueNetIdRepl();
+		const FWeaponRecoveryRosterEntry* RosterEntry = RecoveryRoster.Find(PlayerId);
+		if (!Controller || !PlayerState || !PlayerId.IsValid() || !RosterEntry ||
+			RosterEntry->Status != EWeaponRecoveryPlayerStatus::Ready ||
+			RosterEntry->OriginalSlot != PlayerState->GetPlayerSlotIndex())
+		{
+			continue;
+		}
+
+		FConnectedMigrationMember ConnectedMember;
+		ConnectedMember.Member.PlayerId = PlayerId;
+		ConnectedMember.Member.OriginalSlot = RosterEntry->OriginalSlot;
+		ConnectedMember.Controller = Controller;
+		if (Controller->IsLocalController())
+		{
+			if (ActiveHost.Controller)
+			{
+				OutError = TEXT("Server World contains more than one local Active Host controller");
+				return false;
+			}
+			ActiveHost = MoveTemp(ConnectedMember);
+		}
+		else
+		{
+			BackupCandidates.Add(MoveTemp(ConnectedMember));
+		}
+	}
+
+	if (!ActiveHost.Controller)
+	{
+		OutError = TEXT("Listen server Active Host is not Ready in the recovery roster");
+		return false;
+	}
+	BackupCandidates.Sort([](
+		const FConnectedMigrationMember& A,
+		const FConnectedMigrationMember& B)
+	{
+		return A.Member.OriginalSlot < B.Member.OriginalSlot;
+	});
+
+	const FGuid MatchId = SnapshotCoordinator->GetOrCreateActiveMatchId();
+	uint64 AuthorityEpoch = 0;
+	if (!MigrationSubsystem->PrepareAuthorityTerm(
+		MatchId,
+		ActiveHost.Member,
+		RosterRevision,
+		AuthorityEpoch,
+		OutError))
+	{
+		return false;
+	}
+
+	FWeaponMigrationRoleAssignment Assignment;
+	Assignment.MatchId = MatchId;
+	Assignment.AuthorityEpoch = AuthorityEpoch;
+	Assignment.RosterRevision = RosterRevision;
+	Assignment.ActiveHost = ActiveHost.Member;
+	if (BackupCandidates.IsValidIndex(0))
+	{
+		Assignment.BackupA = BackupCandidates[0].Member;
+	}
+	if (BackupCandidates.IsValidIndex(1))
+	{
+		Assignment.BackupB = BackupCandidates[1].Member;
+	}
+
+	const FWeaponMigrationRoleAssignment* PreviousAssignment =
+		MigrationSubsystem->GetCurrentRoleAssignment();
+	const bool bAssignmentChanged = MigrationSubsystem->IsCurrentRoleAssignmentProvisional() ||
+		!PreviousAssignment ||
+		!Assignment.IdentifiesSameAssignment(*PreviousAssignment);
+	if (!MigrationSubsystem->SetAuthorityRoleAssignment(Assignment, OutError))
+	{
+		return false;
+	}
+
+	if (bAssignmentChanged)
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (AWeaponPlayerController* Controller = Cast<AWeaponPlayerController>(It->Get()))
+			{
+				Controller->ClientUpdateMigrationRoleAssignment(Assignment);
+			}
+		}
+
+		const int32 BackupCount = Assignment.BackupA.IsAssigned() + Assignment.BackupB.IsAssigned();
+		if (BackupCount < 2)
+		{
+			UE_LOG(
+				LogLetsDeepRock,
+				Warning,
+				TEXT("Host migration redundancy reduced to %d backup(s) for Match %s Epoch %llu"),
+				BackupCount,
+				*Assignment.MatchId.ToString(),
+				Assignment.AuthorityEpoch);
+		}
+	}
+
+	if (!Assignment.BackupA.IsAssigned() || !Assignment.BackupB.IsAssigned())
+	{
+		MigrationSubsystem->StopHostSnapshotTransport();
+		return true;
+	}
+
+	AWeaponPlayerController* BackupAController = BackupCandidates[0].Controller;
+	AWeaponPlayerController* BackupBController = BackupCandidates[1].Controller;
+	if (bAssignmentChanged || !MigrationSubsystem->IsHostSnapshotTransportConfigured(
+		BackupAController,
+		BackupBController,
+		AuthorityEpoch))
+	{
+		return MigrationSubsystem->StartHostSnapshotTransport(
+			BackupAController,
+			BackupBController,
+			AuthorityEpoch,
+			OutError);
+	}
+	return true;
 }
 
 bool AWeaponGameMode::EnterGameplayRecoveryBarrier()
@@ -67,6 +234,13 @@ bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
 	ArmMatchPhaseTimer(FrozenPhase, RemainingPhaseTime);
 	FrozenMatchPhaseRemaining = 0.0f;
 	WeaponGameState->SetGameplayRecoveryBlockedAuthority(false);
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Error, TEXT("Failed to publish migration roles after recovery: %s"), *MigrationError);
+		EnterGameplayRecoveryBarrier();
+		return false;
+	}
 
 	if (RemainingPhaseTime <= 0.0f)
 	{
@@ -359,6 +533,11 @@ bool AWeaponGameMode::MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId)
 	Entry->PendingDeadlineServerTime = 0.0;
 	PlayerSlotReservations.Remove(PlayerId);
 	++RosterRevision;
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after departure: %s"), *MigrationError);
+	}
 	return true;
 }
 
@@ -717,6 +896,11 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 	MarkPlayerReady(PlayerId, AvailableSlot);
 	
 	RefreshMatchPhase();
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after login: %s"), *MigrationError);
+	}
 }
 
 void AWeaponGameMode::Logout(AController* ExitingController)
@@ -757,6 +941,11 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 	Super::Logout(ExitingController);
 	
 	RefreshMatchPhase();
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after logout: %s"), *MigrationError);
+	}
 }
 
 void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)

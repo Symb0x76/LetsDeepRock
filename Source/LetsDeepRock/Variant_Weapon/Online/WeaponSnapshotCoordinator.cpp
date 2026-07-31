@@ -66,6 +66,15 @@ struct UWeaponSnapshotCoordinator::FRestoreContext
 	TArray<AWeaponProjectile*> StagedProjectiles;
 };
 
+FGuid UWeaponSnapshotCoordinator::GetOrCreateActiveMatchId()
+{
+	if (!ActiveMatchId.IsValid())
+	{
+		ActiveMatchId = FGuid::NewGuid();
+	}
+	return ActiveMatchId;
+}
+
 bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 	const UWorld* World,
 	UWeaponMatchSaveGame*& OutSaveGame,
@@ -486,11 +495,7 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(
 	}
 
 	FWeaponSnapshot MatchSnapshot;
-	if (!ActiveMatchId.IsValid())
-	{
-		ActiveMatchId = FGuid::NewGuid();
-	}
-	MatchSnapshot.MatchId = ActiveMatchId;
+	MatchSnapshot.MatchId = GetOrCreateActiveMatchId();
 	MatchSnapshot.Revision = NextSnapshotRevision++;
 	MatchSnapshot.MatchPhase = GameState->GetMatchPhase();
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
