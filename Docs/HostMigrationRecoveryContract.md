@@ -2,7 +2,7 @@
 
 Updated: 2026-07-31
 
-Status: Accepted design contract; payload transport plus fixed-role/Epoch fencing are implemented, while recovery-session orchestration remains pending.
+Status: Accepted design contract; payload transport, fixed-role/Epoch fencing, and the NetworkFailure-driven A/B Recovery Session path are implemented. Planned handoff, recovery presentation/readiness UX, and packaged runtime proof remain pending.
 
 ## 1. Purpose
 
@@ -182,6 +182,8 @@ The concrete Host aggregator records ACKs only from its configured A/B controlle
 
 After both ACKs, the Host reliably announces the complete CommonCommitted ACK metadata to every connected client. An assigned Backup accepts that announcement only if its own immutable Committed bytes identify the same payload. Ordinary clients retain the metadata for later recovery-session routing but do not become candidates and do not receive full payload bytes.
 
+Each Backup pins a separate `CommonCommittedPayload` byte buffer when it accepts that announcement. Its latest validated `Committed` buffer may continue advancing while a later revision waits for the other Backup, but it cannot overwrite the bytes selected for crash recovery. The role assignment that produced the common ACK is pinned with the bytes, so a later same-term roster/role change cannot silently change the candidate ladder for the older baseline.
+
 After a successful migration, the new Active Host replenishes Backup A/B roles by stable original Slot where population permits. Reduced redundancy must be visible in logs/UI.
 
 ## 11. Restore publication contract
@@ -201,6 +203,8 @@ ValidateRestore
 Before `RecoveryReady`, player input, gameplay RPCs, AI, damage, match timers and new Snapshot capture remain blocked.
 
 The concrete gate is the replicated `AWeaponGameState::bGameplayRecoveryBlocked` fact. Authority enters and releases it only through `AWeaponGameMode::EnterGameplayRecoveryBarrier` and `ReleaseGameplayRecoveryBarrier`; those edge transitions freeze or resume player/NPC movement, weapon-tagged GAS abilities, AI Behavior Trees, drones, projectiles, grenade fuses, respawn timers and the current match-phase deadline. Authoritative mutation owners also read the same gate at their RPC/damage/GridMap/capture boundaries. `RestoreSaveGame` requires the target World to be gated before Validate and leaves it gated after Apply; a later migration orchestrator alone may publish `RecoveryReady` and call Release.
+
+Recovery listen travel carries `WeaponRecovery=1`; `AWeaponGameMode::InitGameState` closes the barrier before local PostLogin or gameplay BeginPlay can publish a normal role term. The candidate restores the pinned CommonCommitted bytes in that fresh World, creates a Ready-only LAN Recovery Session while the barrier remains closed, and releases the barrier from the successful CreateSession callback. Other survivors search and join only after every advertised MatchId/Epoch/base Revision/RosterRevision/Candidate/attempt/hash/map/build field matches. A later readiness-UX pass may hold publication for explicit connected-client presentation ACKs; the current first path admits remote survivors only after local RecoveryReady, so they cannot observe a half-restored World.
 
 If RosterRevision changes during Validate/Stage/Apply, the candidate must not publish `RecoveryReady`. It discards that Recovery World and starts a new attempt using the unchanged CommonCommittedRevision and updated roster.
 
@@ -250,6 +254,8 @@ Active Host fails
 ```
 
 There is no third arbitrary-client candidate in this MVP. Peer RTT does not participate in election.
+
+`UWeaponHostMigrationSubsystem` is the single state-machine writer. Its Engine NetworkFailure handler snapshots only the committed control facts and never calls OpenLevel; it waits for the Engine's default `?closed` travel, then starts or searches the appropriate candidate. A cross-World core ticker enforces the per-candidate deadline and retries exact LAN discovery. A failure/timeout returns the process to the same map as a standalone Waiting/Lobby World before advancing A to B; B failure leaves the process in Lobby. Session delegates report events but do not choose candidates or mutate Epochs.
 
 ## 15. Acceptance evidence for this contract
 

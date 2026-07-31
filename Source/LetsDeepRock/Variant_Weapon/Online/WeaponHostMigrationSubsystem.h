@@ -3,13 +3,17 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "WeaponHostMigrationTypes.h"
 #include "WeaponHostMigrationSubsystem.generated.h"
 
 class UWeaponMatchSaveGame;
 class AWeaponPlayerController;
+class UWeaponSessionSubsystem;
 class UWorld;
+class UNetDriver;
 
 /**
  * Cross-travel owner of one backup's recovery bytes.
@@ -27,7 +31,9 @@ class LETSDEEPROCK_API UWeaponHostMigrationSubsystem : public UGameInstanceSubsy
 	GENERATED_BODY()
 
 public:
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
+	EWeaponHostMigrationState GetMigrationState() const { return MigrationState; }
 
 	/** Create Epoch 1 for a new MatchId, or reuse the term of the same Active Host. */
 	bool PrepareAuthorityTerm(
@@ -133,6 +139,8 @@ public:
 	const FWeaponMigrationPayloadEnvelope* GetCommittedEnvelope() const;
 	bool CopyCommittedPayload(TArray<uint8>& OutBytes) const;
 	bool GetCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
+	bool CopyCommonCommittedPayload(TArray<uint8>& OutBytes) const;
+	bool GetLocalCommonCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
 
 	float GetSnapshotIntervalSeconds() const { return FMath::Max(0.1f, SnapshotIntervalSeconds); }
 	float GetTransferAckTimeoutSeconds() const { return FMath::Max(0.1f, TransferAckTimeoutSeconds); }
@@ -194,6 +202,28 @@ private:
 	void ResetOutgoingTransfer();
 	void ClearHostTimers();
 	void BroadcastCommonCommittedAck();
+	void HandleNetworkFailure(
+		UWorld* World,
+		UNetDriver* NetDriver,
+		ENetworkFailure::Type FailureType,
+		const FString& ErrorString);
+	void HandlePostLoadMap(UWorld* LoadedWorld);
+	void HandleRecoveryWorldPrepared(bool bSuccess, const FString& Message);
+	void HandleRecoveryHostComplete(bool bSuccess, const FString& Message);
+	void HandleRecoveryJoinComplete(bool bSuccess, const FString& Message);
+	bool TickRecovery(float DeltaSeconds);
+	bool BeginRecoveryFromNetworkFailure(UWorld* FailedWorld, FString& OutError);
+	bool EnterRecoveryCandidatePhase(EWeaponMigrationRole CandidateRole, FString& OutError);
+	bool BuildRecoverySessionDescriptor(
+		EWeaponMigrationRole CandidateRole,
+		bool bCreateAttempt,
+		FWeaponRecoverySessionDescriptor& OutDescriptor,
+		FString& OutError) const;
+	bool RestoreCandidateWorld(FString& OutError);
+	void AdvanceRecoveryCandidate(const FString& Reason);
+	void FailRecoveryToLobby(const FString& Reason);
+	void CompleteRecoveryConnection();
+	void ResetRecoveryAttemptContext();
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Host Migration|Timing", meta = (ClampMin = 0.1))
 	float SnapshotIntervalSeconds = 5.0f;
@@ -221,8 +251,10 @@ private:
 
 	FPendingPayloadBuffer PendingPayload;
 	FCommittedPayloadBuffer CommittedPayload;
+	FCommittedPayloadBuffer CommonCommittedPayload;
 	FOutgoingPayloadTransfer OutgoingTransfer;
 	FWeaponMigrationPayloadAck CommonCommittedAck;
+	FWeaponMigrationRoleAssignment CommonCommittedRoleAssignment;
 	FWeaponMigrationRoleAssignment CurrentRoleAssignment;
 	TWeakObjectPtr<AWeaponPlayerController> HostBackupA;
 	TWeakObjectPtr<AWeaponPlayerController> HostBackupB;
@@ -231,8 +263,25 @@ private:
 	uint64 LocalSaveRequestSerial = 0;
 	int64 LastLocalSaveRevision = 0;
 	bool bHasCommonCommittedPayload = false;
+	bool bHasCommonCommittedRoleAssignment = false;
 	bool bHasCurrentRoleAssignment = false;
 	bool bCurrentRoleAssignmentIsProvisional = false;
+	EWeaponHostMigrationState MigrationState = EWeaponHostMigrationState::Idle;
+	EWeaponMigrationRole RecoveryCandidateRole = EWeaponMigrationRole::None;
+	FWeaponMigrationRoleAssignment RecoveryOriginAssignment;
+	FWeaponMigrationPayloadAck RecoveryBaselineAck;
+	FWeaponRecoverySessionDescriptor ActiveRecoverySession;
+	FUniqueNetIdRepl RecoveryLocalPlayerId;
+	double RecoveryCandidateDeadlineSeconds = 0.0;
+	double NextRecoverySearchSeconds = 0.0;
+	bool bRecoverySearchInFlight = false;
+	bool bRecoveryTravelCompleted = false;
+	FDelegateHandle NetworkFailureDelegateHandle;
+	FDelegateHandle PostLoadMapDelegateHandle;
+	FDelegateHandle RecoveryWorldPreparedDelegateHandle;
+	FDelegateHandle RecoveryHostCompleteDelegateHandle;
+	FDelegateHandle RecoveryJoinCompleteDelegateHandle;
+	FTSTicker::FDelegateHandle RecoveryTickerHandle;
 	FTimerHandle SnapshotCaptureTimerHandle;
 	FTimerHandle ChunkSendTimerHandle;
 	FTimerHandle TransferAckTimerHandle;

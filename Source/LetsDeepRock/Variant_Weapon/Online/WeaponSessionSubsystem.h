@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Interfaces/OnlineSessionInterface.h"
 #include "OnlineSessionSettings.h"
+#include "Online/WeaponHostMigrationTypes.h"
 #include "WeaponGameState.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "WeaponSessionSubsystem.generated.h"
@@ -56,6 +57,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	bool, bWasSuccessful,
 	const TArray<FWeaponLanSessionResult>&, Results);
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(
+	FOnWeaponRecoverySessionOperationComplete,
+	bool,
+	const FString&);
+
 /**
  * LAN/P2P Session 控制面
  *
@@ -95,6 +101,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "LAN Session")
 	bool ReconnectToMigratedHost(const FString& Address);
 
+	/** Destroy the old client Session, travel to a fresh gated listen World, then report preparation. */
+	bool PrepareRecoveryHost(const FWeaponRecoverySessionDescriptor& Descriptor);
+
+	/** Advertise a successfully restored candidate World. */
+	bool AdvertiseRecoverySession(const FWeaponRecoverySessionDescriptor& Descriptor);
+
+	/** Find and join only a Ready Session whose complete recovery identity matches Expected. */
+	bool FindAndJoinRecoverySession(const FWeaponRecoverySessionDescriptor& Expected);
+
+	/** Cancel recovery Session work and return to the same map as a standalone Waiting/Lobby World. */
+	bool ReturnToRecoveryLobby(FName MapPackageName);
+
+	const FWeaponRecoverySessionDescriptor* GetSelectedRecoverySession() const
+	{
+		return bHasSelectedRecoverySession ? &SelectedRecoverySession : nullptr;
+	}
+
+	FOnWeaponRecoverySessionOperationComplete OnRecoveryWorldPrepared;
+	FOnWeaponRecoverySessionOperationComplete OnRecoveryHostComplete;
+	FOnWeaponRecoverySessionOperationComplete OnRecoveryJoinComplete;
+
 	UFUNCTION(BlueprintPure, Category = "LAN Session")
 	EWeaponSessionOperation GetCurrentOperation() const { return CurrentOperation; }
 
@@ -120,16 +147,27 @@ private:
 		Host,
 		JoinSearchResult,
 		DirectTravel,
+		RecoveryHost,
+		RecoveryJoinSearchResult,
+		RecoveryLobby,
 	};
 
 	IOnlineSessionPtr GetSessionInterface() const;
 	FName ResolveCurrentMapName() const;
 
 	bool BeginHostTravel();
+	bool BeginRecoveryHostTravel();
 	bool BeginCreateSession();
+	bool BeginCreateSessionInternal(const FWeaponRecoverySessionDescriptor* RecoveryDescriptor);
 	bool BeginJoinSession(int32 ResultIndex);
 	bool BeginDestroySession();
 	bool BeginDirectTravel(const FString& Address);
+	bool BeginRecoveryLobbyTravel();
+	bool BeginRecoverySearch();
+	bool TryReadMatchingRecoverySession(
+		const FOnlineSessionSearchResult& SearchResult,
+		FWeaponRecoverySessionDescriptor& OutDescriptor) const;
+	void ResetRecoveryOperationFlags();
 	void ExecutePendingAction();
 	void FailPendingAction(const FString& Message);
 
@@ -156,6 +194,14 @@ private:
 	FName PendingHostMapName = NAME_None;
 	int32 PendingJoinResultIndex = INDEX_NONE;
 	FString PendingDirectAddress;
+	FName PendingRecoveryLobbyMapName = NAME_None;
+	FWeaponRecoverySessionDescriptor PendingRecoverySession;
+	FWeaponRecoverySessionDescriptor ExpectedRecoverySession;
+	FWeaponRecoverySessionDescriptor SelectedRecoverySession;
+	bool bCreatingRecoverySession = false;
+	bool bFindingRecoverySession = false;
+	bool bJoiningRecoverySession = false;
+	bool bHasSelectedRecoverySession = false;
 
 	FDelegateHandle CreateSessionDelegateHandle;
 	FDelegateHandle FindSessionsDelegateHandle;

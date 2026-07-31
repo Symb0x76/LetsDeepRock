@@ -20,11 +20,30 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
 
 AWeaponGameMode::AWeaponGameMode()
 {
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
+}
+
+void AWeaponGameMode::InitGame(
+	const FString& MapName,
+	const FString& Options,
+	FString& ErrorMessage)
+{
+	bRecoveryWorldRequested = UGameplayStatics::HasOption(Options, TEXT("WeaponRecovery"));
+	Super::InitGame(MapName, Options, ErrorMessage);
+}
+
+void AWeaponGameMode::InitGameState()
+{
+	Super::InitGameState();
+	if (bRecoveryWorldRequested && !EnterGameplayRecoveryBarrier())
+	{
+		UE_LOG(LogLetsDeepRock, Fatal, TEXT("Recovery World could not enter its gameplay barrier during InitGameState"));
+	}
 }
 
 bool AWeaponGameMode::RefreshHostMigrationRoles(FString& OutError)

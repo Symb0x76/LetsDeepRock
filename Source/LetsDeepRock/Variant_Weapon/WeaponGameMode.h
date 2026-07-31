@@ -28,6 +28,11 @@ class AWeaponGameMode : public AGameModeBase
 public:
 
 	AWeaponGameMode();
+	virtual void InitGame(
+		const FString& MapName,
+		const FString& Options,
+		FString& ErrorMessage) override;
+	virtual void InitGameState() override;
 
 	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
 
@@ -142,6 +147,7 @@ private:
 	TMap<FUniqueNetIdRepl, TArray<FWeaponAttributionTombstone>> AttributionTombstones;
 	uint64 RosterRevision = 0;
 	float FrozenMatchPhaseRemaining = 0.0f;
+	bool bRecoveryWorldRequested = false;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();

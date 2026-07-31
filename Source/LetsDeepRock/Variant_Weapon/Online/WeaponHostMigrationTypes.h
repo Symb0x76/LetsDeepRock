@@ -18,6 +18,26 @@ enum class EWeaponMigrationRole : uint8
 	BackupB,
 };
 
+/** Cross-World recovery orchestration state. This is an internal C++ protocol, not a Blueprint API. */
+enum class EWeaponHostMigrationState : uint8
+{
+	Idle,
+	Monitoring,
+	WaitingForDisconnectTravel,
+	PreparingCandidate,
+	SearchingCandidate,
+	JoiningCandidate,
+	Restoring,
+	AdvertisingCandidate,
+	Failed,
+};
+
+enum class EWeaponRecoverySessionState : uint8
+{
+	Restoring,
+	Ready,
+};
+
 /** One stable player occupying one migration role for the current authority term. */
 USTRUCT()
 struct FWeaponMigrationRoleMember
@@ -60,6 +80,24 @@ struct FWeaponMigrationRoleAssignment
 
 	EWeaponMigrationRole ResolveRole(const FUniqueNetIdRepl& PlayerId) const;
 	bool IdentifiesSameAssignment(const FWeaponMigrationRoleAssignment& Other) const;
+};
+
+/** Session-discovery identity for one disposable candidate Recovery World. */
+struct FWeaponRecoverySessionDescriptor
+{
+	FGuid MatchId;
+	uint64 AuthorityEpoch = 0;
+	int64 BaseSnapshotRevision = 0;
+	uint64 BaseRosterRevision = 0;
+	FGuid RecoveryAttemptId;
+	FWeaponMigrationRoleMember Candidate;
+	FString MapPackageName;
+	int32 MaxPlayers = 0;
+	TArray<uint8> PayloadHash;
+	EWeaponRecoverySessionState State = EWeaponRecoverySessionState::Restoring;
+
+	bool IsValid(bool bRequireAttemptId) const;
+	bool IdentifiesSameBaseline(const FWeaponRecoverySessionDescriptor& Other) const;
 };
 
 /** Metadata shared by every chunk of one immutable serialized SaveGame payload. */

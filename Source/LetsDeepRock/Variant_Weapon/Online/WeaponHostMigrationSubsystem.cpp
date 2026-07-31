@@ -5,13 +5,26 @@
 #include "WeaponMatchSaveGame.h"
 #include "WeaponSnapshot.h"
 #include "WeaponSnapshotCoordinator.h"
+#include "WeaponSessionSubsystem.h"
 #include "WeaponPlayerController.h"
+#include "WeaponGameMode.h"
+#include "WeaponGameState.h"
+#include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/NetDriver.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
 #include "HAL/PlatformMisc.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
+#include "UObject/UObjectGlobals.h"
+
+namespace WeaponMigration
+{
+	constexpr float RecoveryTickIntervalSeconds = 0.25f;
+	constexpr double RecoverySearchRetrySeconds = 1.0;
+}
 
 bool FWeaponMigrationRoleMember::IdentifiesSameMember(
 	const FWeaponMigrationRoleMember& Other) const
@@ -52,6 +65,32 @@ bool FWeaponMigrationRoleAssignment::IdentifiesSameAssignment(
 		BackupB.IdentifiesSameMember(Other.BackupB);
 }
 
+bool FWeaponRecoverySessionDescriptor::IsValid(const bool bRequireAttemptId) const
+{
+	return MatchId.IsValid() && AuthorityEpoch > 0 &&
+		BaseSnapshotRevision > 0 && BaseRosterRevision > 0 &&
+		(!bRequireAttemptId || RecoveryAttemptId.IsValid()) &&
+		(bRequireAttemptId || !RecoveryAttemptId.IsValid()) &&
+		Candidate.IsAssigned() && Candidate.OriginalSlot >= 0 && Candidate.OriginalSlot < 4 &&
+		!MapPackageName.IsEmpty() && MaxPlayers >= 1 && MaxPlayers <= 4 &&
+		PayloadHash.Num() == WeaponMigrationSHA256Bytes &&
+		(State == EWeaponRecoverySessionState::Restoring ||
+		 State == EWeaponRecoverySessionState::Ready);
+}
+
+bool FWeaponRecoverySessionDescriptor::IdentifiesSameBaseline(
+	const FWeaponRecoverySessionDescriptor& Other) const
+{
+	return MatchId == Other.MatchId &&
+		AuthorityEpoch == Other.AuthorityEpoch &&
+		BaseSnapshotRevision == Other.BaseSnapshotRevision &&
+		BaseRosterRevision == Other.BaseRosterRevision &&
+		Candidate.IdentifiesSameMember(Other.Candidate) &&
+		MapPackageName == Other.MapPackageName &&
+		MaxPlayers == Other.MaxPlayers &&
+		PayloadHash == Other.PayloadHash;
+}
+
 bool FWeaponMigrationPayloadEnvelope::IdentifiesSamePayload(
 	const FWeaponMigrationPayloadEnvelope& Other) const
 {
@@ -87,8 +126,65 @@ bool FWeaponMigrationPayloadAck::IdentifiesSamePayload(
 		PayloadHash == Other.PayloadHash;
 }
 
+void UWeaponHostMigrationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	Collection.InitializeDependency<UWeaponSessionSubsystem>();
+
+	if (GEngine)
+	{
+		NetworkFailureDelegateHandle = GEngine->OnNetworkFailure().AddUObject(
+			this,
+			&UWeaponHostMigrationSubsystem::HandleNetworkFailure);
+	}
+	PostLoadMapDelegateHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(
+		this,
+		&UWeaponHostMigrationSubsystem::HandlePostLoadMap);
+
+	if (UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>())
+	{
+		RecoveryWorldPreparedDelegateHandle = SessionSubsystem->OnRecoveryWorldPrepared.AddUObject(
+			this,
+			&UWeaponHostMigrationSubsystem::HandleRecoveryWorldPrepared);
+		RecoveryHostCompleteDelegateHandle = SessionSubsystem->OnRecoveryHostComplete.AddUObject(
+			this,
+			&UWeaponHostMigrationSubsystem::HandleRecoveryHostComplete);
+		RecoveryJoinCompleteDelegateHandle = SessionSubsystem->OnRecoveryJoinComplete.AddUObject(
+			this,
+			&UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete);
+	}
+
+	RecoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UWeaponHostMigrationSubsystem::TickRecovery),
+		WeaponMigration::RecoveryTickIntervalSeconds);
+}
+
 void UWeaponHostMigrationSubsystem::Deinitialize()
 {
+	if (RecoveryTickerHandle.IsValid())
+	{
+		FTSTicker::RemoveTicker(RecoveryTickerHandle);
+		RecoveryTickerHandle.Reset();
+	}
+	if (GEngine && NetworkFailureDelegateHandle.IsValid())
+	{
+		GEngine->OnNetworkFailure().Remove(NetworkFailureDelegateHandle);
+		NetworkFailureDelegateHandle.Reset();
+	}
+	if (PostLoadMapDelegateHandle.IsValid())
+	{
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapDelegateHandle);
+		PostLoadMapDelegateHandle.Reset();
+	}
+	if (UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>())
+	{
+		SessionSubsystem->OnRecoveryWorldPrepared.Remove(RecoveryWorldPreparedDelegateHandle);
+		SessionSubsystem->OnRecoveryHostComplete.Remove(RecoveryHostCompleteDelegateHandle);
+		SessionSubsystem->OnRecoveryJoinComplete.Remove(RecoveryJoinCompleteDelegateHandle);
+	}
+	ResetRecoveryAttemptContext();
 	StopHostSnapshotTransport();
 	ResetPayloadBuffers();
 	Super::Deinitialize();
@@ -119,7 +215,9 @@ bool UWeaponHostMigrationSubsystem::PrepareAuthorityTerm(
 		StopHostSnapshotTransport();
 		ResetPayloadBuffers();
 		CommonCommittedAck = FWeaponMigrationPayloadAck();
+		CommonCommittedRoleAssignment = FWeaponMigrationRoleAssignment();
 		bHasCommonCommittedPayload = false;
+		bHasCommonCommittedRoleAssignment = false;
 		LastLocalSaveRevision = 0;
 		CurrentRoleAssignment = MoveTemp(ProposedAssignment);
 		bHasCurrentRoleAssignment = true;
@@ -219,6 +317,10 @@ bool UWeaponHostMigrationSubsystem::SetAuthorityRoleAssignment(
 
 	CurrentRoleAssignment = Assignment;
 	bCurrentRoleAssignmentIsProvisional = false;
+	if (MigrationState == EWeaponHostMigrationState::Idle)
+	{
+		MigrationState = EWeaponHostMigrationState::Monitoring;
+	}
 	return true;
 }
 
@@ -236,6 +338,10 @@ bool UWeaponHostMigrationSubsystem::AcceptRoleAssignment(
 		CurrentRoleAssignment = Assignment;
 		bHasCurrentRoleAssignment = true;
 		bCurrentRoleAssignmentIsProvisional = false;
+		if (MigrationState == EWeaponHostMigrationState::Idle)
+		{
+			MigrationState = EWeaponHostMigrationState::Monitoring;
+		}
 		return true;
 	}
 	if (Assignment.MatchId != CurrentRoleAssignment.MatchId)
@@ -294,6 +400,10 @@ bool UWeaponHostMigrationSubsystem::AcceptRoleAssignment(
 	}
 	CurrentRoleAssignment = Assignment;
 	bCurrentRoleAssignmentIsProvisional = false;
+	if (MigrationState == EWeaponHostMigrationState::Idle)
+	{
+		MigrationState = EWeaponHostMigrationState::Monitoring;
+	}
 	return true;
 }
 
@@ -312,19 +422,6 @@ bool UWeaponHostMigrationSubsystem::AcceptCommonCommittedAnnouncement(
 		OutError = TEXT("CommonCommitted announcement does not match the current role assignment");
 		return false;
 	}
-
-	const EWeaponMigrationRole ReceiverRole = GetRoleForPlayer(ReceiverPlayerId);
-	if (ReceiverRole == EWeaponMigrationRole::BackupA ||
-		ReceiverRole == EWeaponMigrationRole::BackupB)
-	{
-		FWeaponMigrationPayloadAck LocalCommittedAck;
-		if (!GetCommittedAck(LocalCommittedAck) || !LocalCommittedAck.IdentifiesSamePayload(Ack))
-		{
-			OutError = TEXT("Assigned Backup cannot accept CommonCommitted without identical local bytes");
-			return false;
-		}
-	}
-
 	if (bHasCommonCommittedPayload &&
 		Ack.MatchId == CommonCommittedAck.MatchId &&
 		Ack.SnapshotRevision < CommonCommittedAck.SnapshotRevision)
@@ -332,8 +429,34 @@ bool UWeaponHostMigrationSubsystem::AcceptCommonCommittedAnnouncement(
 		OutError = TEXT("CommonCommitted announcement moves SnapshotRevision backwards");
 		return false;
 	}
+
+	const EWeaponMigrationRole ReceiverRole = GetRoleForPlayer(ReceiverPlayerId);
+	if (ReceiverRole == EWeaponMigrationRole::BackupA ||
+		ReceiverRole == EWeaponMigrationRole::BackupB)
+	{
+		FWeaponMigrationPayloadAck ExistingCommonAck;
+		if (GetLocalCommonCommittedAck(ExistingCommonAck) &&
+			ExistingCommonAck.IdentifiesSamePayload(Ack))
+		{
+			CommonCommittedAck = Ack;
+			bHasCommonCommittedPayload = true;
+			CommonCommittedRoleAssignment = CurrentRoleAssignment;
+			bHasCommonCommittedRoleAssignment = true;
+			return true;
+		}
+		FWeaponMigrationPayloadAck LocalCommittedAck;
+		if (!GetCommittedAck(LocalCommittedAck) || !LocalCommittedAck.IdentifiesSamePayload(Ack))
+		{
+			OutError = TEXT("Assigned Backup cannot accept CommonCommitted without identical local bytes");
+			return false;
+		}
+		CommonCommittedPayload = CommittedPayload;
+	}
+
 	CommonCommittedAck = Ack;
 	bHasCommonCommittedPayload = true;
+	CommonCommittedRoleAssignment = CurrentRoleAssignment;
+	bHasCommonCommittedRoleAssignment = true;
 	return true;
 }
 
@@ -343,6 +466,585 @@ EWeaponMigrationRole UWeaponHostMigrationSubsystem::GetRoleForPlayer(
 	return bHasCurrentRoleAssignment
 		? CurrentRoleAssignment.ResolveRole(PlayerId)
 		: EWeaponMigrationRole::None;
+}
+
+void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
+	UWorld* World,
+	UNetDriver* NetDriver,
+	const ENetworkFailure::Type FailureType,
+	const FString& ErrorString)
+{
+	const bool bHostConnectionFailure = FailureType == ENetworkFailure::ConnectionLost ||
+		FailureType == ENetworkFailure::ConnectionTimeout;
+	const bool bCandidateConnectionFailure =
+		MigrationState == EWeaponHostMigrationState::JoiningCandidate &&
+		FailureType == ENetworkFailure::PendingConnectionFailure;
+	if (!World || World->GetGameInstance() != GetGameInstance() || !NetDriver ||
+		NetDriver->GetNetMode() != NM_Client ||
+		(!bHostConnectionFailure && !bCandidateConnectionFailure))
+	{
+		return;
+	}
+
+	if (MigrationState == EWeaponHostMigrationState::JoiningCandidate)
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("Recovery candidate connection failed before PostLoadMap: %s"),
+			*ErrorString);
+		bRecoverySearchInFlight = false;
+		if (RecoveryCandidateRole == EWeaponMigrationRole::BackupA)
+		{
+			if (RecoveryOriginAssignment.MatchId.IsValid())
+			{
+				CurrentRoleAssignment = RecoveryOriginAssignment;
+				bHasCurrentRoleAssignment = true;
+				bCurrentRoleAssignmentIsProvisional = false;
+			}
+			RecoveryCandidateRole = EWeaponMigrationRole::BackupB;
+			RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
+			bRecoveryTravelCompleted = false;
+			MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+		}
+		else
+		{
+			MigrationState = EWeaponHostMigrationState::Failed;
+		}
+		return;
+	}
+
+	if (MigrationState != EWeaponHostMigrationState::Monitoring)
+	{
+		return;
+	}
+
+	FString Error;
+	if (!BeginRecoveryFromNetworkFailure(World, Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Error,
+			TEXT("Host migration cannot start after network failure: %s (engine error: %s)"),
+			*Error,
+			*ErrorString);
+		MigrationState = EWeaponHostMigrationState::Failed;
+	}
+}
+
+bool UWeaponHostMigrationSubsystem::BeginRecoveryFromNetworkFailure(
+	UWorld* FailedWorld,
+	FString& OutError)
+{
+	OutError.Reset();
+	UGameInstance* GameInstance = GetGameInstance();
+	const APlayerController* LocalController = GameInstance
+		? GameInstance->GetFirstLocalPlayerController(FailedWorld)
+		: nullptr;
+	const APlayerState* LocalPlayerState = LocalController
+		? LocalController->GetPlayerState<APlayerState>()
+		: nullptr;
+	const AWeaponGameState* GameState = FailedWorld
+		? FailedWorld->GetGameState<AWeaponGameState>()
+		: nullptr;
+	FWeaponMigrationPayloadAck CommonAck;
+	if (!FailedWorld || !bHasCommonCommittedRoleAssignment ||
+		!GetCommonCommittedAck(CommonAck) || !LocalPlayerState ||
+		!LocalPlayerState->GetUniqueId().IsValid() || !GameState ||
+		!CommonCommittedRoleAssignment.BackupA.IsAssigned() ||
+		CommonAck.MatchId != CommonCommittedRoleAssignment.MatchId ||
+		CommonAck.AuthorityEpoch != CommonCommittedRoleAssignment.AuthorityEpoch ||
+		CommonAck.RosterRevision != CommonCommittedRoleAssignment.RosterRevision)
+	{
+		OutError = TEXT("A published fixed-role assignment and CommonCommitted baseline are required");
+		return false;
+	}
+
+	const FUniqueNetIdRepl LocalPlayerId = LocalPlayerState->GetUniqueId();
+	const EWeaponMigrationRole LocalRole = CommonCommittedRoleAssignment.ResolveRole(LocalPlayerId);
+	if (LocalRole == EWeaponMigrationRole::BackupA || LocalRole == EWeaponMigrationRole::BackupB)
+	{
+		FWeaponMigrationPayloadAck LocalCommonAck;
+		if (!GetLocalCommonCommittedAck(LocalCommonAck) ||
+			!LocalCommonAck.IdentifiesSamePayload(CommonAck))
+		{
+			OutError = TEXT("Assigned candidate no longer has the exact CommonCommitted bytes");
+			return false;
+		}
+	}
+
+	const FString MapPackageName = UWorld::RemovePIEPrefix(FailedWorld->GetOutermost()->GetName());
+	if (MapPackageName.IsEmpty() || GameState->GetMaxPlayers() < 1 || GameState->GetMaxPlayers() > 4)
+	{
+		OutError = TEXT("Failed World map or capacity is invalid for recovery discovery");
+		return false;
+	}
+
+	StopHostSnapshotTransport();
+	DiscardPendingPayload();
+	RecoveryOriginAssignment = CommonCommittedRoleAssignment;
+	RecoveryBaselineAck = CommonAck;
+	RecoveryLocalPlayerId = LocalPlayerId;
+	CurrentRoleAssignment = CommonCommittedRoleAssignment;
+	bHasCurrentRoleAssignment = true;
+	bCurrentRoleAssignmentIsProvisional = false;
+	ActiveRecoverySession = FWeaponRecoverySessionDescriptor();
+	ActiveRecoverySession.MapPackageName = MapPackageName;
+	ActiveRecoverySession.MaxPlayers = GameState->GetMaxPlayers();
+	RecoveryCandidateRole = EWeaponMigrationRole::BackupA;
+	RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
+	NextRecoverySearchSeconds = 0.0;
+	bRecoverySearchInFlight = false;
+	bRecoveryTravelCompleted = false;
+	MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Host failure fenced for Match %s Epoch %llu CommonRevision %lld; waiting for engine disconnect travel"),
+		*CommonAck.MatchId.ToString(),
+		CommonAck.AuthorityEpoch,
+		CommonAck.SnapshotRevision);
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
+{
+	if (!LoadedWorld || LoadedWorld->GetGameInstance() != GetGameInstance())
+	{
+		return;
+	}
+
+	if (MigrationState == EWeaponHostMigrationState::WaitingForDisconnectTravel)
+	{
+		bRecoveryTravelCompleted = true;
+		return;
+	}
+
+	if (MigrationState == EWeaponHostMigrationState::JoiningCandidate &&
+		LoadedWorld->GetNetMode() == NM_Client)
+	{
+		CompleteRecoveryConnection();
+	}
+}
+
+bool UWeaponHostMigrationSubsystem::BuildRecoverySessionDescriptor(
+	const EWeaponMigrationRole CandidateRole,
+	const bool bCreateAttempt,
+	FWeaponRecoverySessionDescriptor& OutDescriptor,
+	FString& OutError) const
+{
+	OutDescriptor = FWeaponRecoverySessionDescriptor();
+	OutError.Reset();
+	const uint64 EpochIncrement = CandidateRole == EWeaponMigrationRole::BackupA
+		? 1
+		: CandidateRole == EWeaponMigrationRole::BackupB ? 2 : 0;
+	const FWeaponMigrationRoleMember Candidate = CandidateRole == EWeaponMigrationRole::BackupA
+		? RecoveryOriginAssignment.BackupA
+		: CandidateRole == EWeaponMigrationRole::BackupB
+			? RecoveryOriginAssignment.BackupB
+			: FWeaponMigrationRoleMember();
+	if (EpochIncrement == 0 || !Candidate.IsAssigned() ||
+		RecoveryOriginAssignment.AuthorityEpoch > MAX_uint64 - EpochIncrement ||
+		!RecoveryBaselineAck.IdentifiesSamePayload(CommonCommittedAck) ||
+		ActiveRecoverySession.MapPackageName.IsEmpty() ||
+		ActiveRecoverySession.MaxPlayers < 1 || ActiveRecoverySession.MaxPlayers > 4)
+	{
+		OutError = TEXT("Recovery candidate, baseline, map or authority increment is invalid");
+		return false;
+	}
+
+	OutDescriptor.MatchId = RecoveryOriginAssignment.MatchId;
+	OutDescriptor.AuthorityEpoch = RecoveryOriginAssignment.AuthorityEpoch + EpochIncrement;
+	OutDescriptor.BaseSnapshotRevision = RecoveryBaselineAck.SnapshotRevision;
+	OutDescriptor.BaseRosterRevision = RecoveryBaselineAck.RosterRevision;
+	OutDescriptor.RecoveryAttemptId = bCreateAttempt ? FGuid::NewGuid() : FGuid();
+	OutDescriptor.Candidate = Candidate;
+	OutDescriptor.MapPackageName = ActiveRecoverySession.MapPackageName;
+	OutDescriptor.MaxPlayers = ActiveRecoverySession.MaxPlayers;
+	OutDescriptor.PayloadHash = RecoveryBaselineAck.PayloadHash;
+	OutDescriptor.State = bCreateAttempt
+		? EWeaponRecoverySessionState::Restoring
+		: EWeaponRecoverySessionState::Ready;
+	if (!OutDescriptor.IsValid(bCreateAttempt))
+	{
+		OutDescriptor = FWeaponRecoverySessionDescriptor();
+		OutError = TEXT("Constructed Recovery Session descriptor is invalid");
+		return false;
+	}
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::EnterRecoveryCandidatePhase(
+	const EWeaponMigrationRole CandidateRole,
+	FString& OutError)
+{
+	OutError.Reset();
+	FWeaponRecoverySessionDescriptor Descriptor;
+	const bool bLocalCandidate = CandidateRole == EWeaponMigrationRole::BackupA
+		? RecoveryOriginAssignment.BackupA.PlayerId == RecoveryLocalPlayerId
+		: CandidateRole == EWeaponMigrationRole::BackupB &&
+			RecoveryOriginAssignment.BackupB.PlayerId == RecoveryLocalPlayerId;
+	if (!BuildRecoverySessionDescriptor(CandidateRole, bLocalCandidate, Descriptor, OutError))
+	{
+		return false;
+	}
+
+	RecoveryCandidateRole = CandidateRole;
+	if (CandidateRole != EWeaponMigrationRole::BackupA || RecoveryCandidateDeadlineSeconds <= 0.0)
+	{
+		RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
+	}
+	NextRecoverySearchSeconds = 0.0;
+	bRecoverySearchInFlight = false;
+	ActiveRecoverySession = Descriptor;
+
+	if (!bLocalCandidate)
+	{
+		MigrationState = EWeaponHostMigrationState::SearchingCandidate;
+		return true;
+	}
+
+	FWeaponMigrationPayloadAck LocalCommonAck;
+	uint64 CandidateEpoch = 0;
+	if (!GetLocalCommonCommittedAck(LocalCommonAck) ||
+		!LocalCommonAck.IdentifiesSamePayload(RecoveryBaselineAck) ||
+		!BeginCandidateAuthorityTerm(
+			RecoveryLocalPlayerId,
+			RecoveryOriginAssignment.AuthorityEpoch,
+			CandidateEpoch,
+			OutError) ||
+		CandidateEpoch != Descriptor.AuthorityEpoch)
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("Local candidate could not prepare the deterministic authority term");
+		}
+		return false;
+	}
+
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	MigrationState = EWeaponHostMigrationState::PreparingCandidate;
+	if (!SessionSubsystem || !SessionSubsystem->PrepareRecoveryHost(Descriptor))
+	{
+		OutError = TEXT("Recovery Session subsystem could not prepare the candidate listen World");
+		return false;
+	}
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::TickRecovery(const float DeltaSeconds)
+{
+	(void)DeltaSeconds;
+	const double Now = FPlatformTime::Seconds();
+	if (MigrationState == EWeaponHostMigrationState::WaitingForDisconnectTravel &&
+		bRecoveryTravelCompleted)
+	{
+		UWeaponSessionSubsystem* SessionSubsystem =
+			GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+		if (SessionSubsystem &&
+			SessionSubsystem->GetCurrentOperation() == EWeaponSessionOperation::Idle)
+		{
+			bRecoveryTravelCompleted = false;
+			FString Error;
+			if (!EnterRecoveryCandidatePhase(RecoveryCandidateRole, Error))
+			{
+				if (RecoveryCandidateRole == EWeaponMigrationRole::BackupA)
+				{
+					AdvanceRecoveryCandidate(Error);
+				}
+				else
+				{
+					FailRecoveryToLobby(Error);
+				}
+			}
+		}
+	}
+	const bool bCandidateTimedState =
+		MigrationState == EWeaponHostMigrationState::WaitingForDisconnectTravel ||
+		MigrationState == EWeaponHostMigrationState::PreparingCandidate ||
+		MigrationState == EWeaponHostMigrationState::SearchingCandidate ||
+		MigrationState == EWeaponHostMigrationState::JoiningCandidate ||
+		MigrationState == EWeaponHostMigrationState::Restoring ||
+		MigrationState == EWeaponHostMigrationState::AdvertisingCandidate;
+	if (bCandidateTimedState && RecoveryCandidateDeadlineSeconds > 0.0 &&
+		Now >= RecoveryCandidateDeadlineSeconds)
+	{
+		AdvanceRecoveryCandidate(TEXT("Candidate recovery deadline expired"));
+		return true;
+	}
+
+	if (MigrationState != EWeaponHostMigrationState::SearchingCandidate ||
+		bRecoverySearchInFlight || Now < NextRecoverySearchSeconds)
+	{
+		return true;
+	}
+
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem ||
+		SessionSubsystem->GetCurrentOperation() != EWeaponSessionOperation::Idle)
+	{
+		return true;
+	}
+
+	bRecoverySearchInFlight = true;
+	NextRecoverySearchSeconds = Now + WeaponMigration::RecoverySearchRetrySeconds;
+	if (!SessionSubsystem->FindAndJoinRecoverySession(ActiveRecoverySession))
+	{
+		bRecoverySearchInFlight = false;
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandleRecoveryWorldPrepared(
+	const bool bSuccess,
+	const FString& Message)
+{
+	if (MigrationState != EWeaponHostMigrationState::PreparingCandidate)
+	{
+		return;
+	}
+	if (!bSuccess)
+	{
+		AdvanceRecoveryCandidate(Message);
+		return;
+	}
+
+	MigrationState = EWeaponHostMigrationState::Restoring;
+	FString Error;
+	if (!RestoreCandidateWorld(Error))
+	{
+		AdvanceRecoveryCandidate(Error);
+		return;
+	}
+
+	ActiveRecoverySession.State = EWeaponRecoverySessionState::Ready;
+	MigrationState = EWeaponHostMigrationState::AdvertisingCandidate;
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem || !SessionSubsystem->AdvertiseRecoverySession(ActiveRecoverySession))
+	{
+		AdvanceRecoveryCandidate(TEXT("Restored candidate could not advertise its Recovery Session"));
+	}
+}
+
+bool UWeaponHostMigrationSubsystem::RestoreCandidateWorld(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	AWeaponGameState* GameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	UWeaponSnapshotCoordinator* Coordinator =
+		GetGameInstance()->GetSubsystem<UWeaponSnapshotCoordinator>();
+	TArray<uint8> PayloadBytes;
+	FWeaponMigrationPayloadAck LocalCommonAck;
+	UWeaponMatchSaveGame* SaveGame = nullptr;
+	if (!World || World->GetNetMode() != NM_ListenServer || !GameMode || !GameState ||
+		!GameState->IsGameplayRecoveryBlocked() || !Coordinator ||
+		!GetLocalCommonCommittedAck(LocalCommonAck) ||
+		!LocalCommonAck.IdentifiesSamePayload(RecoveryBaselineAck) ||
+		!CopyCommonCommittedPayload(PayloadBytes) ||
+		!Coordinator->DeserializeSaveGame(PayloadBytes, SaveGame, OutError))
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("Candidate World, barrier or CommonCommitted payload is unavailable");
+		}
+		return false;
+	}
+
+	if (!SaveGame || SaveGame->Snapshot.MatchId != RecoveryBaselineAck.MatchId ||
+		SaveGame->Snapshot.Revision != RecoveryBaselineAck.SnapshotRevision ||
+		SaveGame->Snapshot.RosterRevision != RecoveryBaselineAck.RosterRevision ||
+		SaveGame->MapPackageName != ActiveRecoverySession.MapPackageName ||
+		SaveGame->MaxPlayers != ActiveRecoverySession.MaxPlayers ||
+		!bHasCurrentRoleAssignment || !bCurrentRoleAssignmentIsProvisional ||
+		CurrentRoleAssignment.MatchId != ActiveRecoverySession.MatchId ||
+		CurrentRoleAssignment.AuthorityEpoch != ActiveRecoverySession.AuthorityEpoch ||
+		!CurrentRoleAssignment.ActiveHost.IdentifiesSameMember(ActiveRecoverySession.Candidate))
+	{
+		OutError = TEXT("Candidate SaveGame or prepared authority term does not match the Recovery Session");
+		return false;
+	}
+
+	if (!Coordinator->RestoreSaveGame(SaveGame, OutError))
+	{
+		return false;
+	}
+	if (!GameState->IsGameplayRecoveryBlocked() ||
+		Coordinator->GetOrCreateActiveMatchId() != RecoveryBaselineAck.MatchId)
+	{
+		OutError = TEXT("Restore did not preserve the gated Match identity");
+		return false;
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandleRecoveryHostComplete(
+	const bool bSuccess,
+	const FString& Message)
+{
+	if (MigrationState != EWeaponHostMigrationState::AdvertisingCandidate)
+	{
+		return;
+	}
+	if (!bSuccess)
+	{
+		AdvanceRecoveryCandidate(Message);
+		return;
+	}
+
+	AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	if (!GameMode || !GameMode->ReleaseGameplayRecoveryBarrier())
+	{
+		AdvanceRecoveryCandidate(TEXT("Recovery Session was created but the gameplay barrier could not be released"));
+		return;
+	}
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("RecoveryReady Match %s Epoch %llu Attempt %s Revision %lld Candidate %s"),
+		*ActiveRecoverySession.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		ActiveRecoverySession.BaseSnapshotRevision,
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString());
+	CompleteRecoveryConnection();
+}
+
+void UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete(
+	const bool bSuccess,
+	const FString& Message)
+{
+	if (MigrationState != EWeaponHostMigrationState::SearchingCandidate &&
+		MigrationState != EWeaponHostMigrationState::JoiningCandidate)
+	{
+		return;
+	}
+	bRecoverySearchInFlight = false;
+	if (!bSuccess)
+	{
+		NextRecoverySearchSeconds = FPlatformTime::Seconds() +
+			WeaponMigration::RecoverySearchRetrySeconds;
+		return;
+	}
+
+	const UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	const FWeaponRecoverySessionDescriptor* Selected = SessionSubsystem
+		? SessionSubsystem->GetSelectedRecoverySession()
+		: nullptr;
+	if (!Selected || !Selected->IdentifiesSameBaseline(ActiveRecoverySession) ||
+		!Selected->IsValid(true))
+	{
+		AdvanceRecoveryCandidate(TEXT("Joined Recovery Session identity changed after search"));
+		return;
+	}
+
+	ActiveRecoverySession = *Selected;
+	MigrationState = EWeaponHostMigrationState::JoiningCandidate;
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("Joining Recovery Session Match %s Epoch %llu Attempt %s: %s"),
+		*Selected->MatchId.ToString(),
+		Selected->AuthorityEpoch,
+		*Selected->RecoveryAttemptId.ToString(),
+		*Message);
+}
+
+void UWeaponHostMigrationSubsystem::AdvanceRecoveryCandidate(const FString& Reason)
+{
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Recovery candidate %s failed for Match %s Epoch %llu Revision %lld Roster %llu Attempt %s CandidateId %s: %s"),
+		RecoveryCandidateRole == EWeaponMigrationRole::BackupA ? TEXT("A") : TEXT("B"),
+		*RecoveryBaselineAck.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		RecoveryBaselineAck.SnapshotRevision,
+		RecoveryBaselineAck.RosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString(),
+		*Reason);
+
+	if (RecoveryCandidateRole != EWeaponMigrationRole::BackupA)
+	{
+		FailRecoveryToLobby(Reason);
+		return;
+	}
+
+	StopHostSnapshotTransport();
+	if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+	{
+		GameMode->EnterGameplayRecoveryBarrier();
+	}
+	if (bCurrentRoleAssignmentIsProvisional && RecoveryOriginAssignment.MatchId.IsValid())
+	{
+		CurrentRoleAssignment = RecoveryOriginAssignment;
+		bCurrentRoleAssignmentIsProvisional = false;
+	}
+
+	RecoveryCandidateRole = EWeaponMigrationRole::BackupB;
+	RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
+	bRecoverySearchInFlight = false;
+	bRecoveryTravelCompleted = false;
+	MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem ||
+		!SessionSubsystem->ReturnToRecoveryLobby(FName(*ActiveRecoverySession.MapPackageName)))
+	{
+		FailRecoveryToLobby(TEXT("Unable to return to a clean World before Backup B"));
+	}
+}
+
+void UWeaponHostMigrationSubsystem::FailRecoveryToLobby(const FString& Reason)
+{
+	UE_LOG(
+		LogLetsDeepRock,
+		Error,
+		TEXT("Host migration exhausted Backup A/B for Match %s Epoch %llu Revision %lld Roster %llu Attempt %s: %s"),
+		*RecoveryBaselineAck.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		RecoveryBaselineAck.SnapshotRevision,
+		RecoveryBaselineAck.RosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*Reason);
+	StopHostSnapshotTransport();
+	if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+	{
+		GameMode->EnterGameplayRecoveryBarrier();
+	}
+	MigrationState = EWeaponHostMigrationState::Failed;
+	if (UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>())
+	{
+		SessionSubsystem->ReturnToRecoveryLobby(FName(*ActiveRecoverySession.MapPackageName));
+	}
+	ResetRecoveryAttemptContext();
+}
+
+void UWeaponHostMigrationSubsystem::CompleteRecoveryConnection()
+{
+	MigrationState = EWeaponHostMigrationState::Monitoring;
+	ResetRecoveryAttemptContext();
+}
+
+void UWeaponHostMigrationSubsystem::ResetRecoveryAttemptContext()
+{
+	RecoveryCandidateRole = EWeaponMigrationRole::None;
+	RecoveryOriginAssignment = FWeaponMigrationRoleAssignment();
+	RecoveryBaselineAck = FWeaponMigrationPayloadAck();
+	ActiveRecoverySession = FWeaponRecoverySessionDescriptor();
+	RecoveryLocalPlayerId = FUniqueNetIdRepl();
+	RecoveryCandidateDeadlineSeconds = 0.0;
+	NextRecoverySearchSeconds = 0.0;
+	bRecoverySearchInFlight = false;
+	bRecoveryTravelCompleted = false;
 }
 
 bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
@@ -616,6 +1318,8 @@ bool UWeaponHostMigrationSubsystem::RecordBackupAcknowledgement(
 
 	CommonCommittedAck = Ack;
 	bHasCommonCommittedPayload = true;
+	CommonCommittedRoleAssignment = CurrentRoleAssignment;
+	bHasCommonCommittedRoleAssignment = true;
 	if (UWorld* World = HostWorld.Get())
 	{
 		World->GetTimerManager().ClearTimer(TransferAckTimerHandle);
@@ -858,6 +1562,7 @@ void UWeaponHostMigrationSubsystem::ResetPayloadBuffers()
 	}
 	DiscardPendingPayload();
 	CommittedPayload = FCommittedPayloadBuffer();
+	CommonCommittedPayload = FCommittedPayloadBuffer();
 }
 
 bool UWeaponHostMigrationSubsystem::IsPendingPayloadComplete() const
@@ -895,6 +1600,33 @@ bool UWeaponHostMigrationSubsystem::GetCommittedAck(FWeaponMigrationPayloadAck& 
 	OutAck.SnapshotRevision = CommittedPayload.Envelope.SnapshotRevision;
 	OutAck.RosterRevision = CommittedPayload.Envelope.RosterRevision;
 	OutAck.PayloadHash = CommittedPayload.Envelope.PayloadHash;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::CopyCommonCommittedPayload(TArray<uint8>& OutBytes) const
+{
+	OutBytes.Reset();
+	if (!CommonCommittedPayload.bValid)
+	{
+		return false;
+	}
+	OutBytes = CommonCommittedPayload.Bytes;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::GetLocalCommonCommittedAck(
+	FWeaponMigrationPayloadAck& OutAck) const
+{
+	OutAck = FWeaponMigrationPayloadAck();
+	if (!CommonCommittedPayload.bValid)
+	{
+		return false;
+	}
+	OutAck.MatchId = CommonCommittedPayload.Envelope.MatchId;
+	OutAck.AuthorityEpoch = CommonCommittedPayload.Envelope.AuthorityEpoch;
+	OutAck.SnapshotRevision = CommonCommittedPayload.Envelope.SnapshotRevision;
+	OutAck.RosterRevision = CommonCommittedPayload.Envelope.RosterRevision;
+	OutAck.PayloadHash = CommonCommittedPayload.Envelope.PayloadHash;
 	return true;
 }
 
