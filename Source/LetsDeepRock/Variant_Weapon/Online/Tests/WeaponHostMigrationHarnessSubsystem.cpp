@@ -51,7 +51,8 @@ void UWeaponHostMigrationHarnessSubsystem::Initialize(FSubsystemCollectionBase& 
 		ProcessRole = EProcessRole::Host;
 	}
 	else if (RequestedRole.Equals(TEXT("Client1"), ESearchCase::IgnoreCase) ||
-		RequestedRole.Equals(TEXT("Client2"), ESearchCase::IgnoreCase))
+		RequestedRole.Equals(TEXT("Client2"), ESearchCase::IgnoreCase) ||
+		RequestedRole.Equals(TEXT("Client3"), ESearchCase::IgnoreCase))
 	{
 		ProcessRole = EProcessRole::Client;
 	}
@@ -205,6 +206,8 @@ void UWeaponHostMigrationHarnessSubsystem::ObserveMigration()
 
 	const EWeaponHostMigrationState MigrationState =
 		MigrationSubsystem->GetMigrationState();
+	const FWeaponMigrationRoleAssignment* Assignment =
+		MigrationSubsystem->GetCurrentRoleAssignment();
 	if (MigrationState != LastMigrationState)
 	{
 		if (LastMigrationState == EWeaponHostMigrationState::Monitoring &&
@@ -214,28 +217,38 @@ void UWeaponHostMigrationHarnessSubsystem::ObserveMigration()
 		}
 		EmitMarker(
 			TEXT("MigrationState"),
-			FString::Printf(
-				TEXT("State=%s|Role=%s|NetMode=%s"),
-				LexMigrationState(MigrationState),
-				LexMigrationRole(LocalRole),
-				LexNetMode(World->GetNetMode())));
+			Assignment
+				? FString::Printf(
+					TEXT("State=%s|Role=%s|NetMode=%s|Match=%s|Epoch=%llu|Roster=%llu"),
+					LexMigrationState(MigrationState),
+					LexMigrationRole(LocalRole),
+					LexNetMode(World->GetNetMode()),
+					*Assignment->MatchId.ToString(EGuidFormats::DigitsWithHyphens),
+					Assignment->AuthorityEpoch,
+					Assignment->RosterRevision)
+				: FString::Printf(
+					TEXT("State=%s|Role=%s|NetMode=%s"),
+					LexMigrationState(MigrationState),
+					LexMigrationRole(LocalRole),
+					LexNetMode(World->GetNetMode())));
 		LastMigrationState = MigrationState;
 	}
 
-	const FWeaponMigrationRoleAssignment* Assignment =
-		MigrationSubsystem->GetCurrentRoleAssignment();
 	FWeaponMigrationPayloadAck CommonAck;
-	const bool bHasCompleteBaseline = Assignment &&
+	const bool bHasSharedBaseline = Assignment &&
 		Assignment->BackupA.IsAssigned() &&
 		Assignment->BackupB.IsAssigned() &&
 		MigrationSubsystem->GetCommonCommittedAck(CommonAck) &&
 		CommonAck.MatchId == Assignment->MatchId &&
 		CommonAck.AuthorityEpoch == Assignment->AuthorityEpoch &&
 		CommonAck.RosterRevision == Assignment->RosterRevision &&
-		LocalPlayerId.IsValid() && LocalRole != EWeaponMigrationRole::None;
-	if (!bBaselineEmitted && bHasCompleteBaseline)
+		LocalPlayerId.IsValid();
+	if (!bSawRecoveryTransition && bHasSharedBaseline &&
+		LocalRole != EWeaponMigrationRole::None &&
+		(!bBaselineEmitted || !LastBaselineMarkerAck.IdentifiesSamePayload(CommonAck)))
 	{
 		bBaselineEmitted = true;
+		LastBaselineMarkerAck = CommonAck;
 		EmitMarker(
 			TEXT("BaselineReady"),
 			FString::Printf(
@@ -248,6 +261,23 @@ void UWeaponHostMigrationHarnessSubsystem::ObserveMigration()
 				CommonAck.RosterRevision,
 				CommonAck.SnapshotRevision,
 				*BytesToHex(CommonAck.PayloadHash.GetData(), CommonAck.PayloadHash.Num())));
+	}
+	else if (!bObserverReadyEmitted && bHasSharedBaseline &&
+		ProcessLabel == TEXT("Client3") && LocalRole == EWeaponMigrationRole::None)
+	{
+		bObserverReadyEmitted = true;
+		EmitMarker(
+			TEXT("ObserverReady"),
+			FString::Printf(
+				TEXT("Player=%s|Role=%s|Match=%s|Epoch=%llu|Roster=%llu|Snapshot=%lld|Hash=%s|NetMode=%s"),
+				*SanitizeMarkerValue(LocalPlayerId.ToDebugString()),
+				LexMigrationRole(LocalRole),
+				*CommonAck.MatchId.ToString(EGuidFormats::DigitsWithHyphens),
+				CommonAck.AuthorityEpoch,
+				CommonAck.RosterRevision,
+				CommonAck.SnapshotRevision,
+				*BytesToHex(CommonAck.PayloadHash.GetData(), CommonAck.PayloadHash.Num()),
+				LexNetMode(World->GetNetMode())));
 	}
 
 	if (!bRecoveryLiveEmitted && bBaselineEmitted && bSawRecoveryTransition &&
@@ -265,6 +295,26 @@ void UWeaponHostMigrationHarnessSubsystem::ObserveMigration()
 				*CommonAck.MatchId.ToString(EGuidFormats::DigitsWithHyphens),
 				Assignment->AuthorityEpoch,
 				Assignment->RosterRevision,
+				CommonAck.SnapshotRevision,
+				*BytesToHex(CommonAck.PayloadHash.GetData(), CommonAck.PayloadHash.Num()),
+				LexNetMode(World->GetNetMode())));
+	}
+
+	if (!bRecoveryLobbyEmitted && bObserverReadyEmitted && bSawRecoveryTransition &&
+		MigrationState == EWeaponHostMigrationState::Failed &&
+		World->GetNetMode() == NM_Standalone &&
+		MigrationSubsystem->GetCommonCommittedAck(CommonAck))
+	{
+		bRecoveryLobbyEmitted = true;
+		EmitMarker(
+			TEXT("RecoveryLobby"),
+			FString::Printf(
+				TEXT("Player=%s|Role=%s|Match=%s|BaselineEpoch=%llu|BaselineRoster=%llu|Snapshot=%lld|Hash=%s|NetMode=%s"),
+				*SanitizeMarkerValue(LocalPlayerId.ToDebugString()),
+				LexMigrationRole(LocalRole),
+				*CommonAck.MatchId.ToString(EGuidFormats::DigitsWithHyphens),
+				CommonAck.AuthorityEpoch,
+				CommonAck.RosterRevision,
 				CommonAck.SnapshotRevision,
 				*BytesToHex(CommonAck.PayloadHash.GetData(), CommonAck.PayloadHash.Num()),
 				LexNetMode(World->GetNetMode())));

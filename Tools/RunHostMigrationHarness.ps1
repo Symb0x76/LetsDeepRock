@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
 
-    [ValidateSet('HostCrashToA', 'HostThenBackupACrashToB', 'All')]
+    [ValidateSet('HostCrashToA', 'HostThenBackupACrashToB', 'HostThenBackupsCrashToLobby', 'All')]
     [string]$Scenario = 'All',
 
     [int]$StartupTimeoutSeconds = 120,
@@ -66,11 +66,13 @@ function Wait-HarnessMarker {
         [string]$RunId,
         [string]$Event,
         [int]$TimeoutSeconds,
-        [hashtable]$Expected = @{}
+        [hashtable]$Expected = @{},
+        [int]$MinimumOccurrence = 1
     )
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
+        $matchingOccurrence = 0
         foreach ($marker in (Get-HarnessMarkers -ProcessInfo $ProcessInfo -RunId $RunId -Event $Event)) {
             $matches = $true
             foreach ($entry in $Expected.GetEnumerator()) {
@@ -80,7 +82,10 @@ function Wait-HarnessMarker {
                 }
             }
             if ($matches) {
-                return $marker
+                $matchingOccurrence++
+                if ($matchingOccurrence -ge $MinimumOccurrence) {
+                    return $marker
+                }
             }
         }
 
@@ -95,7 +100,7 @@ function Wait-HarnessMarker {
         }
         Start-Sleep -Milliseconds 250
     }
-    throw "Timed out after $TimeoutSeconds seconds waiting for $($ProcessInfo.Label) Event=$Event Expected=$($Expected | ConvertTo-Json -Compress)"
+    throw "Timed out after $TimeoutSeconds seconds waiting for $($ProcessInfo.Label) Event=$Event Occurrence=$MinimumOccurrence Expected=$($Expected | ConvertTo-Json -Compress)"
 }
 
 function Start-HarnessProcess {
@@ -188,17 +193,49 @@ function Invoke-HarnessScenario {
         $processes += $client2
         Wait-HarnessMarker -ProcessInfo $client2 -RunId $runId -Event 'InitialConnectionObserved' -TimeoutSeconds $StartupTimeout | Out-Null
 
-        $hostBaseline = Wait-HarnessMarker -ProcessInfo $hostProcessInfo -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout
-        $client1Baseline = Wait-HarnessMarker -ProcessInfo $client1 -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout
-        $client2Baseline = Wait-HarnessMarker -ProcessInfo $client2 -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout
-        foreach ($baseline in @($client1Baseline, $client2Baseline)) {
+        $observer = $null
+        if ($ScenarioName -eq 'HostThenBackupsCrashToLobby') {
+            $observer = Start-HarnessProcess -ExecutablePath $ExecutablePath -Label 'Client3' -RunId $runId -ServerName $serverName -LogPath (Join-Path $ScenarioOutput 'Client3.log')
+            $processes += $observer
+            Wait-HarnessMarker -ProcessInfo $observer -RunId $runId -Event 'InitialConnectionObserved' -TimeoutSeconds $StartupTimeout | Out-Null
+        }
+
+        $observerBaseline = if ($null -ne $observer) {
+            Wait-HarnessMarker -ProcessInfo $observer -RunId $runId -Event 'ObserverReady' -TimeoutSeconds $StartupTimeout -Expected @{ Role = 'None'; NetMode = 'Client' }
+        } else {
+            $null
+        }
+        $baselineExpected = if ($null -ne $observerBaseline) {
+            @{
+                Match = $observerBaseline['Match']
+                Epoch = $observerBaseline['Epoch']
+                Roster = $observerBaseline['Roster']
+                Snapshot = $observerBaseline['Snapshot']
+                Hash = $observerBaseline['Hash']
+            }
+        } else {
+            @{}
+        }
+        $hostBaseline = Wait-HarnessMarker -ProcessInfo $hostProcessInfo -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout -Expected $baselineExpected
+        $client1Baseline = Wait-HarnessMarker -ProcessInfo $client1 -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout -Expected $baselineExpected
+        $client2Baseline = Wait-HarnessMarker -ProcessInfo $client2 -RunId $runId -Event 'BaselineReady' -TimeoutSeconds $StartupTimeout -Expected $baselineExpected
+        $remoteBaselines = @($client1Baseline, $client2Baseline)
+        if ($null -ne $observerBaseline) {
+            $remoteBaselines += $observerBaseline
+        }
+        foreach ($baseline in $remoteBaselines) {
             foreach ($field in @('Match', 'Epoch', 'Roster', 'Snapshot', 'Hash')) {
                 Assert-EqualField -Expected $hostBaseline -Actual $baseline -Field $field -Context 'Initial CommonCommitted baseline'
             }
         }
-        $playerIds = @($hostBaseline['Player'], $client1Baseline['Player'], $client2Baseline['Player']) | Select-Object -Unique
-        if ($playerIds.Count -ne 3) {
-            throw "Packaged processes did not receive three unique OSS identities: $($playerIds -join ',')"
+        $playerIds = @($hostBaseline['Player'], $client1Baseline['Player'], $client2Baseline['Player'])
+        if ($null -ne $observerBaseline) {
+            $playerIds += $observerBaseline['Player']
+        }
+        $playerIds = @($playerIds | Select-Object -Unique)
+        $expectedPlayerCount = if ($null -ne $observer) { 4 } else { 3 }
+        if ($playerIds.Count -ne $expectedPlayerCount) {
+            throw "Packaged processes did not receive $expectedPlayerCount unique OSS identities: $($playerIds -join ',')"
         }
 
         $backupA = if ($client1Baseline['Role'] -eq 'BackupA') { $client1 } elseif ($client2Baseline['Role'] -eq 'BackupA') { $client2 } else { $null }
@@ -208,15 +245,42 @@ function Invoke-HarnessScenario {
         }
 
         Stop-HarnessProcess -ProcessInfo $hostProcessInfo
-        if ($ScenarioName -eq 'HostThenBackupACrashToB') {
-            Wait-HarnessMarker -ProcessInfo $backupA -RunId $runId -Event 'MigrationState' -TimeoutSeconds $StartupTimeout -Expected @{ State = 'WaitingForReadyAcks' } | Out-Null
+        if ($ScenarioName -ne 'HostCrashToA') {
+            $backupAEpoch = ([UInt64]$hostBaseline['Epoch'] + 1).ToString()
+            Wait-HarnessMarker -ProcessInfo $backupA -RunId $runId -Event 'MigrationState' -TimeoutSeconds $StartupTimeout -Expected @{ State = 'WaitingForReadyAcks'; Epoch = $backupAEpoch } | Out-Null
             Wait-HarnessMarker -ProcessInfo $backupB -RunId $runId -Event 'MigrationState' -TimeoutSeconds $StartupTimeout -Expected @{ State = 'WaitingForReadyAcks' } | Out-Null
+            if ($null -ne $observer) {
+                Wait-HarnessMarker -ProcessInfo $observer -RunId $runId -Event 'MigrationState' -TimeoutSeconds $StartupTimeout -Expected @{ State = 'WaitingForReadyAcks' } | Out-Null
+            }
             Stop-HarnessProcess -ProcessInfo $backupA
             $survivingCandidate = $backupB
             $expectedEpoch = ([UInt64]$hostBaseline['Epoch'] + 2).ToString()
         } else {
             $survivingCandidate = $backupA
             $expectedEpoch = ([UInt64]$hostBaseline['Epoch'] + 1).ToString()
+        }
+
+        if ($ScenarioName -eq 'HostThenBackupsCrashToLobby') {
+            Wait-HarnessMarker -ProcessInfo $survivingCandidate -RunId $runId -Event 'MigrationState' -TimeoutSeconds $RecoveryTimeout -Expected @{ State = 'WaitingForReadyAcks'; Epoch = $expectedEpoch } | Out-Null
+            Wait-HarnessMarker -ProcessInfo $observer -RunId $runId -Event 'MigrationState' -TimeoutSeconds $RecoveryTimeout -Expected @{ State = 'WaitingForReadyAcks' } -MinimumOccurrence 2 | Out-Null
+            Stop-HarnessProcess -ProcessInfo $survivingCandidate
+
+            $recoveryLobby = Wait-HarnessMarker -ProcessInfo $observer -RunId $runId -Event 'RecoveryLobby' -TimeoutSeconds $RecoveryTimeout -Expected @{
+                NetMode = 'Standalone'
+                BaselineEpoch = $hostBaseline['Epoch']
+                BaselineRoster = $hostBaseline['Roster']
+            }
+            foreach ($field in @('Match', 'Snapshot', 'Hash')) {
+                Assert-EqualField -Expected $hostBaseline -Actual $recoveryLobby -Field $field -Context 'Exhausted-candidate lobby baseline'
+            }
+
+            $result.Status = 'Passed'
+            $result.Baseline = $hostBaseline
+            $result.Lobby = $recoveryLobby
+            $result.CompletedUtc = [DateTime]::UtcNow.ToString('o')
+            $result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ScenarioOutput 'result.json') -Encoding UTF8
+            Write-Host "PASS $ScenarioName Run=$runId LobbyBaselineEpoch=$($recoveryLobby['BaselineEpoch']) Snapshot=$($recoveryLobby['Snapshot'])"
+            return $result
         }
 
         $recoveryLive = Wait-HarnessMarker -ProcessInfo $survivingCandidate -RunId $runId -Event 'RecoveryLive' -TimeoutSeconds $RecoveryTimeout -Expected @{ Role = 'ActiveHost'; NetMode = 'ListenServer' }
@@ -266,7 +330,7 @@ if (Test-Path -LiteralPath $innerExecutable) {
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 $resolvedOutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
 $scenarios = if ($Scenario -eq 'All') {
-    @('HostCrashToA', 'HostThenBackupACrashToB')
+    @('HostCrashToA', 'HostThenBackupACrashToB', 'HostThenBackupsCrashToLobby')
 } else {
     @($Scenario)
 }

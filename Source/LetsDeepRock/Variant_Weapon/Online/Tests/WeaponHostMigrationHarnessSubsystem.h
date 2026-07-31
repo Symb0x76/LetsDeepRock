@@ -13,7 +13,7 @@
  * Opt-in packaged-process driver for the Host Migration acceptance harness.
  *
  * This subsystem is never created in Shipping and is inert unless
- * -WeaponMigrationHarnessRole=Host|Client1|Client2 is present. It drives only the public
+ * -WeaponMigrationHarnessRole=Host|Client1|Client2|Client3 is present. It drives only the public
  * Session APIs and observes the production migration state machine; it does not skip protocol
  * phases or mutate recovery state directly.
  */
@@ -66,6 +66,9 @@ private:
 	bool bInitialJoinStarted = false;
 	bool bInitialConnectionObserved = false;
 	bool bBaselineEmitted = false;
+	FWeaponMigrationPayloadAck LastBaselineMarkerAck;
+	bool bObserverReadyEmitted = false;
 	bool bSawRecoveryTransition = false;
 	bool bRecoveryLiveEmitted = false;
+	bool bRecoveryLobbyEmitted = false;
 };
