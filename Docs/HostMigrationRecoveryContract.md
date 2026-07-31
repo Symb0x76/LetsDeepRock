@@ -19,7 +19,7 @@ Only Backup A and Backup B receive full recovery payloads. Ordinary clients do n
 ## 2. Current serialization baseline
 
 - `UWeaponMatchSaveGame::SaveFormatVersion` is `1`.
-- `FWeaponSnapshot::SchemaVersion` is `6`.
+- `FWeaponSnapshot::SchemaVersion` is `7`.
 - The SaveGame header owns the target map package and session capacity.
 - The nested Snapshot owns mutable authoritative match state.
 - A format or schema mismatch is rejected; no compatibility migration is currently promised.
@@ -160,6 +160,8 @@ The full payload is promoted from Pending to Committed only after:
 5. the backup emits an ACK containing MatchId, Epoch, Revision and hash.
 
 Invalid or incomplete Pending data is discarded without modifying the previous Committed payload.
+
+The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. Transport and timeout code may discard Pending, but cannot mutate Committed. Network RPCs, A/B ACK aggregation and current-term Epoch fencing remain separate orchestration layers.
 
 ## 10. Common committed revision
 
