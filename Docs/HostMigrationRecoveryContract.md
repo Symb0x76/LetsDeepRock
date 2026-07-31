@@ -90,10 +90,11 @@ In a fresh Recovery World, tombstones for Pending/Departed projectile sources mu
 
 ## 6. Preserved state
 
-The following domains are checkpoint-preserved because schema v6 has concrete Capture, Validate and Restore ownership:
+The following domains are checkpoint-preserved because schema v7 has concrete Capture, Validate and Restore ownership:
 
 - SaveGame header: map package and maximum players;
 - Match: MatchId, SnapshotRevision, phase and relative remaining phase time;
+- Recovery roster: RosterRevision, stable identity, original Slot, Pending/Ready/Departed disposition and relative remaining Pending grace;
 - Player: stable identity, original Slot, ready/team state, Pawn presence, transform, horizontal rotation, velocity, character config, selected static weapon index and captured numeric GAS attributes;
 - Enemy: class, transform, velocity, enemy config and captured numeric GAS attributes;
 - GridMap: deterministic baseline, latest tile deltas and `NextTileRevision` continuity;

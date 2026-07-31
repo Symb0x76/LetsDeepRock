@@ -35,7 +35,10 @@ public:
 	AGrenadeProjectile();
 
 	/** 用手雷数据资产初始化（替代父类的 InitDamageParams，额外配置弹道和引信） */
-	void InitFromGrenadeData(const UWeaponGrenadeDataAsset* GrenadeData, AActor* InInstigator);
+	void InitFromGrenadeData(
+		const UWeaponGrenadeDataAsset* GrenadeData,
+		AActor* InInstigator,
+		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
 	/**
 	 * 设置世界空间初速度向量（替代旧的 SetInitialThrowSpeed）

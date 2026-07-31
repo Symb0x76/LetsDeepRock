@@ -4,6 +4,7 @@
 #include "WeaponPlayerController.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputMappingContext.h"
+#include "WeaponGameMode.h"
 
 AWeaponPlayerController::AWeaponPlayerController()
 {
@@ -32,4 +33,14 @@ void AWeaponPlayerController::SetupInputComponent()
 			}
 		}
 	}
+}
+
+void AWeaponPlayerController::PawnLeavingGame()
+{
+	if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+		WeaponGameMode && WeaponGameMode->PreserveLeavingPlayerAttribution(this))
+	{
+		return;
+	}
+	Super::PawnLeavingGame();
 }

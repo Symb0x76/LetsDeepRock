@@ -35,4 +35,7 @@ protected:
 
 	/** 初始化输入绑定 */
 	virtual void SetupInputComponent() override;
+
+	/** Preserve an inert attribution source before the engine's default Pawn destruction. */
+	virtual void PawnLeavingGame() override;
 };

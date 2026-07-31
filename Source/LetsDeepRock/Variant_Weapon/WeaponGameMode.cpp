@@ -3,7 +3,9 @@
 
 #include "WeaponGameMode.h"
 #include "WeaponCharacter.h"
+#include "WeaponPlayerController.h"
 #include "WeaponPlayerState.h"
+#include "Weapons/WeaponProjectile.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "AbilitySystemComponent.h"
 #include "TimerManager.h"
@@ -17,35 +19,96 @@ AWeaponGameMode::AWeaponGameMode()
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
 }
 
-bool AWeaponGameMode::SetPlayerSlotReservations(
-	const TMap<FUniqueNetIdRepl, int32>& NewReservations)
+bool AWeaponGameMode::SetRecoveryRoster(
+	const TArray<FWeaponRecoveryRosterSnapshot>& NewRoster,
+	const uint64 RestoredRevision)
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!HasAuthority() || !WeaponGameState)
+	if (!HasAuthority() || !WeaponGameState || RestoredRevision == MAX_uint64)
 	{
 		return false;
 	}
 
+	TMap<FUniqueNetIdRepl, int32> ImportedReservations;
+	TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry> ImportedRoster;
+	TMap<FUniqueNetIdRepl, float> PendingDurations;
 	TSet<int32> ReservedSlots;
-	for (const auto& [PlayerId, SlotIndex] : NewReservations)
-	{
-		if (!PlayerId.IsValid() || SlotIndex < 0 || SlotIndex >= WeaponGameState->GetMaxPlayers() ||
-			ReservedSlots.Contains(SlotIndex))
-		{
-			return false;
-		}
-		ReservedSlots.Add(SlotIndex);
-	}
-
 	TSet<FUniqueNetIdRepl> ConnectedPlayerIds;
 	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
-		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
-		if (!WeaponPlayerState || !NewReservations.Contains(WeaponPlayerState->GetUniqueId()))
+		if (!PlayerState || !PlayerState->GetUniqueId().IsValid() ||
+			ConnectedPlayerIds.Contains(PlayerState->GetUniqueId()))
 		{
 			return false;
 		}
-		ConnectedPlayerIds.Add(WeaponPlayerState->GetUniqueId());
+		ConnectedPlayerIds.Add(PlayerState->GetUniqueId());
+	}
+
+	for (const FWeaponRecoveryRosterSnapshot& SavedEntry : NewRoster)
+	{
+		const bool bKnownStatus = SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Ready ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed;
+		if (!SavedEntry.PlayerId.IsValid() || ImportedRoster.Contains(SavedEntry.PlayerId) ||
+			SavedEntry.OriginalSlot < 0 || SavedEntry.OriginalSlot >= WeaponGameState->GetMaxPlayers() ||
+			!bKnownStatus || !FMath::IsFinite(SavedEntry.RemainingGraceSeconds) ||
+			SavedEntry.RemainingGraceSeconds < 0.0f ||
+			(SavedEntry.Status != EWeaponRecoveryPlayerStatus::Pending &&
+			 SavedEntry.RemainingGraceSeconds != 0.0f))
+		{
+			return false;
+		}
+
+		FWeaponRecoveryRosterEntry& Entry = ImportedRoster.Add(SavedEntry.PlayerId);
+		Entry.PlayerId = SavedEntry.PlayerId;
+		Entry.OriginalSlot = SavedEntry.OriginalSlot;
+
+		if (ConnectedPlayerIds.Contains(SavedEntry.PlayerId))
+		{
+			if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed)
+			{
+				return false;
+			}
+			Entry.Status = EWeaponRecoveryPlayerStatus::Ready;
+		}
+		else if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed ||
+			(SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending &&
+			 SavedEntry.RemainingGraceSeconds <= 0.0f))
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Departed;
+		}
+		else if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Ready)
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Pending;
+			PendingDurations.Add(
+				SavedEntry.PlayerId,
+				SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending
+					? SavedEntry.RemainingGraceSeconds
+					: PendingGracePeriodSeconds);
+		}
+		else
+		{
+			return false;
+		}
+
+		if (Entry.Status != EWeaponRecoveryPlayerStatus::Departed)
+		{
+			if (ReservedSlots.Contains(Entry.OriginalSlot))
+			{
+				return false;
+			}
+			ReservedSlots.Add(Entry.OriginalSlot);
+			ImportedReservations.Add(Entry.PlayerId, Entry.OriginalSlot);
+		}
+	}
+
+	for (const FUniqueNetIdRepl& ConnectedPlayerId : ConnectedPlayerIds)
+	{
+		if (!ImportedRoster.Contains(ConnectedPlayerId))
+		{
+			return false;
+		}
 	}
 
 	for (auto& TimerPair : PendingGraceTimers)
@@ -54,31 +117,12 @@ bool AWeaponGameMode::SetPlayerSlotReservations(
 	}
 	PendingGraceTimers.Reset();
 
-	PlayerSlotReservations = NewReservations;
-	RecoveryRoster.Reset();
-	const double CurrentServerTime = GetWorld()->GetTimeSeconds();
-	TArray<FUniqueNetIdRepl> PendingPlayerIds;
-	for (const auto& [PlayerId, SlotIndex] : PlayerSlotReservations)
+	PlayerSlotReservations = MoveTemp(ImportedReservations);
+	RecoveryRoster = MoveTemp(ImportedRoster);
+	RosterRevision = FMath::Max(RosterRevision, RestoredRevision) + 1;
+	for (const auto& [PlayerId, RemainingGraceSeconds] : PendingDurations)
 	{
-		FWeaponRecoveryRosterEntry& Entry = RecoveryRoster.Add(PlayerId);
-		Entry.PlayerId = PlayerId;
-		Entry.OriginalSlot = SlotIndex;
-		if (ConnectedPlayerIds.Contains(PlayerId))
-		{
-			Entry.Status = EWeaponRecoveryPlayerStatus::Ready;
-		}
-		else
-		{
-			Entry.Status = EWeaponRecoveryPlayerStatus::Pending;
-			Entry.PendingDeadlineServerTime = CurrentServerTime + PendingGracePeriodSeconds;
-			PendingPlayerIds.Add(PlayerId);
-		}
-	}
-	++RosterRevision;
-
-	for (const FUniqueNetIdRepl& PlayerId : PendingPlayerIds)
-	{
-		MarkPlayerPending(PlayerId);
+		SchedulePendingGrace(PlayerId, RemainingGraceSeconds);
 	}
 	return true;
 }
@@ -129,10 +173,22 @@ void AWeaponGameMode::MarkPlayerPending(const FUniqueNetIdRepl& PlayerId)
 		Entry->Status = EWeaponRecoveryPlayerStatus::Pending;
 		++RosterRevision;
 	}
-	Entry->PendingDeadlineServerTime = GetWorld()->GetTimeSeconds() + PendingGracePeriodSeconds;
+	SchedulePendingGrace(PlayerId, PendingGracePeriodSeconds);
+}
 
+void AWeaponGameMode::SchedulePendingGrace(
+	const FUniqueNetIdRepl& PlayerId,
+	const float RemainingGraceSeconds)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		return;
+	}
+
+	Entry->PendingDeadlineServerTime = GetWorld()->GetTimeSeconds() + RemainingGraceSeconds;
 	ClearPendingGraceTimer(PlayerId);
-	if (PendingGracePeriodSeconds <= 0.0f)
+	if (RemainingGraceSeconds <= 0.0f)
 	{
 		HandlePendingGraceExpired(PlayerId);
 		return;
@@ -144,7 +200,7 @@ void AWeaponGameMode::MarkPlayerPending(const FUniqueNetIdRepl& PlayerId)
 	GetWorldTimerManager().SetTimer(
 		TimerHandle,
 		ExpirationDelegate,
-		PendingGracePeriodSeconds,
+		RemainingGraceSeconds,
 		false);
 }
 
@@ -162,6 +218,214 @@ bool AWeaponGameMode::MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId)
 	PlayerSlotReservations.Remove(PlayerId);
 	++RosterRevision;
 	return true;
+}
+
+bool AWeaponGameMode::PreserveLeavingPlayerAttribution(AWeaponPlayerController* LeavingController)
+{
+	if (!HasAuthority() || !LeavingController)
+	{
+		return false;
+	}
+
+	AWeaponCharacter* Pawn = Cast<AWeaponCharacter>(LeavingController->GetPawn());
+	AWeaponPlayerState* PlayerState = LeavingController->GetPlayerState<AWeaponPlayerState>();
+	const FUniqueNetIdRepl PlayerId = PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
+	const TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId);
+	if (!Pawn || !PlayerState || !PlayerId.IsValid() || !ActiveProjectiles)
+	{
+		return false;
+	}
+
+	FWeaponAttributionTombstone Tombstone;
+	for (const TWeakObjectPtr<AWeaponProjectile>& WeakProjectile : *ActiveProjectiles)
+	{
+		AWeaponProjectile* Projectile = WeakProjectile.Get();
+		if (Projectile && Projectile->GetInitializationState().InstigatorActor == Pawn)
+		{
+			Tombstone.Projectiles.Add(Projectile);
+		}
+	}
+	if (Tombstone.Projectiles.IsEmpty())
+	{
+		return false;
+	}
+
+	if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+	{
+		WeaponGameState->RemovePlayerState(PlayerState);
+	}
+	LeavingController->UnPossess();
+	Pawn->InitializeAttributionTombstone(PlayerState);
+
+	Tombstone.Pawn = Pawn;
+	Tombstone.PlayerState = PlayerState;
+	AttributionTombstones.FindOrAdd(PlayerId).Add(MoveTemp(Tombstone));
+	return true;
+}
+
+bool AWeaponGameMode::HandleAttributionPlayerStateDeactivated(AWeaponPlayerState* PlayerState)
+{
+	if (!HasAuthority() || !PlayerState)
+	{
+		return false;
+	}
+
+	const FUniqueNetIdRepl PlayerId = PlayerState->GetUniqueId();
+	TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId);
+	if (!Tombstones)
+	{
+		return false;
+	}
+
+	bool bFound = false;
+	for (FWeaponAttributionTombstone& Tombstone : *Tombstones)
+	{
+		if (Tombstone.PlayerState == PlayerState)
+		{
+			Tombstone.bPlayerStateDeactivated = true;
+			bFound = true;
+			break;
+		}
+	}
+	if (bFound)
+	{
+		CleanupCompletedAttributionTombstones(PlayerId);
+	}
+	return bFound;
+}
+
+void AWeaponGameMode::RegisterAttributionProjectile(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponProjectile* Projectile)
+{
+	if (HasAuthority() && PlayerId.IsValid() && Projectile)
+	{
+		ActiveAttributionProjectiles.FindOrAdd(PlayerId).Add(Projectile);
+	}
+}
+
+void AWeaponGameMode::UnregisterAttributionProjectile(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponProjectile* Projectile)
+{
+	if (!HasAuthority() || !PlayerId.IsValid() || !Projectile)
+	{
+		return;
+	}
+
+	if (TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId))
+	{
+		ActiveProjectiles->Remove(Projectile);
+		if (ActiveProjectiles->IsEmpty())
+		{
+			ActiveAttributionProjectiles.Remove(PlayerId);
+		}
+	}
+
+	if (TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId))
+	{
+		for (FWeaponAttributionTombstone& Tombstone : *Tombstones)
+		{
+			Tombstone.Projectiles.Remove(Projectile);
+		}
+	}
+	CleanupCompletedAttributionTombstones(PlayerId);
+}
+
+void AWeaponGameMode::AdoptRecoveredAttributionTombstone(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponCharacter* Pawn,
+	AWeaponPlayerState* PlayerState)
+{
+	check(HasAuthority() && PlayerId.IsValid() && Pawn && PlayerState);
+
+	FWeaponAttributionTombstone Tombstone;
+	if (const TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId))
+	{
+		for (const TWeakObjectPtr<AWeaponProjectile>& WeakProjectile : *ActiveProjectiles)
+		{
+			AWeaponProjectile* Projectile = WeakProjectile.Get();
+			if (Projectile && Projectile->GetInitializationState().InstigatorActor == Pawn)
+			{
+				Tombstone.Projectiles.Add(Projectile);
+			}
+		}
+	}
+	check(!Tombstone.Projectiles.IsEmpty());
+
+	if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+	{
+		WeaponGameState->RemovePlayerState(PlayerState);
+	}
+	Tombstone.Pawn = Pawn;
+	Tombstone.PlayerState = PlayerState;
+	Tombstone.bPlayerStateDeactivated = true;
+	AttributionTombstones.FindOrAdd(PlayerId).Add(MoveTemp(Tombstone));
+}
+
+void AWeaponGameMode::GetAttributionTombstoneActors(
+	TMap<FUniqueNetIdRepl, AWeaponCharacter*>& OutPawns,
+	TMap<FUniqueNetIdRepl, AWeaponPlayerState*>& OutPlayerStates) const
+{
+	OutPawns.Reset();
+	OutPlayerStates.Reset();
+	for (const auto& [PlayerId, Tombstones] : AttributionTombstones)
+	{
+		for (const FWeaponAttributionTombstone& Tombstone : Tombstones)
+		{
+			AWeaponCharacter* Pawn = Tombstone.Pawn.Get();
+			AWeaponPlayerState* PlayerState = Tombstone.PlayerState.Get();
+			if (Pawn && PlayerState && !Tombstone.Projectiles.IsEmpty())
+			{
+				OutPawns.Add(PlayerId, Pawn);
+				OutPlayerStates.Add(PlayerId, PlayerState);
+				break;
+			}
+		}
+	}
+}
+
+void AWeaponGameMode::CleanupCompletedAttributionTombstones(const FUniqueNetIdRepl& PlayerId)
+{
+	TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId);
+	if (!Tombstones)
+	{
+		return;
+	}
+
+	for (int32 Index = Tombstones->Num() - 1; Index >= 0; --Index)
+	{
+		FWeaponAttributionTombstone& Tombstone = (*Tombstones)[Index];
+		for (auto It = Tombstone.Projectiles.CreateIterator(); It; ++It)
+		{
+			if (!It->IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+		if (!Tombstone.bPlayerStateDeactivated || !Tombstone.Projectiles.IsEmpty())
+		{
+			continue;
+		}
+
+		if (AWeaponCharacter* Pawn = Tombstone.Pawn.Get())
+		{
+			Pawn->SetPlayerState(nullptr);
+			Pawn->Destroy();
+		}
+		if (AWeaponPlayerState* PlayerState = Tombstone.PlayerState.Get())
+		{
+			PlayerState->Destroy();
+		}
+		Tombstones->RemoveAtSwap(Index);
+	}
+	if (Tombstones->IsEmpty())
+	{
+		AttributionTombstones.Remove(PlayerId);
+	}
 }
 
 void AWeaponGameMode::HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId)
@@ -316,10 +580,12 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 void AWeaponGameMode::Logout(AController* ExitingController)
 {
 	FUniqueNetIdRepl ExitingPlayerId;
+	APlayerState* ExitingPlayerState = nullptr;
 	if (ExitingController)
 	{
-		if (const APlayerState* PlayerState = ExitingController->GetPlayerState<APlayerState>())
+		if (APlayerState* PlayerState = ExitingController->GetPlayerState<APlayerState>())
 		{
+			ExitingPlayerState = PlayerState;
 			ExitingPlayerId = PlayerState->GetUniqueId();
 		}
 	}
@@ -337,6 +603,13 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 	if (ExitingPlayerId.IsValid())
 	{
 		MarkPlayerPending(ExitingPlayerId);
+	}
+	if (ExitingPlayerState)
+	{
+		if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+		{
+			WeaponGameState->RemovePlayerState(ExitingPlayerState);
+		}
 	}
 	
 	Super::Logout(ExitingController);

@@ -114,6 +114,8 @@ public:
 	FOnWeaponPlayerLobbyStateChanged OnLobbyStateChanged;
 	
 protected:
+	virtual void OnDeactivated() override;
+
 	UFUNCTION(Server, Reliable)
 	void ServerSetPlayerReady(bool bNewIsReady);
 

@@ -31,3 +31,23 @@ struct LETSDEEPROCK_API FWeaponRecoveryRosterEntry
 	/** Server World time when Pending expires; zero for Ready/Departed. */
 	double PendingDeadlineServerTime = 0.0;
 };
+
+/** Portable recovery form of one roster entry; Pending time is relative across Worlds. */
+USTRUCT()
+struct LETSDEEPROCK_API FWeaponRecoveryRosterSnapshot
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	FUniqueNetIdRepl PlayerId;
+
+	UPROPERTY(SaveGame)
+	int32 OriginalSlot = INDEX_NONE;
+
+	UPROPERTY(SaveGame)
+	EWeaponRecoveryPlayerStatus Status = EWeaponRecoveryPlayerStatus::Pending;
+
+	/** Remaining grace at Capture; meaningful only while Status is Pending. */
+	UPROPERTY(SaveGame)
+	float RemainingGraceSeconds = 0.0f;
+};

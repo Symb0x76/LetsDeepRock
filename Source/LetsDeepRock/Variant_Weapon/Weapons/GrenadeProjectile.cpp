@@ -36,7 +36,10 @@ AGrenadeProjectile::AGrenadeProjectile()
 	InitialLifeSpan = 0.0f;
 }
 
-void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* GrenadeData, AActor* InInstigator)
+void AGrenadeProjectile::InitFromGrenadeData(
+	const UWeaponGrenadeDataAsset* GrenadeData,
+	AActor* InInstigator,
+	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!GrenadeData)
 	{
@@ -51,7 +54,8 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 		InInstigator,
 		GrenadeData->DamageTags,
 		false,
-		GrenadeData->ThrowSpeed
+		GrenadeData->ThrowSpeed,
+		ExplicitPlayerId
 	);
 
 	// 手雷专属弹道配置

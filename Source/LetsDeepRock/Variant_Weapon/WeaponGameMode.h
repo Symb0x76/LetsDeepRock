@@ -8,6 +8,9 @@
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
+class AWeaponPlayerController;
+class AWeaponPlayerState;
+class AWeaponProjectile;
 
 /**
  *  俯视角武器系统 Game Mode（Variant_Weapon）
@@ -31,13 +34,26 @@ public:
 
 	virtual void Logout(AController* ExitingController) override;
 
-	/** Replace the server-only stable identity -> original Slot table after validating the whole set. */
-	bool SetPlayerSlotReservations(const TMap<FUniqueNetIdRepl, int32>& NewReservations);
+	/** Import one complete recovery roster after validating every entry and connected identity. */
+	bool SetRecoveryRoster(const TArray<FWeaponRecoveryRosterSnapshot>& NewRoster, uint64 RestoredRevision);
 
 	uint64 GetRosterRevision() const { return RosterRevision; }
 	const TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry>& GetRecoveryRoster() const { return RecoveryRoster; }
 	float GetPendingGracePeriodSeconds() const { return PendingGracePeriodSeconds; }
 	bool MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId);
+
+	/** Intercept PawnLeavingGame when active projectiles still need this Pawn/ASC as source context. */
+	bool PreserveLeavingPlayerAttribution(AWeaponPlayerController* LeavingController);
+	bool HandleAttributionPlayerStateDeactivated(AWeaponPlayerState* PlayerState);
+	void RegisterAttributionProjectile(const FUniqueNetIdRepl& PlayerId, AWeaponProjectile* Projectile);
+	void UnregisterAttributionProjectile(const FUniqueNetIdRepl& PlayerId, AWeaponProjectile* Projectile);
+	void AdoptRecoveredAttributionTombstone(
+		const FUniqueNetIdRepl& PlayerId,
+		AWeaponCharacter* Pawn,
+		AWeaponPlayerState* PlayerState);
+	void GetAttributionTombstoneActors(
+		TMap<FUniqueNetIdRepl, AWeaponCharacter*>& OutPawns,
+		TMap<FUniqueNetIdRepl, AWeaponPlayerState*>& OutPlayerStates) const;
 	
 	/**
 	 *  玩家死亡通知入口（由 WeaponCharacter::HandleHealthDepleted 调用）
@@ -94,13 +110,25 @@ private:
 	int32 FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId);
 	void MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, int32 OriginalSlot);
 	void MarkPlayerPending(const FUniqueNetIdRepl& PlayerId);
+	void SchedulePendingGrace(const FUniqueNetIdRepl& PlayerId, float RemainingGraceSeconds);
 	void HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId);
 	void ClearPendingGraceTimer(const FUniqueNetIdRepl& PlayerId);
+	void CleanupCompletedAttributionTombstones(const FUniqueNetIdRepl& PlayerId);
+
+	struct FWeaponAttributionTombstone
+	{
+		TWeakObjectPtr<AWeaponCharacter> Pawn;
+		TWeakObjectPtr<AWeaponPlayerState> PlayerState;
+		TSet<TWeakObjectPtr<AWeaponProjectile>> Projectiles;
+		bool bPlayerStateDeactivated = false;
+	};
 
 	/** Reservations outlive a connection until its roster entry becomes Departed. */
 	TMap<FUniqueNetIdRepl, int32> PlayerSlotReservations;
 	TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry> RecoveryRoster;
 	TMap<FUniqueNetIdRepl, FTimerHandle> PendingGraceTimers;
+	TMap<FUniqueNetIdRepl, TSet<TWeakObjectPtr<AWeaponProjectile>>> ActiveAttributionProjectiles;
+	TMap<FUniqueNetIdRepl, TArray<FWeaponAttributionTombstone>> AttributionTombstones;
 	uint64 RosterRevision = 0;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */

@@ -9,9 +9,33 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameMode.h"
+#include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerState.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Net/UnrealNetwork.h"
+
+namespace
+{
+FUniqueNetIdRepl ResolveInstigatorPlayerId(const AActor* Actor)
+{
+	if (const APlayerState* PlayerState = Cast<APlayerState>(Actor))
+	{
+		return PlayerState->GetUniqueId();
+	}
+	if (const APawn* Pawn = Cast<APawn>(Actor))
+	{
+		return Pawn->GetPlayerState() ? Pawn->GetPlayerState()->GetUniqueId() : FUniqueNetIdRepl();
+	}
+	if (const AController* Controller = Cast<AController>(Actor))
+	{
+		const APlayerState* PlayerState = Controller->GetPlayerState<APlayerState>();
+		return PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
+	}
+	return FUniqueNetIdRepl();
+}
+}
 
 AWeaponProjectile::AWeaponProjectile()
 {
@@ -69,11 +93,32 @@ void AWeaponProjectile::BeginPlay()
 	{
 		ProjectileMovement->OnProjectileStop.AddDynamic(this, &AWeaponProjectile::OnProjectileStop);
 	}
+
+	if (HasAuthority())
+	{
+		if (AWeaponGameMode* WeaponGameMode = GetWorld()->GetAuthGameMode<AWeaponGameMode>())
+		{
+			WeaponGameMode->RegisterAttributionProjectile(InitializationState.InstigatorPlayerId, this);
+		}
+	}
+}
+
+void AWeaponProjectile::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (HasAuthority())
+	{
+		if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+		{
+			WeaponGameMode->UnregisterAttributionProjectile(InitializationState.InstigatorPlayerId, this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
-	bool bInPenetratesTerrain, float InProjectileSpeed)
+	bool bInPenetratesTerrain, float InProjectileSpeed,
+	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!HasAuthority())
 	{
@@ -83,6 +128,9 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	InitializationState.DamageEffectClass = InDamageGE;
 	InitializationState.DamageValue = InDamage;
 	InitializationState.InstigatorActor = InInstigator;
+	InitializationState.InstigatorPlayerId = ExplicitPlayerId.IsValid()
+		? ExplicitPlayerId
+		: ResolveInstigatorPlayerId(InInstigator);
 	InitializationState.DamageTags = InDamageTags;
 	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;

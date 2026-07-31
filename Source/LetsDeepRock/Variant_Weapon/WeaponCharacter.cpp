@@ -196,6 +196,48 @@ void AWeaponCharacter::InitAbilitySystem()
 	}
 }
 
+void AWeaponCharacter::InitializeAttributionTombstone(AWeaponPlayerState* SourcePlayerState)
+{
+	check(HasAuthority() && SourcePlayerState);
+
+	SetPlayerState(SourcePlayerState);
+	InitAbilitySystem();
+	if (AbilitySystemComponent)
+	{
+		AbilitySystemComponent->CancelAllAbilities();
+		AbilitySystemComponent->SetUserAbilityActivationInhibited(true);
+	}
+	if (UWeaponHealthSet* HealthSet = SourcePlayerState->GetHealthSet())
+	{
+		HealthSet->OnHealthDepleted.RemoveAll(this);
+	}
+	if (GrenadeAbilityHandle.IsValid() && AbilitySystemComponent)
+	{
+		AbilitySystemComponent->ClearAbility(GrenadeAbilityHandle);
+	}
+	GrenadeAbilityHandle = FGameplayAbilitySpecHandle();
+	if (UWeaponEquipmentComponent* Equipment = FindComponentByClass<UWeaponEquipmentComponent>())
+	{
+		Equipment->UnequipWeapon();
+	}
+
+	HideGrenadePreview();
+	SetActorHiddenInGame(true);
+	SetCanBeDamaged(false);
+	SetActorEnableCollision(false);
+	SetActorTickEnabled(false);
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->DisableMovement();
+		Movement->StopMovementImmediately();
+		Movement->SetComponentTickEnabled(false);
+	}
+	if (VisionSource)
+	{
+		VisionSource->bActive = false;
+	}
+}
+
 void AWeaponCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);

@@ -39,7 +39,9 @@ private:
 	static bool ValidateSnapshot(const FWeaponSnapshot& Snapshot, int32 MaxPlayers, FString& OutError);
 
 	static bool CapturePlayers(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError);
-	static bool ValidatePlayers(const FWeaponSnapshot& Snapshot, const int32 MaxPlayers, FString& OutError);
+	static bool ValidatePlayers(const FWeaponSnapshot& Snapshot, FString& OutError);
+	static bool CaptureRecoveryRoster(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError);
+	static bool ValidateRecoveryRoster(const FWeaponSnapshot& Snapshot, int32 MaxPlayers, FString& OutError);
 
 	static bool CaptureEnemies(const UWorld* World, FWeaponSnapshot& Snapshot, FString& OutError);
 	static bool ValidateEnemies(const FWeaponSnapshot& Snapshot, FString& OutError);
@@ -56,7 +58,6 @@ private:
 	static void RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
 
 	static FUniqueNetIdRepl ResolvePlayerId(const APlayerState* PlayerState);
-	static FUniqueNetIdRepl ResolvePlayerIdFromActor(const AActor* Actor);
 
 	static bool IsFiniteVector(const FVector& Value);
 	static bool IsFiniteRotator(const FRotator& Value);

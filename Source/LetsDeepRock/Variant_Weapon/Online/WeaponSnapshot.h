@@ -4,11 +4,12 @@
 #include "GameFramework/OnlineReplStructs.h"
 #include "GameplayTagContainer.h"
 #include "GridMap/GridMapTypes.h"
+#include "Online/WeaponRecoveryRoster.h"
 #include "WeaponGameState.h"
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 6;
+inline constexpr int32 WeaponSnapshotVersion = 7;
 
 USTRUCT()
 struct FWeaponAttributeState
@@ -183,6 +184,13 @@ struct LETSDEEPROCK_API FWeaponSnapshot
 	/** Rebuild the destination server's deadline from this relative duration. */
 	UPROPERTY(SaveGame)
 	float RemainingPhaseTime = 0.0f;
+
+	/** Complete server-owned participant set used by this Snapshot revision. */
+	UPROPERTY(SaveGame)
+	uint64 RosterRevision = 0;
+
+	UPROPERTY(SaveGame)
+	TArray<FWeaponRecoveryRosterSnapshot> RecoveryRoster;
 
 	UPROPERTY(SaveGame)
 	TArray<FWeaponPlayerSnapshot> Players;

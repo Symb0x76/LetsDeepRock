@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "GameplayTagContainer.h"
 #include "WeaponProjectile.generated.h"
 
@@ -26,6 +27,10 @@ struct FWeaponProjectileInitializationState
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	TObjectPtr<AActor> InstigatorActor = nullptr;
+
+	/** Stable source identity retained after the instigator Pawn is unpossessed. */
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	FUniqueNetIdRepl InstigatorPlayerId;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	FGameplayTagContainer DamageTags;
@@ -62,7 +67,8 @@ public:
 	/** Deferred Spawn 完成前由服务器调用，一次写入完整初始化状态。 */
 	void InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
-		bool bInPenetratesTerrain, float InProjectileSpeed);
+		bool bInPenetratesTerrain, float InProjectileSpeed,
+		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
 	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
 	FVector GetProjectileVelocity() const;
@@ -75,6 +81,7 @@ public:
 protected:
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** 碰撞体 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")

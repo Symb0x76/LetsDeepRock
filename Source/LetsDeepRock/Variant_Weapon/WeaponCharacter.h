@@ -21,6 +21,7 @@ class UGrenadeTrajectoryPreviewComponent;
 struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
+class AWeaponPlayerState;
 struct FGrenadeBallisticsOutput;
 
 /**
@@ -117,6 +118,9 @@ public:
 
 	FName GetCharacterConfigRowName() const { return CharacterConfigRowName; }
 	bool SetCharacterConfigRowNameAuthoritative(FName NewRowName);
+
+	/** Retain this Pawn only as an inert outgoing-effect attribution context. */
+	void InitializeAttributionTombstone(AWeaponPlayerState* SourcePlayerState);
 	
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
