@@ -15,7 +15,7 @@
 #include "Engine/NetDriver.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerState.h"
-#include "HAL/PlatformMisc.h"
+#include "IPlatformCrypto.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "UObject/UObjectGlobals.h"
@@ -2602,15 +2602,15 @@ bool UWeaponHostMigrationSubsystem::ComputePayloadHash(
 		return false;
 	}
 
-	FSHA256Signature Signature;
-	if (!FPlatformMisc::GetSHA256Signature(
-		PayloadBytes.GetData(),
-		static_cast<uint32>(PayloadBytes.Num()),
-		Signature))
+	TUniquePtr<FEncryptionContext> EncryptionContext =
+		IPlatformCrypto::Get().CreateContext();
+	if (!EncryptionContext.IsValid() ||
+		!EncryptionContext->CalcSHA256(PayloadBytes, OutHash) ||
+		OutHash.Num() != WeaponMigrationSHA256Bytes)
 	{
+		OutHash.Reset();
 		return false;
 	}
-	OutHash.Append(Signature.Signature, WeaponMigrationSHA256Bytes);
 	return true;
 }
 

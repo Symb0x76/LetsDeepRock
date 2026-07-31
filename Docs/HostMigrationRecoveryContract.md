@@ -165,7 +165,7 @@ The full payload is promoted from Pending to Committed only after:
 
 Invalid or incomplete Pending data is discarded without modifying the previous Committed payload.
 
-The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. Transport and timeout code may discard Pending, but cannot mutate Committed.
+The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. SHA-256 uses UE's runtime `PlatformCrypto` facade rather than `FPlatformMisc::GetSHA256Signature`, whose generic UE 5.8 implementation asserts on platforms without an override. Before invoking `LoadGameFromMemory`, the coordinator also requires the modern `SAVG` file tag; legacy untagged data is not a migration payload. Transport and timeout code may discard Pending, but cannot mutate Committed.
 
 The GameMode supplies the two deterministically selected remote `AWeaponPlayerController` instances and the current non-zero Epoch to the subsystem. The subsystem verifies their stable PlayerIds against the current A/B assignment, performs `CaptureSaveGame -> SerializeSaveGame -> envelope`, completes the local asynchronous SaveGame write, then sends one reliable application chunk per Tick through each owning controller. A receiver accepts chunks only when its own stable identity is the current A or B and MatchId/Epoch/RosterRevision exactly match the published assignment. A Backup promotes locally before its controller emits the Server ACK. Assembly timeout discards only Pending; ACK timeout discards only the Host's outgoing transfer record.
 
@@ -262,6 +262,16 @@ There is no third arbitrary-client candidate in this MVP. Peer RTT does not part
 `UWeaponHostMigrationSubsystem` is the single state-machine writer. Its Engine NetworkFailure handler snapshots only the committed control facts and never calls OpenLevel; it waits for the Engine's default `?closed` travel, then starts or searches the appropriate candidate. A cross-World core ticker enforces the per-candidate deadline and retries exact LAN discovery. A failure/timeout returns the process to the same map as a standalone Waiting/Lobby World before advancing A to B; B failure leaves the process in Lobby. Session delegates report events but do not choose candidates or mutate Epochs.
 
 ## 15. Acceptance evidence for this contract
+
+The deterministic Editor Automation layer currently proves, through the production subsystem/coordinator paths:
+
+- complete out-of-order assembly, incomplete rejection, newer-Pending replacement, identical/conflicting duplicate behavior, corrupt hash rejection, byte/chunk limits, protocol-version rejection and preservation of the previous Committed payload;
+- a standard SHA-256 known vector and rejection of bytes without a modern SaveGame header;
+- SaveGame byte round-trip coverage for GridMap deltas, Enemy, Projectile and Grenade records;
+- deterministic A=`old+1`, B=`old+2`, stale Epoch/RosterRevision rejection and same-revision role-conflict rejection;
+- CommonCommitted acceptance only when the receiver already holds byte-identical local Committed data.
+
+These tests run one Editor process with `NewMap` loaded. They prove local protocol invariants, not RPC delivery, disconnect Travel, runtime Actor parity or failover timing.
 
 Implementation is not considered complete until packaged multi-process tests prove:
 

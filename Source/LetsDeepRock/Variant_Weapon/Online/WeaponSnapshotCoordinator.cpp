@@ -13,6 +13,7 @@
 #include "GridMap/GridMapGenerator.h"
 #include "GridMap/GridMapManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "Serialization/MemoryReader.h"
 #include "WeaponCharacter.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
@@ -26,6 +27,12 @@
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Weapons/WeaponGrenadeDataAsset.h"
 #include "Weapons/WeaponProjectile.h"
+
+namespace WeaponSnapshotSerialization
+{
+	/** UE 5.8's modern SaveGame header tag ("SAVG"). Legacy untagged saves are not migration payloads. */
+	constexpr int32 SaveGameFileTypeTag = 0x53415647;
+}
 
 struct UWeaponSnapshotCoordinator::FRestoreContext
 {
@@ -199,6 +206,21 @@ bool UWeaponSnapshotCoordinator::DeserializeSaveGame(
 	if (Data.IsEmpty())
 	{
 		OutError = TEXT("SaveGame byte buffer is empty");
+		return false;
+	}
+	if (Data.Num() < sizeof(int32))
+	{
+		OutError = TEXT("SaveGame byte buffer is too small to contain a modern header");
+		return false;
+	}
+
+	FMemoryReader HeaderReader(Data, true);
+	int32 FileTypeTag = 0;
+	HeaderReader << FileTypeTag;
+	if (HeaderReader.IsError() ||
+		FileTypeTag != WeaponSnapshotSerialization::SaveGameFileTypeTag)
+	{
+		OutError = TEXT("SaveGame byte buffer does not contain a modern SAVG header");
 		return false;
 	}
 

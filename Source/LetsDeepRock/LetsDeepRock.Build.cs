@@ -32,6 +32,8 @@ public class LetsDeepRock : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Networking",
+			"PlatformCrypto",
+			"PlatformCryptoContext",
 			"Sockets"
 		});
 
