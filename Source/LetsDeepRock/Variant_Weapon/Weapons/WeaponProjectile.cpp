@@ -95,6 +95,23 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	// 避免 Deferred Spawn 期间 GetActorForwardVector 读到 ExecuteConstruction 前的中间旋转。
 }
 
+FVector AWeaponProjectile::GetProjectileVelocity() const
+{
+	return ProjectileMovement ? ProjectileMovement->Velocity : GetVelocity();
+}
+
+void AWeaponProjectile::RestoreSnapshotMotion(const FVector& Velocity, float RemainingLifeSeconds)
+{
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->Velocity = Velocity;
+	}
+	if (RemainingLifeSeconds > 0.0f)
+	{
+		SetLifeSpan(RemainingLifeSeconds);
+	}
+}
+
 void AWeaponProjectile::OnRep_InitializationState()
 {
 	ApplyInitializationState();

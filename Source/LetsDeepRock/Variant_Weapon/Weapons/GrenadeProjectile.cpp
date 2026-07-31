@@ -42,6 +42,7 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 	{
 		return;
 	}
+	GrenadeDataPath = FSoftObjectPath(GrenadeData);
 
 	// 调用父类统一初始化：设置伤害、来源、标签和基础速度。
 	InitializeProjectile(
@@ -103,6 +104,29 @@ void AGrenadeProjectile::SetInitialThrowVelocity(const FVector& WorldVelocity)
 
 	// ★ MaxSpeed=0：不限制速度上限，允许重力加速
 	ProjectileMovement->MaxSpeed = 0.0f;
+}
+
+float AGrenadeProjectile::GetRemainingFuseTime() const
+{
+	if (bHasExploded)
+	{
+		return 0.0f;
+	}
+
+	if (GetWorld() && FuseTimerHandle.IsValid())
+	{
+		const float Remaining = GetWorldTimerManager().GetTimerRemaining(FuseTimerHandle);
+		if (Remaining >= 0.0f)
+		{
+			return Remaining;
+		}
+	}
+	return FuseSeconds;
+}
+
+void AGrenadeProjectile::SetFuseTimeForSnapshotRestore(float RemainingFuseTime)
+{
+	FuseSeconds = RemainingFuseTime;
 }
 
 void AGrenadeProjectile::BeginPlay()

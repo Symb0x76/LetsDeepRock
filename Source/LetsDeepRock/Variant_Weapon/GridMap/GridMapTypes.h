@@ -76,24 +76,88 @@ struct FGridMapConfig
 	GENERATED_BODY()
 
 	// 地图宽度（格子数）
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, meta = (ClampMin = "1"))
 	int32 MapWidth = 500;
 
 	// 地图高度（格子数）
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, meta = (ClampMin = "1"))
 	int32 MapHeight = 500;
 
 	// 每格世界尺寸（UU）
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "10.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, meta = (ClampMin = "10.0"))
 	float TileSize = 100.0f;
 
 	// 一般树木的基础耐久
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, meta = (ClampMin = "1"))
 	int32 TreeHealth = 100;
 
 	// 高大树木的基础耐久
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, SaveGame, meta = (ClampMin = "1"))
 	int32 LargeTreeHealth = 300;
+};
+
+inline constexpr int32 GridMapRecoveryStateVersion = 1;
+
+/** SaveGame 中单格相对 deterministic baseline 的最新状态。 */
+USTRUCT()
+struct FGridTileRecoveryState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	int32 GridX = 0;
+
+	UPROPERTY(SaveGame)
+	int32 GridY = 0;
+
+	UPROPERTY(SaveGame)
+	EGridTileType TileType = EGridTileType::Empty;
+
+	UPROPERTY(SaveGame)
+	int32 Health = 0;
+
+	UPROPERTY(SaveGame)
+	int32 MaxHealth = 0;
+
+	UPROPERTY(SaveGame)
+	int32 GenerationVersion = 0;
+
+	UPROPERTY(SaveGame)
+	uint32 Revision = 0;
+};
+
+/** GridMap owner 导出的完整恢复契约：确定性基线 + 稀疏 Tile Delta。 */
+USTRUCT()
+struct FGridMapRecoveryState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	int32 SchemaVersion = GridMapRecoveryStateVersion;
+
+	UPROPERTY(SaveGame)
+	int32 BaselineSchemaVersion = 1;
+
+	UPROPERTY(SaveGame)
+	int32 GenerationVersion = 0;
+
+	UPROPERTY(SaveGame)
+	FGridMapConfig Config;
+
+	UPROPERTY(SaveGame)
+	FSoftClassPath GeneratorClass;
+
+	UPROPERTY(SaveGame)
+	int32 EffectiveSeed = 0;
+
+	UPROPERTY(SaveGame)
+	bool bGenerated = false;
+
+	UPROPERTY(SaveGame)
+	TArray<FGridTileRecoveryState> TileDeltas;
+
+	UPROPERTY(SaveGame)
+	uint32 NextTileRevision = 0;
 };
 
 /** 客户端重建确定性基础地图所需的版本化描述。 */

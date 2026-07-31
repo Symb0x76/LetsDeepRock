@@ -130,6 +130,142 @@ void AGridMapManager::GenerateMap()
 	ForceNetUpdate();
 }
 
+bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FString& OutError) const
+{
+	OutState = FGridMapRecoveryState();
+	OutError.Reset();
+	if (!HasAuthority() || !BaselineState.bGenerated || !MapData)
+	{
+		OutError = TEXT("GridMap recovery state requires a generated Authority map");
+		return false;
+	}
+
+	OutState.BaselineSchemaVersion = BaselineState.SchemaVersion;
+	OutState.GenerationVersion = BaselineState.GenerationVersion;
+	OutState.Config = BaselineState.Config;
+	OutState.GeneratorClass = FSoftClassPath(BaselineState.GeneratorClass.Get());
+	OutState.EffectiveSeed = BaselineState.EffectiveSeed;
+	OutState.bGenerated = BaselineState.bGenerated;
+	OutState.NextTileRevision = NextTileRevision;
+	OutState.TileDeltas.Reserve(TileDeltas.Items.Num());
+
+	for (const FGridTileDeltaItem& Delta : TileDeltas.Items)
+	{
+		FGridTileRecoveryState& SavedDelta = OutState.TileDeltas.AddDefaulted_GetRef();
+		SavedDelta.GridX = Delta.GridX;
+		SavedDelta.GridY = Delta.GridY;
+		SavedDelta.TileType = Delta.TileType;
+		SavedDelta.Health = Delta.Health;
+		SavedDelta.MaxHealth = Delta.MaxHealth;
+		SavedDelta.GenerationVersion = Delta.GenerationVersion;
+		SavedDelta.Revision = Delta.Revision;
+	}
+
+	return ValidateRecoveryState(OutState, OutError);
+}
+
+bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
+{
+	OutError.Reset();
+	const FGridMapConfig& Config = State.Config;
+	const int64 TileCount = static_cast<int64>(Config.MapWidth) * Config.MapHeight;
+	if (State.SchemaVersion != GridMapRecoveryStateVersion ||
+		State.BaselineSchemaVersion != 1 || !State.bGenerated ||
+		State.GenerationVersion <= 0 || !State.GeneratorClass.IsValid() ||
+		Config.MapWidth <= 0 || Config.MapHeight <= 0 ||
+		!FMath::IsFinite(Config.TileSize) || Config.TileSize <= 0.0f ||
+		Config.TreeHealth <= 0 || Config.LargeTreeHealth <= 0 ||
+		TileCount <= 0 || TileCount > MAX_int32 || State.TileDeltas.Num() > TileCount)
+	{
+		OutError = TEXT("GridMap recovery baseline is invalid");
+		return false;
+	}
+
+	TSet<int64> Coordinates;
+	uint32 HighestRevision = 0;
+	for (const FGridTileRecoveryState& Delta : State.TileDeltas)
+	{
+		const bool bValidTileType = StaticEnum<EGridTileType>()->IsValidEnumValue(
+			static_cast<int64>(Delta.TileType));
+		if (Delta.GridX < 0 || Delta.GridX >= Config.MapWidth ||
+			Delta.GridY < 0 || Delta.GridY >= Config.MapHeight ||
+			!bValidTileType || Delta.Health < 0 || Delta.MaxHealth < 0 ||
+			Delta.Health > Delta.MaxHealth || Delta.GenerationVersion != State.GenerationVersion ||
+			Delta.Revision == 0)
+		{
+			OutError = TEXT("GridMap recovery Tile Delta is invalid");
+			return false;
+		}
+
+		const int64 Coordinate = static_cast<int64>(Delta.GridY) * Config.MapWidth + Delta.GridX;
+		if (Coordinates.Contains(Coordinate))
+		{
+			OutError = TEXT("GridMap recovery contains duplicate Tile Delta coordinates");
+			return false;
+		}
+		Coordinates.Add(Coordinate);
+		HighestRevision = FMath::Max(HighestRevision, Delta.Revision);
+	}
+
+	if (State.NextTileRevision < HighestRevision)
+	{
+		OutError = TEXT("GridMap recovery revision is older than one of its Tile Deltas");
+		return false;
+	}
+	return true;
+}
+
+bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
+{
+	if (!HasAuthority() || !ValidateRecoveryState(State, OutError))
+	{
+		if (!HasAuthority())
+		{
+			OutError = TEXT("GridMap recovery can only run on Authority");
+		}
+		return false;
+	}
+
+	UClass* LoadedGeneratorClass = State.GeneratorClass.TryLoadClass<UGridMapGenerator>();
+	if (!LoadedGeneratorClass)
+	{
+		OutError = FString::Printf(TEXT("GridMap generator class %s could not be loaded"),
+			*State.GeneratorClass.ToString());
+		return false;
+	}
+
+	FGridMapBaselineState RestoredBaseline;
+	RestoredBaseline.SchemaVersion = State.BaselineSchemaVersion;
+	RestoredBaseline.GenerationVersion = State.GenerationVersion;
+	RestoredBaseline.Config = State.Config;
+	RestoredBaseline.GeneratorClass = LoadedGeneratorClass;
+	RestoredBaseline.EffectiveSeed = State.EffectiveSeed;
+	RestoredBaseline.bGenerated = State.bGenerated;
+
+	BaselineState = RestoredBaseline;
+	MapConfig = State.Config;
+	GeneratorClass = LoadedGeneratorClass;
+	TileDeltas.Items.Reset(State.TileDeltas.Num());
+	for (const FGridTileRecoveryState& SavedDelta : State.TileDeltas)
+	{
+		FGridTileDeltaItem& Delta = TileDeltas.Items.AddDefaulted_GetRef();
+		Delta.GridX = SavedDelta.GridX;
+		Delta.GridY = SavedDelta.GridY;
+		Delta.TileType = SavedDelta.TileType;
+		Delta.Health = SavedDelta.Health;
+		Delta.MaxHealth = SavedDelta.MaxHealth;
+		Delta.GenerationVersion = SavedDelta.GenerationVersion;
+		Delta.Revision = SavedDelta.Revision;
+	}
+	TileDeltas.MarkArrayDirty();
+	NextTileRevision = State.NextTileRevision;
+
+	BuildBaselineMap(BaselineState);
+	ApplyAllReplicatedDeltas();
+	ForceNetUpdate();
+	return true;
+}
+
 void AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State)
 {
 	if (!State.bGenerated || State.SchemaVersion != 1)

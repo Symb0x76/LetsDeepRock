@@ -65,6 +65,11 @@ public:
 	/** 服务器验证玩家距离、格子状态和建造类型后提交建造 Delta。 */
 	bool TryBuildTileAtWorldLocation(AActor* RequestingActor, const FVector& WorldLocation, EGridTileType BuildType);
 
+	/** 仅 Authority 导出/恢复 GridMap 的确定性基线与稀疏变化。 */
+	bool CaptureRecoveryState(FGridMapRecoveryState& OutState, FString& OutError) const;
+	static bool ValidateRecoveryState(const FGridMapRecoveryState& State, FString& OutError);
+	bool RestoreRecoveryState(const FGridMapRecoveryState& State, FString& OutError);
+
 	/** 查询本地玩家队伍当前是否可见指定格子。 */
 	UFUNCTION(BlueprintPure, Category = "GridMap|Vision")
 	bool IsTileVisible(int32 GridX, int32 GridY) const;

@@ -64,6 +64,12 @@ public:
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed);
 
+	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
+	FVector GetProjectileVelocity() const;
+
+	/** FinishSpawning 后恢复动态运动状态；普通投射物同时恢复剩余寿命。 */
+	void RestoreSnapshotMotion(const FVector& Velocity, float RemainingLifeSeconds);
+
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 protected:
