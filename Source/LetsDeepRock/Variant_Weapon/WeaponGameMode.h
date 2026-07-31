@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
-#include "GameFramework/OnlineReplStructs.h"
+#include "Online/WeaponRecoveryRoster.h"
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
@@ -33,6 +33,11 @@ public:
 
 	/** Replace the server-only stable identity -> original Slot table after validating the whole set. */
 	bool SetPlayerSlotReservations(const TMap<FUniqueNetIdRepl, int32>& NewReservations);
+
+	uint64 GetRosterRevision() const { return RosterRevision; }
+	const TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry>& GetRecoveryRoster() const { return RecoveryRoster; }
+	float GetPendingGracePeriodSeconds() const { return PendingGracePeriodSeconds; }
+	bool MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId);
 	
 	/**
 	 *  玩家死亡通知入口（由 WeaponCharacter::HandleHealthDepleted 调用）
@@ -69,6 +74,10 @@ protected:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Match", meta = (ClampMin = 0.0))
 	float EndingDuration = 5.0f;
+
+	/** Time a disconnected stable identity retains its original Slot. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Recovery", meta = (ClampMin = 0.0))
+	float PendingGracePeriodSeconds = 60.0f;
 	
 	/**
 	* 每个 Controller 独立拥有一个重生计时器。
@@ -83,9 +92,16 @@ private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;
 	int32 FindSmallestUnreservedPlayerSlot() const;
 	int32 FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId);
+	void MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, int32 OriginalSlot);
+	void MarkPlayerPending(const FUniqueNetIdRepl& PlayerId);
+	void HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId);
+	void ClearPendingGraceTimer(const FUniqueNetIdRepl& PlayerId);
 
-	/** Reservations outlive a connection; Commit 3 adds Pending/Ready/Departed expiry policy. */
+	/** Reservations outlive a connection until its roster entry becomes Departed. */
 	TMap<FUniqueNetIdRepl, int32> PlayerSlotReservations;
+	TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry> RecoveryRoster;
+	TMap<FUniqueNetIdRepl, FTimerHandle> PendingGraceTimers;
+	uint64 RosterRevision = 0;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();

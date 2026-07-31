@@ -60,6 +60,16 @@ Host/Backup/Candidate role and gameplay alive/dead state are orthogonal to this 
 
 The default `Pending` grace period is 60 seconds and remains configurable.
 
+The server GameMode is the first runtime owner of this state machine. It keeps a server-only stable PlayerId map and a monotonic `RosterRevision`:
+
+- first admission creates a `Ready` entry and reserves its original Slot;
+- Logout changes `Ready -> Pending` and starts the grace timer;
+- the same identity reconnecting before expiry changes `Pending -> Ready` and cancels the timer;
+- expiry, explicit leave or policy drop changes the entry to `Departed` and releases its Slot;
+- importing a complete recovery reservation set rebuilds the roster and advances the revision once.
+
+Every entry creation, Slot change or disposition change advances `RosterRevision`. Host role and gameplay alive/dead changes do not.
+
 ## 5. Pending Pawn and projectile attribution
 
 When a connected player becomes Pending, its gameplay Pawn is converted into an inert attribution tombstone instead of being destroyed immediately:

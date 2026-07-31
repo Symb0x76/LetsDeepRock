@@ -37,6 +37,7 @@ bool AWeaponGameMode::SetPlayerSlotReservations(
 		ReservedSlots.Add(SlotIndex);
 	}
 
+	TSet<FUniqueNetIdRepl> ConnectedPlayerIds;
 	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
 		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
@@ -44,10 +45,135 @@ bool AWeaponGameMode::SetPlayerSlotReservations(
 		{
 			return false;
 		}
+		ConnectedPlayerIds.Add(WeaponPlayerState->GetUniqueId());
 	}
 
+	for (auto& TimerPair : PendingGraceTimers)
+	{
+		GetWorldTimerManager().ClearTimer(TimerPair.Value);
+	}
+	PendingGraceTimers.Reset();
+
 	PlayerSlotReservations = NewReservations;
+	RecoveryRoster.Reset();
+	const double CurrentServerTime = GetWorld()->GetTimeSeconds();
+	TArray<FUniqueNetIdRepl> PendingPlayerIds;
+	for (const auto& [PlayerId, SlotIndex] : PlayerSlotReservations)
+	{
+		FWeaponRecoveryRosterEntry& Entry = RecoveryRoster.Add(PlayerId);
+		Entry.PlayerId = PlayerId;
+		Entry.OriginalSlot = SlotIndex;
+		if (ConnectedPlayerIds.Contains(PlayerId))
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Ready;
+		}
+		else
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Pending;
+			Entry.PendingDeadlineServerTime = CurrentServerTime + PendingGracePeriodSeconds;
+			PendingPlayerIds.Add(PlayerId);
+		}
+	}
+	++RosterRevision;
+
+	for (const FUniqueNetIdRepl& PlayerId : PendingPlayerIds)
+	{
+		MarkPlayerPending(PlayerId);
+	}
 	return true;
+}
+
+void AWeaponGameMode::ClearPendingGraceTimer(const FUniqueNetIdRepl& PlayerId)
+{
+	if (FTimerHandle* TimerHandle = PendingGraceTimers.Find(PlayerId))
+	{
+		GetWorldTimerManager().ClearTimer(*TimerHandle);
+		PendingGraceTimers.Remove(PlayerId);
+	}
+}
+
+void AWeaponGameMode::MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, const int32 OriginalSlot)
+{
+	ClearPendingGraceTimer(PlayerId);
+
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	const bool bRosterChanged = !Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Ready ||
+		Entry->OriginalSlot != OriginalSlot;
+	if (!Entry)
+	{
+		Entry = &RecoveryRoster.Add(PlayerId);
+	}
+
+	Entry->PlayerId = PlayerId;
+	Entry->OriginalSlot = OriginalSlot;
+	Entry->Status = EWeaponRecoveryPlayerStatus::Ready;
+	Entry->PendingDeadlineServerTime = 0.0;
+	PlayerSlotReservations.Add(PlayerId, OriginalSlot);
+	if (bRosterChanged)
+	{
+		++RosterRevision;
+	}
+}
+
+void AWeaponGameMode::MarkPlayerPending(const FUniqueNetIdRepl& PlayerId)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	const int32* OriginalSlot = PlayerSlotReservations.Find(PlayerId);
+	if (!Entry || !OriginalSlot)
+	{
+		return;
+	}
+
+	if (Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		Entry->Status = EWeaponRecoveryPlayerStatus::Pending;
+		++RosterRevision;
+	}
+	Entry->PendingDeadlineServerTime = GetWorld()->GetTimeSeconds() + PendingGracePeriodSeconds;
+
+	ClearPendingGraceTimer(PlayerId);
+	if (PendingGracePeriodSeconds <= 0.0f)
+	{
+		HandlePendingGraceExpired(PlayerId);
+		return;
+	}
+
+	FTimerDelegate ExpirationDelegate;
+	ExpirationDelegate.BindUObject(this, &AWeaponGameMode::HandlePendingGraceExpired, PlayerId);
+	FTimerHandle& TimerHandle = PendingGraceTimers.Add(PlayerId);
+	GetWorldTimerManager().SetTimer(
+		TimerHandle,
+		ExpirationDelegate,
+		PendingGracePeriodSeconds,
+		false);
+}
+
+bool AWeaponGameMode::MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status == EWeaponRecoveryPlayerStatus::Departed)
+	{
+		return false;
+	}
+
+	ClearPendingGraceTimer(PlayerId);
+	Entry->Status = EWeaponRecoveryPlayerStatus::Departed;
+	Entry->PendingDeadlineServerTime = 0.0;
+	PlayerSlotReservations.Remove(PlayerId);
+	++RosterRevision;
+	return true;
+}
+
+void AWeaponGameMode::HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId)
+{
+	PendingGraceTimers.Remove(PlayerId);
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		return;
+	}
+
+	MarkPlayerDeparted(PlayerId);
 }
 
 bool AWeaponGameMode::IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const
@@ -133,6 +259,12 @@ void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, c
 		ErrorMessage = TEXT("This player identity is already connected.");
 		return;
 	}
+	if (const FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(UniqueId);
+		Entry && Entry->Status == EWeaponRecoveryPlayerStatus::Departed)
+	{
+		ErrorMessage = TEXT("This player has departed from the recoverable match roster.");
+		return;
+	}
 	
 	if (WeaponGameState->GetConnectedPlayerCount() >= WeaponGameState->GetMaxPlayers())
 	{
@@ -176,12 +308,22 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 	
 	WeaponPlayerState->SetPlayerSlotIndex(AvailableSlot);
 	WeaponPlayerState->SetPlayerReady(false);
+	MarkPlayerReady(PlayerId, AvailableSlot);
 	
 	RefreshMatchPhase();
 }
 
 void AWeaponGameMode::Logout(AController* ExitingController)
 {
+	FUniqueNetIdRepl ExitingPlayerId;
+	if (ExitingController)
+	{
+		if (const APlayerState* PlayerState = ExitingController->GetPlayerState<APlayerState>())
+		{
+			ExitingPlayerId = PlayerState->GetUniqueId();
+		}
+	}
+
 	// 首先清理 Timer，防止Super::Logout 后，Controller/PlayerState 已被移除或销毁，不适合作为 Timer Map 的查找键
 	if (ExitingController)
 	{
@@ -191,6 +333,10 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 			GetWorldTimerManager().ClearTimer(*RespawnTimer);
 			RespawnTimers.Remove(ExitingController);
 		}
+	}
+	if (ExitingPlayerId.IsValid())
+	{
+		MarkPlayerPending(ExitingPlayerId);
 	}
 	
 	Super::Logout(ExitingController);
