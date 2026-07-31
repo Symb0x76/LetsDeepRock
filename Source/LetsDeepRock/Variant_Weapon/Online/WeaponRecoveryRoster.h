@@ -5,7 +5,7 @@
 #include "WeaponRecoveryRoster.generated.h"
 
 /** Connection readiness for one stable player inside the recoverable match roster. */
-UENUM(BlueprintType)
+UENUM()
 enum class EWeaponRecoveryPlayerStatus : uint8
 {
 	Pending,
@@ -14,18 +14,18 @@ enum class EWeaponRecoveryPlayerStatus : uint8
 };
 
 /** Server-owned roster record; host role and gameplay alive/dead state are separate dimensions. */
-USTRUCT(BlueprintType)
+USTRUCT()
 struct LETSDEEPROCK_API FWeaponRecoveryRosterEntry
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "Recovery")
+	UPROPERTY()
 	FUniqueNetIdRepl PlayerId;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Recovery")
+	UPROPERTY()
 	int32 OriginalSlot = INDEX_NONE;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Recovery")
+	UPROPERTY()
 	EWeaponRecoveryPlayerStatus Status = EWeaponRecoveryPlayerStatus::Pending;
 
 	/** Server World time when Pending expires; zero for Ready/Departed. */
