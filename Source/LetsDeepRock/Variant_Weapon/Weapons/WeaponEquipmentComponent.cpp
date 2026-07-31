@@ -8,6 +8,7 @@
 #include "Engine/World.h"
 #include "GameFramework/Character.h"
 #include "Net/UnrealNetwork.h"
+#include "WeaponGameState.h"
 
 UWeaponEquipmentComponent::UWeaponEquipmentComponent()
 {
@@ -108,12 +109,17 @@ void UWeaponEquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 
 void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 NewIndex)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	SwitchWeaponAuthority(NewIndex);
 }
 
 void UWeaponEquipmentComponent::SwitchWeaponAuthority(const int32 NewIndex)
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
 		!DefaultWeapons.IsValidIndex(NewIndex) ||
 		NewIndex == CurrentWeaponIndex)
 	{
@@ -173,7 +179,8 @@ UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
 
 void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 {
-	if (!DefaultWeapons.IsValidIndex(NewIndex) || NewIndex == CurrentWeaponIndex)
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!DefaultWeapons.IsValidIndex(NewIndex) || NewIndex == CurrentWeaponIndex)
 	{
 		return;
 	}

@@ -75,6 +75,7 @@ public:
 
 	/** FinishSpawning 后恢复动态运动状态；普通投射物同时恢复剩余寿命。 */
 	void RestoreSnapshotMotion(const FVector& Velocity, float RemainingLifeSeconds);
+	virtual void SetGameplayRecoveryBlocked(bool bBlocked);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -101,6 +102,12 @@ protected:
 
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;
+
+	bool bGameplayRecoveryBlocked = false;
+	bool bMovementWasActiveBeforeRecovery = false;
+	bool bCollisionWasEnabledBeforeRecovery = false;
+	FVector RecoveryBlockedVelocity = FVector::ZeroVector;
+	float RecoveryBlockedLifeSeconds = 0.0f;
 
 	UFUNCTION()
 	void OnRep_InitializationState();

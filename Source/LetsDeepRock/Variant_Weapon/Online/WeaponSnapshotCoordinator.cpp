@@ -86,6 +86,11 @@ bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 		OutError = TEXT("Current World does not have AWeaponGameState");
 		return false;
 	}
+	if (GameState->IsGameplayRecoveryBlocked())
+	{
+		OutError = TEXT("A new SaveGame cannot be captured while gameplay recovery is blocked");
+		return false;
+	}
 
 	UWeaponMatchSaveGame* SaveGame = Cast<UWeaponMatchSaveGame>(
 		UGameplayStatics::CreateSaveGameObject(UWeaponMatchSaveGame::StaticClass()));
@@ -236,9 +241,10 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 	OutContext.GameState = World->GetGameState<AWeaponGameState>();
 	OutContext.GameMode = World->GetAuthGameMode<AWeaponGameMode>();
 	if (!OutContext.GameState || !OutContext.GameMode ||
+		!OutContext.GameState->IsGameplayRecoveryBlocked() ||
 		OutContext.GameState->PlayerArray.Num() > SaveGame->MaxPlayers)
 	{
-		OutError = TEXT("Restore target is missing authoritative match owners or exceeds saved capacity");
+		OutError = TEXT("Restore target is not a gated authoritative Recovery World or exceeds saved capacity");
 		return false;
 	}
 
@@ -510,7 +516,8 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 {
 	OutError.Reset();
 	if (Snapshot.SchemaVersion != WeaponSnapshotVersion || Snapshot.Revision <= 0 ||
-		!Snapshot.MatchId.IsValid() || !FMath::IsFinite(Snapshot.RemainingPhaseTime))
+		!Snapshot.MatchId.IsValid() || !FMath::IsFinite(Snapshot.RemainingPhaseTime) ||
+		Snapshot.RemainingPhaseTime < 0.0f)
 	{
 		OutError = TEXT("Snapshot version, identity, revision or phase time is invalid");
 		return false;
@@ -874,8 +881,10 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 	}
 	for (AWeaponProjectile* Projectile : Context.StagedProjectiles)
 	{
+		Projectile->SetGameplayRecoveryBlocked(false);
 		Projectile->SetActorTickEnabled(true);
 		Projectile->SetActorEnableCollision(true);
+		Projectile->SetGameplayRecoveryBlocked(true);
 		Projectile->ForceNetUpdate();
 	}
 
@@ -916,7 +925,7 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 		UE_LOG(LogTemp, Fatal, TEXT("Validated recovery roster became invalid during Snapshot Apply"));
 	}
 
-	Context.GameState->SetMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
+	Context.GameMode->ApplyRecoveredMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 	ActiveMatchId = Snapshot.MatchId;
 	NextSnapshotRevision = Snapshot.Revision + 1;
 }

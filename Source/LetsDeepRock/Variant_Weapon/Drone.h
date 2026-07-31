@@ -36,6 +36,7 @@ public:
 
 	/** 设置轨道目标（由召唤者调用） */
 	void SetOrbitTarget(AActor* Target);
+	void SetGameplayRecoveryBlocked(bool bBlocked);
 
 protected:
 
@@ -67,6 +68,9 @@ protected:
 
 	/** 剩余存活时间（秒） */
 	float RemainingLifetime = 0.0f;
+	FTimerHandle LifetimeTimerHandle;
+	bool bGameplayRecoveryBlocked = false;
+	bool bTickWasEnabledBeforeRecovery = false;
 
 private:
 

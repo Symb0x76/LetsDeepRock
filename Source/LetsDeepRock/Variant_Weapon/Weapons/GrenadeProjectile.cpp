@@ -9,6 +9,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
@@ -148,6 +149,25 @@ void AGrenadeProjectile::BeginPlay()
 			false // 不循环，单次触发
 		);
 	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
+}
+
+void AGrenadeProjectile::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	Super::SetGameplayRecoveryBlocked(bBlocked);
+	if (!HasAuthority())
+	{
+		return;
+	}
+	if (bBlocked)
+	{
+		GetWorldTimerManager().PauseTimer(FuseTimerHandle);
+	}
+	else
+	{
+		GetWorldTimerManager().UnPauseTimer(FuseTimerHandle);
+	}
 }
 
 void AGrenadeProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -166,6 +186,17 @@ void AGrenadeProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 
 void AGrenadeProjectile::OnFuseExpired()
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		GetWorldTimerManager().SetTimer(
+			FuseTimerHandle,
+			this,
+			&AGrenadeProjectile::OnFuseExpired,
+			0.01f,
+			false);
+		GetWorldTimerManager().PauseTimer(FuseTimerHandle);
+		return;
+	}
 	ExplodeOnce();
 }
 
@@ -173,7 +204,8 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 {
 	// 覆写父类：额外注入 DynamicAssetTags，使 ExecCalc 能识别伤害类型（如 Damage.Type.Explosion）
 	// 从而正确应用对应的元素抗性（Resist.Explosion）
-	if (!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
 	{
 		return;
 	}
@@ -234,7 +266,7 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 void AGrenadeProjectile::ExplodeOnce()
 {
 	// 防止重复爆炸（引信触发 + 可能的多端同步触发）
-	if (bHasExploded)
+	if (bHasExploded || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}

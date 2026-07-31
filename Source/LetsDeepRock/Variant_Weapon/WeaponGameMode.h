@@ -11,6 +11,7 @@ class AWeaponCharacter;
 class AWeaponPlayerController;
 class AWeaponPlayerState;
 class AWeaponProjectile;
+enum class EWeaponMatchPhase : uint8;
 
 /**
  *  俯视角武器系统 Game Mode（Variant_Weapon）
@@ -41,6 +42,13 @@ public:
 	const TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry>& GetRecoveryRoster() const { return RecoveryRoster; }
 	float GetPendingGracePeriodSeconds() const { return PendingGracePeriodSeconds; }
 	bool MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId);
+
+	/** Close gameplay before Restore; recovery orchestration remains able to tick and use timers. */
+	bool EnterGameplayRecoveryBarrier();
+	/** Open gameplay only after the caller has verified the recovery attempt invariants. */
+	bool ReleaseGameplayRecoveryBarrier();
+	/** Apply Snapshot phase/deadline without starting the phase timer while the barrier is closed. */
+	void ApplyRecoveredMatchPhase(EWeaponMatchPhase Phase, float RemainingPhaseTime);
 
 	/** Intercept PawnLeavingGame when active projectiles still need this Pawn/ASC as source context. */
 	bool PreserveLeavingPlayerAttribution(AWeaponPlayerController* LeavingController);
@@ -114,6 +122,8 @@ private:
 	void HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId);
 	void ClearPendingGraceTimer(const FUniqueNetIdRepl& PlayerId);
 	void CleanupCompletedAttributionTombstones(const FUniqueNetIdRepl& PlayerId);
+	void ApplyGameplayRecoveryBarrierToWorld(bool bBlocked);
+	void ArmMatchPhaseTimer(EWeaponMatchPhase Phase, float RemainingPhaseTime);
 
 	struct FWeaponAttributionTombstone
 	{
@@ -130,6 +140,7 @@ private:
 	TMap<FUniqueNetIdRepl, TSet<TWeakObjectPtr<AWeaponProjectile>>> ActiveAttributionProjectiles;
 	TMap<FUniqueNetIdRepl, TArray<FWeaponAttributionTombstone>> AttributionTombstones;
 	uint64 RosterRevision = 0;
+	float FrozenMatchPhaseRemaining = 0.0f;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();

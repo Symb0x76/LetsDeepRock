@@ -9,6 +9,7 @@
 #include "WeaponGameState.h"
 
 #include "WeaponPlayerState.h"
+#include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 
 AWeaponGameState::AWeaponGameState()
@@ -19,6 +20,30 @@ AWeaponGameState::AWeaponGameState()
 int32 AWeaponGameState::GetConnectedPlayerCount() const
 {
 	return PlayerArray.Num();
+}
+
+bool AWeaponGameState::IsGameplayRecoveryBlockedFor(const UObject* WorldContextObject)
+{
+	const UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
+	const AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	return WeaponGameState && WeaponGameState->IsGameplayRecoveryBlocked();
+}
+
+bool AWeaponGameState::SetGameplayRecoveryBlockedAuthority(const bool bBlocked)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+	if (bGameplayRecoveryBlocked == bBlocked)
+	{
+		return true;
+	}
+
+	bGameplayRecoveryBlocked = bBlocked;
+	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
+	ForceNetUpdate();
+	return true;
 }
 
 bool AWeaponGameState::SetMaxPlayersAuthority(const int32 NewMaxPlayers)
@@ -69,9 +94,15 @@ void AWeaponGameState::OnRep_MatchState() const
 	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 }
 
+void AWeaponGameState::OnRep_GameplayRecoveryBlocked() const
+{
+	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
+}
+
 void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
 	DOREPLIFETIME(AWeaponGameState, MatchState);
+	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 }

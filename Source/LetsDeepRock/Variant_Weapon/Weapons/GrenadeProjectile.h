@@ -55,6 +55,7 @@ public:
 
 	/** Deferred Spawn 完成前写入快照中的剩余引信。 */
 	void SetFuseTimeForSnapshotRestore(float RemainingFuseTime);
+	virtual void SetGameplayRecoveryBlocked(bool bBlocked) override;
 
 protected:
 

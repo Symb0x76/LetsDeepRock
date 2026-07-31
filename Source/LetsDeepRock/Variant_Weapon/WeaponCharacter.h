@@ -121,6 +121,7 @@ public:
 
 	/** Retain this Pawn only as an inert outgoing-effect attribution context. */
 	void InitializeAttributionTombstone(AWeaponPlayerState* SourcePlayerState);
+	void SetGameplayRecoveryBlocked(bool bBlocked);
 	
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
@@ -237,4 +238,9 @@ protected:
 
 	/** PendingGrenadeTarget 是否有效 */
 	mutable bool bHasPendingGrenadeTarget = false;
+
+	bool bGameplayRecoveryBlocked = false;
+	bool bSavedMovementModeForRecovery = false;
+	uint8 SavedRecoveryMovementMode = 0;
+	uint8 SavedRecoveryCustomMovementMode = 0;
 };

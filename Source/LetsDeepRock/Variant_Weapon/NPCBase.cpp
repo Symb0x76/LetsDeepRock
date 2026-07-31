@@ -12,6 +12,7 @@
 #include "GameplayTagContainer.h"
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 #include "AIController.h"
 #include "BrainComponent.h"
 
@@ -56,6 +57,54 @@ void ANPCBase::BeginPlay()
 				AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(Ability, 1, INDEX_NONE, this));
 			}
 		}
+	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
+}
+
+void ANPCBase::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (!HasAuthority() || bGameplayRecoveryBlocked == bBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = bBlocked;
+
+	const FGameplayTagContainer WeaponAbilityTags(TAG_Ability_Weapon);
+	if (AbilitySystemComponent)
+	{
+		if (bBlocked)
+		{
+			AbilitySystemComponent->CancelAbilities(&WeaponAbilityTags);
+			AbilitySystemComponent->BlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+		else
+		{
+			AbilitySystemComponent->UnBlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+	}
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (bBlocked)
+		{
+			SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
+			SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
+			bSavedMovementModeForRecovery = true;
+			Movement->DisableMovement();
+			Movement->StopMovementImmediately();
+		}
+		else if (bSavedMovementModeForRecovery &&
+			(!AbilitySystemComponent || !AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Dead)))
+		{
+			Movement->SetMovementMode(
+				static_cast<EMovementMode>(SavedRecoveryMovementMode),
+				SavedRecoveryCustomMovementMode);
+		}
+	}
+	if (!bBlocked)
+	{
+		bSavedMovementModeForRecovery = false;
 	}
 }
 

@@ -130,7 +130,7 @@ void AWeaponPlayerState::ServerSetPlayerReady_Implementation(const bool bNewIsRe
 void AWeaponPlayerState::ApplyPlayerReadyRequest(const bool bNewIsReady)
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState ||
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
 		(WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting &&
 		 WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting))
 	{

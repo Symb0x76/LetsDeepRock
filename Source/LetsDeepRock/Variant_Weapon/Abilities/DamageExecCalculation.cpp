@@ -7,6 +7,7 @@
 #include "Attributes/WeaponCombatSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 
 // ============================================================================
 // 属性捕获定义（标准 GAS ExecCalc 结构体模式）
@@ -84,6 +85,12 @@ void UDamageExecCalculation::Execute_Implementation(
 	const FGameplayEffectCustomExecutionParameters& ExecutionParams,
 	FGameplayEffectCustomExecutionOutput& OutExecutionOutput) const
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(
+		ExecutionParams.GetTargetAbilitySystemComponent()))
+	{
+		return;
+	}
+
 	const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();
 	const FGameplayTagContainer& DamageTags = Spec.GetDynamicAssetTags();
 

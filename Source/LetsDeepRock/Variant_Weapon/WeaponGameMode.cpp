@@ -3,6 +3,9 @@
 
 #include "WeaponGameMode.h"
 #include "WeaponCharacter.h"
+#include "NPCBase.h"
+#include "Drone.h"
+#include "AI/EnemyAIController.h"
 #include "WeaponPlayerController.h"
 #include "WeaponPlayerState.h"
 #include "Weapons/WeaponProjectile.h"
@@ -12,11 +15,150 @@
 #include "WeaponGameplayTags.h"
 #include "WeaponGameState.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 
 AWeaponGameMode::AWeaponGameMode()
 {
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
+}
+
+bool AWeaponGameMode::EnterGameplayRecoveryBarrier()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState)
+	{
+		return false;
+	}
+	if (WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return true;
+	}
+
+	const EWeaponMatchPhase FrozenPhase = WeaponGameState->GetMatchPhase();
+	FrozenMatchPhaseRemaining = WeaponGameState->GetRemainingPhaseTime();
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	for (const auto& TimerPair : RespawnTimers)
+	{
+		GetWorldTimerManager().PauseTimer(TimerPair.Value);
+	}
+
+	WeaponGameState->SetGameplayRecoveryBlockedAuthority(true);
+	WeaponGameState->SetMatchPhase(FrozenPhase);
+	ApplyGameplayRecoveryBarrierToWorld(true);
+	return true;
+}
+
+bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || !WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return false;
+	}
+
+	const EWeaponMatchPhase FrozenPhase = WeaponGameState->GetMatchPhase();
+	const float RemainingPhaseTime = FrozenMatchPhaseRemaining;
+	ApplyGameplayRecoveryBarrierToWorld(false);
+	for (const auto& TimerPair : RespawnTimers)
+	{
+		GetWorldTimerManager().UnPauseTimer(TimerPair.Value);
+	}
+	ArmMatchPhaseTimer(FrozenPhase, RemainingPhaseTime);
+	FrozenMatchPhaseRemaining = 0.0f;
+	WeaponGameState->SetGameplayRecoveryBlockedAuthority(false);
+
+	if (RemainingPhaseTime <= 0.0f)
+	{
+		if (FrozenPhase == EWeaponMatchPhase::Starting)
+		{
+			BeginWeaponMatch();
+		}
+		else if (FrozenPhase == EWeaponMatchPhase::Ending)
+		{
+			ReturnToWaitingForPlayers();
+		}
+	}
+	return true;
+}
+
+void AWeaponGameMode::ApplyRecoveredMatchPhase(
+	const EWeaponMatchPhase Phase,
+	const float RemainingPhaseTime)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	check(HasAuthority() && WeaponGameState && WeaponGameState->IsGameplayRecoveryBlocked());
+
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	FrozenMatchPhaseRemaining = FMath::Max(0.0f, RemainingPhaseTime);
+	WeaponGameState->SetMatchPhase(Phase);
+}
+
+void AWeaponGameMode::ApplyGameplayRecoveryBarrierToWorld(const bool bBlocked)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AWeaponProjectile> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<AWeaponCharacter> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<ANPCBase> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<ADrone> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<AEnemyAIController> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+}
+
+void AWeaponGameMode::ArmMatchPhaseTimer(
+	const EWeaponMatchPhase Phase,
+	const float RemainingPhaseTime)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState)
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	WeaponGameState->SetMatchPhase(Phase, RemainingPhaseTime);
+	if (RemainingPhaseTime <= 0.0f)
+	{
+		return;
+	}
+
+	if (Phase == EWeaponMatchPhase::Starting)
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::BeginWeaponMatch,
+			RemainingPhaseTime,
+			false);
+	}
+	else if (Phase == EWeaponMatchPhase::Ending)
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::ReturnToWaitingForPlayers,
+			RemainingPhaseTime,
+			false);
+	}
 }
 
 bool AWeaponGameMode::SetRecoveryRoster(
@@ -619,7 +761,8 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 
 void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 {
-	if (!HasAuthority() || !DeadPlayerController)
+	if (!HasAuthority() || !DeadPlayerController ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -653,7 +796,8 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 bool AWeaponGameMode::CanStartWeaponMatch() const
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart)
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart)
 	{
 		return false;
 	}
@@ -701,7 +845,8 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 void AWeaponGameMode::BeginWeaponMatch()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
 	{
 		return;
 	}
@@ -718,7 +863,8 @@ void AWeaponGameMode::BeginWeaponMatch()
 void AWeaponGameMode::EndWeaponMatch()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
 	{
 		return;
 	}
@@ -744,7 +890,8 @@ void AWeaponGameMode::EndWeaponMatch()
 void AWeaponGameMode::ReturnToWaitingForPlayers()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Ending)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Ending)
 	{
 		return;
 	}
@@ -777,7 +924,7 @@ void AWeaponGameMode::HandlePlayerReadyChanged()
 
 void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 {
-	if (!PlayerController)
+	if (!PlayerController || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -824,7 +971,7 @@ void AWeaponGameMode::RefreshMatchPhase()
 	AWeaponGameState* WeaponGameState =
 		GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 
-	if (!WeaponGameState)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked())
 	{
 		return;
 	}

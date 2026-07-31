@@ -12,6 +12,7 @@
 #include "AbilitySystemComponent.h"
 #include "WeaponPlayerState.h"
 #include "WeaponGameMode.h"
+#include "WeaponGameState.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
@@ -134,6 +135,8 @@ void AWeaponCharacter::PossessedBy(AController* NewController)
 			EquipComp->EquipWeapon(DefaultWeapon);
 		}
 	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
 }
 
 void AWeaponCharacter::OnRep_PlayerState()
@@ -238,9 +241,63 @@ void AWeaponCharacter::InitializeAttributionTombstone(AWeaponPlayerState* Source
 	}
 }
 
+void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (!HasAuthority() || bGameplayRecoveryBlocked == bBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = bBlocked;
+
+	const FGameplayTagContainer WeaponAbilityTags(TAG_Ability_Weapon);
+	if (AbilitySystemComponent)
+	{
+		if (bBlocked)
+		{
+			AbilitySystemComponent->CancelAbilities(&WeaponAbilityTags);
+			AbilitySystemComponent->BlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+		else
+		{
+			AbilitySystemComponent->UnBlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+	}
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (bBlocked)
+		{
+			SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
+			SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
+			bSavedMovementModeForRecovery = true;
+			Movement->DisableMovement();
+			Movement->StopMovementImmediately();
+		}
+		else if (bSavedMovementModeForRecovery && !IsDead())
+		{
+			Movement->SetMovementMode(
+				static_cast<EMovementMode>(SavedRecoveryMovementMode),
+				SavedRecoveryCustomMovementMode);
+		}
+	}
+	if (bBlocked)
+	{
+		HideGrenadePreview();
+	}
+	else
+	{
+		bSavedMovementModeForRecovery = false;
+	}
+}
+
 void AWeaponCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		HideGrenadePreview();
+		return;
+	}
 
 	// TeamId 可能在 PlayerState 到达后继续复制变化，保持本地视野来源同步。
 	if (const AWeaponPlayerState* PS = GetPlayerState<AWeaponPlayerState>())
@@ -254,6 +311,10 @@ void AWeaponCharacter::Tick(float DeltaTime)
 
 void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 死亡时不旋转
 	if (IsDead())
 	{
@@ -338,6 +399,10 @@ void AWeaponCharacter::SetAimDirectionAuthoritative(const FVector& NewAimDirecti
 
 void AWeaponCharacter::ServerSetAimDirection_Implementation(FVector_NetQuantizeNormal NewAimDirection)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 服务器只接受有限、非零的水平向量，避免客户端提交非法瞄准方向。
 	const FVector Candidate = FVector(NewAimDirection);
 	if (!FMath::IsFinite(Candidate.X) || !FMath::IsFinite(Candidate.Y) ||
@@ -367,7 +432,7 @@ void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 
 void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)
 {
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -378,7 +443,8 @@ void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocat
 void AWeaponCharacter::ServerRequestBuildTile_Implementation(
 	FVector_NetQuantize WorldLocation, EGridTileType BuildType)
 {
-	if (IsDead() || !FMath::IsFinite(WorldLocation.X) ||
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!FMath::IsFinite(WorldLocation.X) ||
 		!FMath::IsFinite(WorldLocation.Y) || !FMath::IsFinite(WorldLocation.Z))
 	{
 		return;
@@ -490,7 +556,7 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 void AWeaponCharacter::Move(const FInputActionValue& Value)
 {
 	// 死亡时禁止移动
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -514,7 +580,7 @@ void AWeaponCharacter::Move(const FInputActionValue& Value)
 void AWeaponCharacter::Fire(const FInputActionValue& Value)
 {
 	// 死亡时禁止射击
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -535,7 +601,7 @@ void AWeaponCharacter::Fire(const FInputActionValue& Value)
 void AWeaponCharacter::Melee(const FInputActionValue& Value)
 {
 	// 死亡时禁止近战
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -556,7 +622,7 @@ void AWeaponCharacter::Melee(const FInputActionValue& Value)
 void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 {
 	// 死亡时禁止切枪
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -586,7 +652,7 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 void AWeaponCharacter::ThrowGrenadeStarted(const FInputActionValue& Value)
 {
 	// 死亡时禁止投掷
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -635,7 +701,8 @@ void AWeaponCharacter::ThrowGrenadeStarted(const FInputActionValue& Value)
 
 void AWeaponCharacter::ThrowGrenadeTriggered(const FInputActionValue& Value)
 {
-	if (!bEnableGrenadePreview || !bIsPreviewingGrenade)
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!bEnableGrenadePreview || !bIsPreviewingGrenade)
 	{
 		return;
 	}
@@ -645,6 +712,12 @@ void AWeaponCharacter::ThrowGrenadeTriggered(const FInputActionValue& Value)
 
 void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		bIsPreviewingGrenade = false;
+		HideGrenadePreview();
+		return;
+	}
 	if (!bEnableGrenadePreview)
 	{
 		if (!IsDead() && AbilitySystemComponent && GrenadeAbilityClass)
@@ -855,7 +928,7 @@ void AWeaponCharacter::HideGrenadePreview()
 void AWeaponCharacter::ServerThrowGrenade_Implementation(FVector_NetQuantize TargetPoint, bool bHasValidTarget)
 {
 	// 死亡时拒绝
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}

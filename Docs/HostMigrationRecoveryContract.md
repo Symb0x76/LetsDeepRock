@@ -188,6 +188,8 @@ ValidateRestore
 
 Before `RecoveryReady`, player input, gameplay RPCs, AI, damage, match timers and new Snapshot capture remain blocked.
 
+The concrete gate is the replicated `AWeaponGameState::bGameplayRecoveryBlocked` fact. Authority enters and releases it only through `AWeaponGameMode::EnterGameplayRecoveryBarrier` and `ReleaseGameplayRecoveryBarrier`; those edge transitions freeze or resume player/NPC movement, weapon-tagged GAS abilities, AI Behavior Trees, drones, projectiles, grenade fuses, respawn timers and the current match-phase deadline. Authoritative mutation owners also read the same gate at their RPC/damage/GridMap/capture boundaries. `RestoreSaveGame` requires the target World to be gated before Validate and leaves it gated after Apply; a later migration orchestrator alone may publish `RecoveryReady` and call Release.
+
 If RosterRevision changes during Validate/Stage/Apply, the candidate must not publish `RecoveryReady`. It discards that Recovery World and starts a new attempt using the unchanged CommonCommittedRevision and updated roster.
 
 There is no generic in-place rollback. An unpublished Recovery World is disposable.
