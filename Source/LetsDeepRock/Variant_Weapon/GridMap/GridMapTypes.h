@@ -160,55 +160,55 @@ struct FGridMapRecoveryState
 	uint32 NextTileRevision = 0;
 };
 
-/** 客户端重建确定性基础地图所需的版本化描述。 */
-USTRUCT(BlueprintType)
+/** 客户端重建确定性基础地图所需的内部 C++ 复制协议。 */
+USTRUCT()
 struct FGridMapBaselineState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 SchemaVersion = 1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 GenerationVersion = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	FGridMapConfig Config;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	TSubclassOf<UGridMapGenerator> GeneratorClass;
 
 	/** 服务器实际使用的随机种子；客户端不得自行生成。 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 EffectiveSeed = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	bool bGenerated = false;
 };
 
-/** 单格相对确定性基础地图的最新权威状态。 */
-USTRUCT(BlueprintType)
+/** 单格相对确定性基础地图的内部 C++ Fast Array 协议状态。 */
+USTRUCT()
 struct FGridTileDeltaItem : public FFastArraySerializerItem
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 GridX = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 GridY = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	EGridTileType TileType = EGridTileType::Empty;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 Health = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 MaxHealth = 0;
 
 	/** 防止旧地图世代的 Delta 被应用到新基础地图。 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	int32 GenerationVersion = 0;
 
 	/** 同一地图世代内由服务器分配的单调递增版本。 */
@@ -216,13 +216,13 @@ struct FGridTileDeltaItem : public FFastArraySerializerItem
 	uint32 Revision = 0;
 };
 
-/** 只复制发生变化的格子，并为 Late Join 保留每格最新状态。 */
-USTRUCT(BlueprintType)
+/** 内部 C++ Fast Array：只复制发生变化的格子，并为 Late Join 保留每格最新状态。 */
+USTRUCT()
 struct FGridTileDeltaArray : public FFastArraySerializer
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY()
 	TArray<FGridTileDeltaItem> Items;
 
 	bool NetDeltaSerialize(FNetDeltaSerializeInfo& DeltaParams)
