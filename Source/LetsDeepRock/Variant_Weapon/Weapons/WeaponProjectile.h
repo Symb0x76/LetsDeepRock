@@ -13,35 +13,35 @@ class UStaticMeshComponent;
 class UProjectileMovementComponent;
 class UGameplayEffect;
 
-/** 投射物生成时由服务器确定、随后整体复制的初始化状态。 */
-USTRUCT(BlueprintType)
+/** 投射物生成时由服务器确定、随后整体复制的内部 C++ 协议状态。 */
+USTRUCT()
 struct FWeaponProjectileInitializationState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	TSubclassOf<UGameplayEffect> DamageEffectClass;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float DamageValue = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	TObjectPtr<AActor> InstigatorActor = nullptr;
 
 	/** Stable source identity retained after the instigator Pawn is unpossessed. */
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	FUniqueNetIdRepl InstigatorPlayerId;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	FGameplayTagContainer DamageTags;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float ProjectileSpeed = 3000.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	bool bPenetratesTerrain = false;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	bool bInitialized = false;
 };
 
@@ -97,7 +97,7 @@ protected:
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
 
 	/** 初始化参数作为单个复制快照发送，避免客户端观察到字段组合不一致。 */
-	UPROPERTY(ReplicatedUsing = OnRep_InitializationState, BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY(ReplicatedUsing = OnRep_InitializationState)
 	FWeaponProjectileInitializationState InitializationState;
 
 	/** SetByCaller 伤害 Tag */
