@@ -215,7 +215,7 @@ void UWeaponEquipmentComponent::SwitchToPrevious()
 	SwitchWeapon(NewIndex);
 }
 
-bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIndex)
+bool UWeaponEquipmentComponent::CanRestoreWeaponSelection(const int32 SavedWeaponIndex) const
 {
 	if (!GetOwner() || !GetOwner()->HasAuthority() ||
 		(SavedWeaponIndex != INDEX_NONE && !DefaultWeapons.IsValidIndex(SavedWeaponIndex)))
@@ -232,6 +232,12 @@ bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIn
 		}
 		UniqueWeapons.Add(WeaponData);
 	}
+	return true;
+}
+
+void UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIndex)
+{
+	check(CanRestoreWeaponSelection(SavedWeaponIndex));
 
 	UnequipWeapon();
 	CurrentWeaponIndex = INDEX_NONE;
@@ -245,6 +251,4 @@ bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIn
 		GetOwner()->ForceNetUpdate();
 		NotifyEquipmentChanged();
 	}
-
-	return true;
 }

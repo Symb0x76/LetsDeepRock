@@ -68,8 +68,11 @@ public:
 	/** 获取当前武器索引 */
 	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
 
-	/** 服务端根据静态 DefaultWeapons 恢复选择；INDEX_NONE 表示不装备。 */
-	bool RestoreWeaponSelection(int32 SavedWeaponIndex);
+	/** 只读检查静态 DefaultWeapons 是否可以恢复指定选择。 */
+	bool CanRestoreWeaponSelection(int32 SavedWeaponIndex) const;
+
+	/** 在 CanRestoreWeaponSelection 成功后执行无业务失败的服务端 Apply。 */
+	void RestoreWeaponSelection(int32 SavedWeaponIndex);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 

@@ -191,6 +191,8 @@ If RosterRevision changes during Validate/Stage/Apply, the candidate must not pu
 
 There is no generic in-place rollback. An unpublished Recovery World is disposable.
 
+The local synchronous restorer implements this boundary with one private, call-scoped context. `ValidateRestore` fully resolves target Players, classes, assets, Equipment and ASC compatibility without mutation. `StageRestoreActors` creates replacement Characters, Enemies, Projectiles and Grenades with collision/tick disabled; any expected failure destroys only those staged Actors. GridMap applies only after its data, authority and generator have been validated, then `ApplySnapshot` performs the no-expected-failure owner swap and publishes capacity, Slot reservations, Match phase and Snapshot revision last. The context is not a reusable transaction or undo log.
+
 ## 12. Failure taxonomy and required action
 
 | Failure | Required action |
