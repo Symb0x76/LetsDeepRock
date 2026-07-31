@@ -364,6 +364,18 @@ bool UWeaponSnapshotCoordinator::RestoreSnapshot(
 		return false;
 	}
 
+	TMap<FUniqueNetIdRepl, int32> RestoredSlotReservations;
+	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
+	{
+		RestoredSlotReservations.Add(Player.PlayerId, Player.SlotIndex);
+	}
+	AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>();
+	if (!GameMode || !GameMode->SetPlayerSlotReservations(RestoredSlotReservations))
+	{
+		OutError = TEXT("Failed to publish restored stable player Slot reservations");
+		return false;
+	}
+
 	GameState->SetMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 	ActiveMatchId = Snapshot.MatchId;
 	NextSnapshotRevision = Snapshot.Revision + 1;
@@ -421,11 +433,11 @@ bool UWeaponSnapshotCoordinator::ValidatePlayers(const FWeaponSnapshot& Snapshot
 	const int32 MaxPlayers,
 	FString& OutError)
 {
-	TSet<FString> PlayerIds;
+	TSet<FUniqueNetIdRepl> PlayerIds;
 	TSet<int32> Slots;
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
-		if (Player.PlayerId.IsEmpty() || Player.PlayerName.IsEmpty() ||
+		if (!Player.PlayerId.IsValid() || Player.PlayerName.IsEmpty() ||
 			PlayerIds.Contains(Player.PlayerId) || Slots.Contains(Player.SlotIndex) ||
 			Player.SlotIndex < 0 || Player.SlotIndex >= MaxPlayers ||
 			!ValidateAttributeValues(Player.AttributeState.Values))
@@ -565,8 +577,8 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		}
 
 		const FWeaponProjectileInitializationState& Initialization = Projectile->GetInitializationState();
-		const FString InstigatorPlayerId = ResolvePlayerIdFromActor(Initialization.InstigatorActor);
-		if (!Initialization.bInitialized || InstigatorPlayerId.IsEmpty())
+		const FUniqueNetIdRepl InstigatorPlayerId = ResolvePlayerIdFromActor(Initialization.InstigatorActor);
+		if (!Initialization.bInitialized || !InstigatorPlayerId.IsValid())
 		{
 			OutError = FString::Printf(TEXT("Projectile %s has no restorable initialization or player instigator"),
 				*GetNameSafe(Projectile));
@@ -610,7 +622,7 @@ bool UWeaponSnapshotCoordinator::ValidateProjectiles(
 	const FWeaponSnapshot& Snapshot,
 	FString& OutError)
 {
-	TSet<FString> PlayersWithPawns;
+	TSet<FUniqueNetIdRepl> PlayersWithPawns;
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
 		if (Player.bHasPawn)
@@ -740,7 +752,7 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 	AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
 	AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>();
 
-	TMap<FString, AWeaponPlayerState*> PlayersById;
+	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> PlayersById;
 	for (APlayerState* BasePlayerState : GameState->PlayerArray)
 	{
 		if (AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState))
@@ -753,12 +765,14 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 		AWeaponPlayerState* const* FoundPlayerState = PlayersById.Find(Snap.PlayerId);
 		if (!FoundPlayerState)
 		{
-			OutError = FString::Printf(TEXT("Connected player %s is not ready for Snapshot Apply"), *Snap.PlayerId);
+			OutError = FString::Printf(TEXT("Connected player %s is not ready for Snapshot Apply"),
+				*Snap.PlayerId.ToDebugString());
 			return false;
 		}
 		if (Snap.bHasPawn && !(*FoundPlayerState)->GetPlayerController())
 		{
-			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *Snap.PlayerId);
+			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"),
+				*Snap.PlayerId.ToDebugString());
 			return false;
 		}
 	}
@@ -793,7 +807,8 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 			}
 			if (!RestoreAttributeValues(ASC, AttributeState.Values))
 			{
-				OutError = FString::Printf(TEXT("Failed to restore attributes for player %s"), *PlayerId);
+				OutError = FString::Printf(TEXT("Failed to restore attributes for player %s"),
+					*PlayerId.ToDebugString());
 				return false;
 			}
 			continue;
@@ -801,7 +816,8 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 
 		if (!PlayerController)
 		{
-			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *PlayerId);
+			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"),
+				*PlayerId.ToDebugString());
 			return false;
 		}
 
@@ -816,7 +832,8 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 		}
 		if (!Character || !Character->SetCharacterConfigRowNameAuthoritative(CharacterConfigRowName))
 		{
-			OutError = FString::Printf(TEXT("Failed to prepare Character for player %s"), *PlayerId);
+			OutError = FString::Printf(TEXT("Failed to prepare Character for player %s"),
+				*PlayerId.ToDebugString());
 			return false;
 		}
 
@@ -828,7 +845,8 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 		if (!Equipment || !Equipment->RestoreWeaponSelection(CurrentWeaponIndex) ||
 			!RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), AttributeState.Values))
 		{
-			OutError = FString::Printf(TEXT("Failed to restore equipment or attributes for player %s"), *PlayerId);
+			OutError = FString::Printf(TEXT("Failed to restore equipment or attributes for player %s"),
+				*PlayerId.ToDebugString());
 			return false;
 		}
 	}
@@ -905,7 +923,7 @@ bool UWeaponSnapshotCoordinator::RestoreProjectiles(
 		return false;
 	}
 
-	TMap<FString, APawn*> PawnsByPlayerId;
+	TMap<FUniqueNetIdRepl, APawn*> PawnsByPlayerId;
 	for (APlayerState* BasePlayerState : GameState->PlayerArray)
 	{
 		if (AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState))
@@ -1028,12 +1046,12 @@ bool UWeaponSnapshotCoordinator::RestoreProjectiles(
 	return true;
 }
 
-FString UWeaponSnapshotCoordinator::ResolvePlayerId(const APlayerState* PlayerState)
+FUniqueNetIdRepl UWeaponSnapshotCoordinator::ResolvePlayerId(const APlayerState* PlayerState)
 {
-	return PlayerState ? PlayerState->GetPlayerName() : FString();
+	return PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
 }
 
-FString UWeaponSnapshotCoordinator::ResolvePlayerIdFromActor(const AActor* Actor)
+FUniqueNetIdRepl UWeaponSnapshotCoordinator::ResolvePlayerIdFromActor(const AActor* Actor)
 {
 	if (const APlayerState* PlayerState = Cast<APlayerState>(Actor))
 	{
@@ -1047,7 +1065,7 @@ FString UWeaponSnapshotCoordinator::ResolvePlayerIdFromActor(const AActor* Actor
 	{
 		return ResolvePlayerId(Controller->GetPlayerState<APlayerState>());
 	}
-	return FString();
+	return FUniqueNetIdRepl();
 }
 
 bool UWeaponSnapshotCoordinator::IsFiniteVector(const FVector& Value)

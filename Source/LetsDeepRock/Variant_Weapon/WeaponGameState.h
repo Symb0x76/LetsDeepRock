@@ -68,8 +68,6 @@ class AWeaponGameState : public AGameStateBase
 public:
 	AWeaponGameState();
 	
-	/** 返回最小未占用槽位；满员时返回 INDEX_NONE。仅服务端调用。 */
-	int32 FindSmallestAvailablePlayerSlot() const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 /** 房间固定最大人数 */

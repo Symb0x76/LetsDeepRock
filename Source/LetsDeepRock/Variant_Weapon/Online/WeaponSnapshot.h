@@ -1,13 +1,14 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "GameplayTagContainer.h"
 #include "GridMap/GridMapTypes.h"
 #include "WeaponGameState.h"
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 5;
+inline constexpr int32 WeaponSnapshotVersion = 6;
 
 USTRUCT()
 struct FWeaponAttributeState
@@ -26,9 +27,9 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 {
 	GENERATED_BODY()
 
-	/** Temporary identity fallback. Replace the player name with an OSS account ID before migration ships. */
+	/** Opaque OnlineSubsystem identity; PlayerName is presentation only. */
 	UPROPERTY(SaveGame)
-	FString PlayerId;
+	FUniqueNetIdRepl PlayerId;
 	
 	/* TODO: Determine whether to keep Player Name */
 	UPROPERTY(SaveGame)
@@ -104,7 +105,7 @@ struct LETSDEEPROCK_API FWeaponProjectileSnapshot
 	FSoftClassPath DamageEffectClass;
 
 	UPROPERTY(SaveGame)
-	FString InstigatorPlayerId;
+	FUniqueNetIdRepl InstigatorPlayerId;
 
 	UPROPERTY(SaveGame)
 	FVector Location = FVector::ZeroVector;
@@ -141,7 +142,7 @@ struct LETSDEEPROCK_API FWeaponGrenadeSnapshot
 	FSoftObjectPath GrenadeDataAsset;
 
 	UPROPERTY(SaveGame)
-	FString InstigatorPlayerId;
+	FUniqueNetIdRepl InstigatorPlayerId;
 
 	UPROPERTY(SaveGame)
 	FVector Location = FVector::ZeroVector;

@@ -19,7 +19,7 @@ Only Backup A and Backup B receive full recovery payloads. Ordinary clients do n
 ## 2. Current serialization baseline
 
 - `UWeaponMatchSaveGame::SaveFormatVersion` is `1`.
-- `FWeaponSnapshot::SchemaVersion` is `5`.
+- `FWeaponSnapshot::SchemaVersion` is `6`.
 - The SaveGame header owns the target map package and session capacity.
 - The nested Snapshot owns mutable authoritative match state.
 - A format or schema mismatch is rejected; no compatibility migration is currently promised.
@@ -80,7 +80,7 @@ In a fresh Recovery World, tombstones for Pending/Departed projectile sources mu
 
 ## 6. Preserved state
 
-The following domains are checkpoint-preserved because schema v5 has concrete Capture, Validate and Restore ownership:
+The following domains are checkpoint-preserved because schema v6 has concrete Capture, Validate and Restore ownership:
 
 - SaveGame header: map package and maximum players;
 - Match: MatchId, SnapshotRevision, phase and relative remaining phase time;

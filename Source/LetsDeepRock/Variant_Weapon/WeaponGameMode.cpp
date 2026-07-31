@@ -17,6 +17,94 @@ AWeaponGameMode::AWeaponGameMode()
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
 }
 
+bool AWeaponGameMode::SetPlayerSlotReservations(
+	const TMap<FUniqueNetIdRepl, int32>& NewReservations)
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState)
+	{
+		return false;
+	}
+
+	TSet<int32> ReservedSlots;
+	for (const auto& [PlayerId, SlotIndex] : NewReservations)
+	{
+		if (!PlayerId.IsValid() || SlotIndex < 0 || SlotIndex >= WeaponGameState->GetMaxPlayers() ||
+			ReservedSlots.Contains(SlotIndex))
+		{
+			return false;
+		}
+		ReservedSlots.Add(SlotIndex);
+	}
+
+	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
+		if (!WeaponPlayerState || !NewReservations.Contains(WeaponPlayerState->GetUniqueId()))
+		{
+			return false;
+		}
+	}
+
+	PlayerSlotReservations = NewReservations;
+	return true;
+}
+
+bool AWeaponGameMode::IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || !PlayerId.IsValid())
+	{
+		return false;
+	}
+
+	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		if (PlayerState && PlayerState->GetUniqueId() == PlayerId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+int32 AWeaponGameMode::FindSmallestUnreservedPlayerSlot() const
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState)
+	{
+		return INDEX_NONE;
+	}
+
+	for (int32 SlotIndex = 0; SlotIndex < WeaponGameState->GetMaxPlayers(); ++SlotIndex)
+	{
+		if (!PlayerSlotReservations.FindKey(SlotIndex))
+		{
+			return SlotIndex;
+		}
+	}
+	return INDEX_NONE;
+}
+
+int32 AWeaponGameMode::FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId)
+{
+	if (!PlayerId.IsValid())
+	{
+		return INDEX_NONE;
+	}
+	if (const int32* ReservedSlot = PlayerSlotReservations.Find(PlayerId))
+	{
+		return *ReservedSlot;
+	}
+
+	const int32 AvailableSlot = FindSmallestUnreservedPlayerSlot();
+	if (AvailableSlot != INDEX_NONE)
+	{
+		PlayerSlotReservations.Add(PlayerId, AvailableSlot);
+	}
+	return AvailableSlot;
+}
+
 void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
 	FString& ErrorMessage)
 {
@@ -35,10 +123,25 @@ void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, c
 		ErrorMessage = TEXT("Match state is not initialized.");
 		return;
 	}
+	if (!UniqueId.IsValid())
+	{
+		ErrorMessage = TEXT("A stable online player identity is required.");
+		return;
+	}
+	if (IsPlayerIdentityConnected(UniqueId))
+	{
+		ErrorMessage = TEXT("This player identity is already connected.");
+		return;
+	}
 	
 	if (WeaponGameState->GetConnectedPlayerCount() >= WeaponGameState->GetMaxPlayers())
 	{
 		ErrorMessage = TEXT("Room is full.");
+		return;
+	}
+	if (!PlayerSlotReservations.Contains(UniqueId) && FindSmallestUnreservedPlayerSlot() == INDEX_NONE)
+	{
+		ErrorMessage = TEXT("All player slots are reserved.");
 	}
 }
 
@@ -60,12 +163,14 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 		return;
 	}
 	
-	const int32 AvailableSlot = WeaponGameState->FindSmallestAvailablePlayerSlot();
+	const FUniqueNetIdRepl& PlayerId = WeaponPlayerState->GetUniqueId();
+	const int32 AvailableSlot = FindOrReservePlayerSlot(PlayerId);
 	
 	// 理论上 PreLogin 已阻止此情况；保留保护，避免异常连接污染状态。
 	if (AvailableSlot == INDEX_NONE)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("No available player slot for %s."), *GetNameSafe(NewPlayer));
+		UE_LOG(LogTemp, Warning, TEXT("No available player slot for %s (%s)."),
+			*GetNameSafe(NewPlayer), *PlayerId.ToDebugString());
 		return;
 	}
 	

@@ -16,37 +16,6 @@ AWeaponGameState::AWeaponGameState()
 	bReplicates = true;	// 显式设置 GameStateBase 可复制
 }
 
-int32 AWeaponGameState::FindSmallestAvailablePlayerSlot() const
-{
-	TSet<int32> OccupiedSlots;
-
-	for (const APlayerState* PlayerState : PlayerArray)
-	{
-		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
-
-		if (!WeaponPlayerState)
-		{
-			continue;
-		}
-
-		if (const int32 SlotIndex = WeaponPlayerState->GetPlayerSlotIndex(); 
-			SlotIndex >= 0 && SlotIndex < MaxPlayers)
-		{
-			OccupiedSlots.Add(SlotIndex);
-		}
-	}
-
-	for (int32 SlotIndex = 0; SlotIndex < MaxPlayers; ++SlotIndex)
-	{
-		if (!OccupiedSlots.Contains(SlotIndex))
-		{
-			return SlotIndex;
-		}
-	}
-
-	return INDEX_NONE;
-}
-
 int32 AWeaponGameState::GetConnectedPlayerCount() const
 {
 	return PlayerArray.Num();

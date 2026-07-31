@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
@@ -29,6 +30,9 @@ public:
 	virtual void PostLogin(APlayerController* NewPlayer) override;
 
 	virtual void Logout(AController* ExitingController) override;
+
+	/** Replace the server-only stable identity -> original Slot table after validating the whole set. */
+	bool SetPlayerSlotReservations(const TMap<FUniqueNetIdRepl, int32>& NewReservations);
 	
 	/**
 	 *  玩家死亡通知入口（由 WeaponCharacter::HandleHealthDepleted 调用）
@@ -76,6 +80,13 @@ protected:
 	void RespawnPlayer(AController* PlayerController);
 
 private:
+	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;
+	int32 FindSmallestUnreservedPlayerSlot() const;
+	int32 FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId);
+
+	/** Reservations outlive a connection; Commit 3 adds Pending/Ready/Departed expiry policy. */
+	TMap<FUniqueNetIdRepl, int32> PlayerSlotReservations;
+
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();
 

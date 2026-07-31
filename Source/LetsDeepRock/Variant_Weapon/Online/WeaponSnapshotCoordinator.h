@@ -7,6 +7,7 @@
 class UAbilitySystemComponent;
 class APlayerState;
 class UWeaponMatchSaveGame;
+struct FUniqueNetIdRepl;
 struct FGameplayTag;
 struct FWeaponSnapshot;
 
@@ -53,8 +54,8 @@ private:
 	static bool ValidateAttributeValues(const TMap<FGameplayTag, float>& Values);
 	static bool RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
 
-	static FString ResolvePlayerId(const APlayerState* PlayerState);
-	static FString ResolvePlayerIdFromActor(const AActor* Actor);
+	static FUniqueNetIdRepl ResolvePlayerId(const APlayerState* PlayerState);
+	static FUniqueNetIdRepl ResolvePlayerIdFromActor(const AActor* Actor);
 
 	static bool IsFiniteVector(const FVector& Value);
 	static bool IsFiniteRotator(const FRotator& Value);

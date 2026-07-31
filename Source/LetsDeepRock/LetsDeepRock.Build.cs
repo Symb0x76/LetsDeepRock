@@ -10,6 +10,7 @@ public class LetsDeepRock : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
+			"CoreOnline",
 			"CoreUObject",
 			"Engine",
 			"NetCore",
