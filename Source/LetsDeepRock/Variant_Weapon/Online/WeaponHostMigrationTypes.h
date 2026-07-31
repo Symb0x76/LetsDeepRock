@@ -29,6 +29,12 @@ enum class EWeaponHostMigrationState : uint8
 	JoiningCandidate,
 	Restoring,
 	AdvertisingCandidate,
+	WaitingForReadyAcks,
+	PlannedHandoff,
+	LoadingLocalFork,
+	PreparingLocalFork,
+	RestoringLocalFork,
+	AdvertisingLocalFork,
 	Failed,
 };
 

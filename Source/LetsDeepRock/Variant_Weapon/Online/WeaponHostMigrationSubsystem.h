@@ -15,6 +15,12 @@ class UWeaponSessionSubsystem;
 class UWorld;
 class UNetDriver;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FOnWeaponMigrationPresentationChanged,
+	bool, bVisible,
+	FText, Message,
+	float, Progress);
+
 /**
  * Cross-travel owner of one backup's recovery bytes.
  *
@@ -34,6 +40,26 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	EWeaponHostMigrationState GetMigrationState() const { return MigrationState; }
+
+	/** Freeze the current listen match, commit one final payload to A/B, then join the successor. */
+	UFUNCTION(BlueprintCallable, Category = "Host Migration")
+	bool RequestPlannedHostHandoff();
+
+	/** Explicit split-brain-safe local restart: the loaded SaveGame always receives a new MatchId. */
+	UFUNCTION(BlueprintCallable, Category = "Host Migration")
+	bool RestartLatestLocalSaveAsNewMatch(const FString& ServerName);
+
+	UFUNCTION(BlueprintPure, Category = "Host Migration")
+	bool IsMigrationOverlayVisible() const { return bMigrationOverlayVisible; }
+
+	UFUNCTION(BlueprintPure, Category = "Host Migration")
+	FText GetMigrationOverlayMessage() const { return MigrationOverlayMessage; }
+
+	UFUNCTION(BlueprintPure, Category = "Host Migration")
+	float GetMigrationProgress() const { return MigrationProgress; }
+
+	UPROPERTY(BlueprintAssignable, Category = "Host Migration")
+	FOnWeaponMigrationPresentationChanged OnMigrationPresentationChanged;
 
 	/** Create Epoch 1 for a new MatchId, or reuse the term of the same Active Host. */
 	bool PrepareAuthorityTerm(
@@ -104,6 +130,12 @@ public:
 		const FWeaponMigrationPayloadAck& Ack,
 		FString& OutError);
 
+	/** Backup confirmation that the Host's CommonCommitted announcement was accepted and pinned. */
+	bool RecordCommonCommittedConfirmation(
+		const AWeaponPlayerController* Sender,
+		const FWeaponMigrationPayloadAck& Ack,
+		FString& OutError);
+
 	bool GetCommonCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
 	int64 GetCommonCommittedRevision() const
 	{
@@ -141,6 +173,23 @@ public:
 	bool GetCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
 	bool CopyCommonCommittedPayload(TArray<uint8>& OutBytes) const;
 	bool GetLocalCommonCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
+
+	/** Client-side acceptance of one fenced presentation-ready request. */
+	bool AcceptRecoveryReadyRequest(
+		const FGuid& MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		const FGuid& RecoveryAttemptId,
+		FString& OutError);
+
+	/** Server-side ACK entry used by an owning PlayerController. */
+	bool RecordRecoveryReadyAcknowledgement(
+		const AWeaponPlayerController* Sender,
+		const FGuid& MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		const FGuid& RecoveryAttemptId,
+		FString& OutError);
 
 	float GetSnapshotIntervalSeconds() const { return FMath::Max(0.1f, SnapshotIntervalSeconds); }
 	float GetTransferAckTimeoutSeconds() const { return FMath::Max(0.1f, TransferAckTimeoutSeconds); }
@@ -211,8 +260,9 @@ private:
 	void HandleRecoveryWorldPrepared(bool bSuccess, const FString& Message);
 	void HandleRecoveryHostComplete(bool bSuccess, const FString& Message);
 	void HandleRecoveryJoinComplete(bool bSuccess, const FString& Message);
+	void HandleLanHostComplete(bool bSuccess, const FString& Message);
 	bool TickRecovery(float DeltaSeconds);
-	bool BeginRecoveryFromNetworkFailure(UWorld* FailedWorld, FString& OutError);
+	bool PrimeRecoveryFromCommittedBaseline(UWorld* SourceWorld, FString& OutError);
 	bool EnterRecoveryCandidatePhase(EWeaponMigrationRole CandidateRole, FString& OutError);
 	bool BuildRecoverySessionDescriptor(
 		EWeaponMigrationRole CandidateRole,
@@ -220,10 +270,24 @@ private:
 		FWeaponRecoverySessionDescriptor& OutDescriptor,
 		FString& OutError) const;
 	bool RestoreCandidateWorld(FString& OutError);
+	bool RefreshRecoveryReadyFence(FString& OutError);
+	bool TryReleaseRecoveryBarrier(FString& OutError);
+	void RestartRecoveryCandidateAttempt(const FString& Reason);
 	void AdvanceRecoveryCandidate(const FString& Reason);
 	void FailRecoveryToLobby(const FString& Reason);
 	void CompleteRecoveryConnection();
 	void ResetRecoveryAttemptContext();
+	void SetMigrationState(
+		EWeaponHostMigrationState NewState,
+		const FString& Message,
+		float Progress,
+		bool bShowOverlay);
+	static const TCHAR* LexMigrationState(EWeaponHostMigrationState State);
+	void CompletePlannedHostHandoff(bool bFinalRevisionCommitted, const FString& Reason);
+	void CancelPlannedHostHandoff(const FString& Reason);
+	void HandleLocalForkSaveLoaded(uint64 RequestSerial, class USaveGame* LoadedSaveGame);
+	bool RestoreLocalSaveFork(FString& OutError);
+	void FailLocalSaveFork(const FString& Reason);
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Host Migration|Timing", meta = (ClampMin = 0.1))
 	float SnapshotIntervalSeconds = 5.0f;
@@ -264,6 +328,8 @@ private:
 	int64 LastLocalSaveRevision = 0;
 	bool bHasCommonCommittedPayload = false;
 	bool bHasCommonCommittedRoleAssignment = false;
+	bool bBackupAConfirmedCommonCommitted = false;
+	bool bBackupBConfirmedCommonCommitted = false;
 	bool bHasCurrentRoleAssignment = false;
 	bool bCurrentRoleAssignmentIsProvisional = false;
 	EWeaponHostMigrationState MigrationState = EWeaponHostMigrationState::Idle;
@@ -276,11 +342,35 @@ private:
 	double NextRecoverySearchSeconds = 0.0;
 	bool bRecoverySearchInFlight = false;
 	bool bRecoveryTravelCompleted = false;
+	bool bRecoveryReadyRequestReceived = false;
+	uint64 RecoveryPublicationRosterRevision = 0;
+	uint64 RecoveryReadyRosterRevision = 0;
+	TSet<FUniqueNetIdRepl> RecoveryReadyPlayerAcks;
+	int64 PlannedHandoffTargetRevision = 0;
+	double PlannedHandoffDeadlineSeconds = 0.0;
+	uint64 LocalForkRequestSerial = 0;
+	FGuid LocalForkSourceMatchId;
+	FString PendingLocalForkServerName;
+	FWeaponRecoverySessionDescriptor PendingLocalForkDescriptor;
+
+	UPROPERTY()
+	TObjectPtr<UWeaponMatchSaveGame> PendingLocalForkSaveGame;
+
+	UPROPERTY()
+	bool bMigrationOverlayVisible = false;
+
+	UPROPERTY()
+	FText MigrationOverlayMessage;
+
+	UPROPERTY()
+	float MigrationProgress = 0.0f;
+
 	FDelegateHandle NetworkFailureDelegateHandle;
 	FDelegateHandle PostLoadMapDelegateHandle;
 	FDelegateHandle RecoveryWorldPreparedDelegateHandle;
 	FDelegateHandle RecoveryHostCompleteDelegateHandle;
 	FDelegateHandle RecoveryJoinCompleteDelegateHandle;
+	FDelegateHandle LanHostCompleteDelegateHandle;
 	FTSTicker::FDelegateHandle RecoveryTickerHandle;
 	FTimerHandle SnapshotCaptureTimerHandle;
 	FTimerHandle ChunkSendTimerHandle;

@@ -8,6 +8,7 @@
 #include "InputMappingContext.h"
 #include "LetsDeepRock.h"
 #include "Online/WeaponHostMigrationSubsystem.h"
+#include "TimerManager.h"
 #include "WeaponGameMode.h"
 
 AWeaponPlayerController::AWeaponPlayerController()
@@ -128,7 +129,61 @@ void AWeaponPlayerController::ClientConfirmMigrationCommonCommitted_Implementati
 			TEXT("CommonCommitted announcement rejected for revision %lld: %s"),
 			Ack.SnapshotRevision,
 			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
+		return;
 	}
+	ServerConfirmMigrationCommonCommitted(Ack);
+}
+
+void AWeaponPlayerController::ClientRequestRecoveryReadyAcknowledgement_Implementation(
+	const FGuid MatchId,
+	const uint64 AuthorityEpoch,
+	const uint64 RosterRevision,
+	const FGuid RecoveryAttemptId)
+{
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	FString Error;
+	if (!MigrationSubsystem || !MigrationSubsystem->AcceptRecoveryReadyRequest(
+		MatchId,
+		AuthorityEpoch,
+		RosterRevision,
+		RecoveryAttemptId,
+		Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("RecoveryReady request rejected for Match %s Epoch %llu Roster %llu Attempt %s: %s"),
+			*MatchId.ToString(),
+			AuthorityEpoch,
+			RosterRevision,
+			*RecoveryAttemptId.ToString(),
+			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
+		return;
+	}
+
+	PendingRecoveryReadyMatchId = MatchId;
+	PendingRecoveryReadyEpoch = AuthorityEpoch;
+	PendingRecoveryReadyRosterRevision = RosterRevision;
+	PendingRecoveryReadyAttemptId = RecoveryAttemptId;
+	bRecoveryReadyAcknowledgementPending = true;
+	GetWorldTimerManager().SetTimerForNextTick(
+		this,
+		&AWeaponPlayerController::SendPendingRecoveryReadyAcknowledgement);
+}
+
+void AWeaponPlayerController::SendPendingRecoveryReadyAcknowledgement()
+{
+	if (!bRecoveryReadyAcknowledgementPending)
+	{
+		return;
+	}
+	bRecoveryReadyAcknowledgementPending = false;
+	ServerAcknowledgeRecoveryReady(
+		PendingRecoveryReadyMatchId,
+		PendingRecoveryReadyEpoch,
+		PendingRecoveryReadyRosterRevision,
+		PendingRecoveryReadyAttemptId);
 }
 
 void AWeaponPlayerController::ServerAcknowledgeMigrationPayload_Implementation(
@@ -151,5 +206,52 @@ void AWeaponPlayerController::ServerAcknowledgeMigrationPayload_Implementation(
 			TEXT("Migration ACK rejected for revision %lld: %s"),
 			Ack.SnapshotRevision,
 			*Error);
+	}
+}
+
+void AWeaponPlayerController::ServerConfirmMigrationCommonCommitted_Implementation(
+	const FWeaponMigrationPayloadAck& Ack)
+{
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	FString Error;
+	if (!MigrationSubsystem ||
+		!MigrationSubsystem->RecordCommonCommittedConfirmation(this, Ack, Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("CommonCommitted confirmation rejected for revision %lld: %s"),
+			Ack.SnapshotRevision,
+			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
+	}
+}
+
+void AWeaponPlayerController::ServerAcknowledgeRecoveryReady_Implementation(
+	const FGuid MatchId,
+	const uint64 AuthorityEpoch,
+	const uint64 RosterRevision,
+	const FGuid RecoveryAttemptId)
+{
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	FString Error;
+	if (!MigrationSubsystem || !MigrationSubsystem->RecordRecoveryReadyAcknowledgement(
+		this,
+		MatchId,
+		AuthorityEpoch,
+		RosterRevision,
+		RecoveryAttemptId,
+		Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("RecoveryReady ACK rejected for Match %s Epoch %llu Roster %llu Attempt %s: %s"),
+			*MatchId.ToString(),
+			AuthorityEpoch,
+			RosterRevision,
+			*RecoveryAttemptId.ToString(),
+			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
 	}
 }

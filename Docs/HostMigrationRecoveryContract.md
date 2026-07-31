@@ -2,7 +2,7 @@
 
 Updated: 2026-07-31
 
-Status: Accepted design contract; payload transport, fixed-role/Epoch fencing, and the NetworkFailure-driven A/B Recovery Session path are implemented. Planned handoff, recovery presentation/readiness UX, and packaged runtime proof remain pending.
+Status: Accepted design contract; payload transport, fixed-role/Epoch fencing, NetworkFailure-driven A/B recovery, planned handoff, fenced RecoveryReady acknowledgements, presentation state and split-brain-safe local SaveGame fork are implemented. Packaged runtime proof remains pending.
 
 ## 1. Purpose
 
@@ -182,7 +182,7 @@ The concrete Host aggregator records ACKs only from its configured A/B controlle
 
 After both ACKs, the Host reliably announces the complete CommonCommitted ACK metadata to every connected client. An assigned Backup accepts that announcement only if its own immutable Committed bytes identify the same payload. Ordinary clients retain the metadata for later recovery-session routing but do not become candidates and do not receive full payload bytes.
 
-Each Backup pins a separate `CommonCommittedPayload` byte buffer when it accepts that announcement. Its latest validated `Committed` buffer may continue advancing while a later revision waits for the other Backup, but it cannot overwrite the bytes selected for crash recovery. The role assignment that produced the common ACK is pinned with the bytes, so a later same-term roster/role change cannot silently change the candidate ladder for the older baseline.
+Each Backup pins a separate `CommonCommittedPayload` byte buffer when it accepts that announcement, then confirms acceptance back to the Host. Its latest validated `Committed` buffer may continue advancing while a later revision waits for the other Backup, but it cannot overwrite the bytes selected for crash recovery. The role assignment that produced the common ACK is pinned with the bytes, so a later same-term roster/role change cannot silently change the candidate ladder for the older baseline. A planned departure requires both confirmations for its final revision; reliable announcement delivery alone is not treated as convergence proof.
 
 After a successful migration, the new Active Host replenishes Backup A/B roles by stable original Slot where population permits. Reduced redundancy must be visible in logs/UI.
 
@@ -204,9 +204,13 @@ Before `RecoveryReady`, player input, gameplay RPCs, AI, damage, match timers an
 
 The concrete gate is the replicated `AWeaponGameState::bGameplayRecoveryBlocked` fact. Authority enters and releases it only through `AWeaponGameMode::EnterGameplayRecoveryBarrier` and `ReleaseGameplayRecoveryBarrier`; those edge transitions freeze or resume player/NPC movement, weapon-tagged GAS abilities, AI Behavior Trees, drones, projectiles, grenade fuses, respawn timers and the current match-phase deadline. Authoritative mutation owners also read the same gate at their RPC/damage/GridMap/capture boundaries. `RestoreSaveGame` requires the target World to be gated before Validate and leaves it gated after Apply; a later migration orchestrator alone may publish `RecoveryReady` and call Release.
 
-Recovery listen travel carries `WeaponRecovery=1`; `AWeaponGameMode::InitGameState` closes the barrier before local PostLogin or gameplay BeginPlay can publish a normal role term. The candidate restores the pinned CommonCommitted bytes in that fresh World, creates a Ready-only LAN Recovery Session while the barrier remains closed, and releases the barrier from the successful CreateSession callback. Other survivors search and join only after every advertised MatchId/Epoch/base Revision/RosterRevision/Candidate/attempt/hash/map/build field matches. A later readiness-UX pass may hold publication for explicit connected-client presentation ACKs; the current first path admits remote survivors only after local RecoveryReady, so they cannot observe a half-restored World.
+Recovery listen travel carries `WeaponRecovery=1`; `AWeaponGameMode::InitGameState` closes the barrier before local PostLogin or gameplay BeginPlay can publish a normal role term. The candidate restores the pinned CommonCommitted bytes in that fresh World and creates a Ready-only LAN Recovery Session while the barrier remains closed. Other survivors search and join only after every advertised MatchId/Epoch/base Revision/RosterRevision/Candidate/attempt/hash/map/build field matches.
 
-If RosterRevision changes during Validate/Stage/Apply, the candidate must not publish `RecoveryReady`. It discards that Recovery World and starts a new attempt using the unchanged CommonCommittedRevision and updated roster.
+Successful Session creation no longer releases gameplay. The candidate records the post-Restore runtime `RosterRevision`, verifies that it did not change while RecoveryReady publication was in flight, then enters `WaitingForReadyAcks`. Every connected remote `Ready` roster member receives a reliable request fenced by MatchId, successor Epoch, current runtime RosterRevision and RecoveryAttemptId. Its owning `AWeaponPlayerController` accepts that request only for the Recovery Session it actually joined, lets the local presentation state advance, and emits the Server ACK on the next game-thread tick. A reconnect, disconnect or grace expiry changes RosterRevision, invalidates the complete ACK set and issues a new fence. The barrier opens only when no roster entry remains `Pending` and every connected `Ready` identity has ACKed the current fence. Pending grace timers continue while gameplay is blocked.
+
+The protocol structs and orchestration enums remain internal C++ reflection types. Blueprint receives only the intentional presentation surface on `UWeaponHostMigrationSubsystem`: overlay visibility, message text, normalized progress and one change delegate. No MatchId, Epoch, Candidate, payload or ACK struct is exposed as a Blueprint data model.
+
+If RosterRevision changes during Validate/Stage/Apply or before the Ready Session publication callback completes, the candidate must not begin readiness ACK collection. It destroys the stale Session/World and restarts the same candidate with a new RecoveryAttemptId and the unchanged CommonCommitted bytes. Roster changes after publication are normal reconnect/grace events and advance the ACK fence instead of mutating an older ACK set.
 
 There is no generic in-place rollback. An unpublished Recovery World is disposable.
 
@@ -229,18 +233,18 @@ The local synchronous restorer implements this boundary with one private, call-s
 | `CandidateTimeout` | A fails over to B; B failure returns survivors to Lobby |
 | `CandidateDisconnected` | The remaining backup retries the identical CommonCommitted bytes |
 
-Failures must be observable with MatchId, AuthorityEpoch, SnapshotRevision, RosterRevision, RecoveryAttemptId and CandidatePlayerId.
+Failures must be observable with MatchId, AuthorityEpoch, SnapshotRevision, RosterRevision, RecoveryAttemptId and CandidatePlayerId. Every `UWeaponHostMigrationSubsystem` state transition emits those control facts plus its previous/new state and presentation message; payload, planned-handoff, readiness and local-fork boundaries add their operation-specific revision or player identity.
 
 ## 13. Host departure and local SaveGame
 
-For planned departure, the Active Host freezes gameplay, captures a final Snapshot and waits for A/B commit ACKs up to the configured deadline before leaving.
+For planned departure, `RequestPlannedHostHandoff` requires the live fixed A/B transport and a current-role CommonCommitted baseline already confirmed by both backups. On the game thread it captures the final live state and immediately closes the gameplay barrier in the same frame, preserving projectile/fuse values without allowing another gameplay tick. The Host waits up to `TransferAckTimeoutSeconds` for both payload ACKs, broadcasts the final CommonCommitted announcement, and then waits for A and B to confirm that they accepted and pinned it. Only that converged final revision permits departure. A timeout, local SaveGame failure or incomplete announcement convergence cancels the handoff; gameplay and periodic transport resume instead of leaving different processes on different baselines. A successful Host leaves to a standalone lobby and participates as a normal survivor searching for the deterministic successor.
 
 The original Host writes each validated payload asynchronously to the configured `WeaponHostMigrationLatest` local SaveGame slot before distributing that revision to A/B. The local file may therefore be newer than `CommonCommittedRevision`, but a failed local write prevents that revision from entering transport. A later local restart may continue only as:
 
 - a join to the already migrated authority; or
 - a new fork with a new MatchId.
 
-It must never advertise the old MatchId as a competing authority when the migrated match may still exist.
+It must never advertise the old MatchId as a competing authority when the migrated match may still exist. `RestartLatestLocalSaveAsNewMatch` therefore works only from a standalone Idle/Failed state, requires the current OSS identity to own a non-Departed saved Slot, assigns a fresh MatchId before Restore, restores in a clean gated listen World, advertises a normal LAN Session, and only then releases gameplay. There is deliberately no API that loads the local file and advertises its old MatchId. Joining the migrated authority uses the normal fenced recovery search path instead.
 
 ## 14. Failover ladder
 

@@ -62,6 +62,11 @@ DECLARE_MULTICAST_DELEGATE_TwoParams(
 	bool,
 	const FString&);
 
+DECLARE_MULTICAST_DELEGATE_TwoParams(
+	FOnWeaponLanHostOperationComplete,
+	bool,
+	const FString&);
+
 /**
  * LAN/P2P Session 控制面
  *
@@ -121,6 +126,7 @@ public:
 	FOnWeaponRecoverySessionOperationComplete OnRecoveryWorldPrepared;
 	FOnWeaponRecoverySessionOperationComplete OnRecoveryHostComplete;
 	FOnWeaponRecoverySessionOperationComplete OnRecoveryJoinComplete;
+	FOnWeaponLanHostOperationComplete OnLanHostComplete;
 
 	UFUNCTION(BlueprintPure, Category = "LAN Session")
 	EWeaponSessionOperation GetCurrentOperation() const { return CurrentOperation; }
@@ -170,6 +176,7 @@ private:
 	void ResetRecoveryOperationFlags();
 	void ExecutePendingAction();
 	void FailPendingAction(const FString& Message);
+	void BroadcastHostComplete(bool bWasSuccessful, const FString& Message);
 
 	void HandlePostLoadMap(UWorld* LoadedWorld);
 	void HandleCreateSessionComplete(FName SessionName, bool bWasSuccessful);

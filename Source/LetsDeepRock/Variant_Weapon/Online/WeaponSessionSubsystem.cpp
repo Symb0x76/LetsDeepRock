@@ -85,7 +85,7 @@ bool UWeaponSessionSubsystem::HostLanGame(const int32 MaxPlayers, const FString&
 	PendingHostMapName = ResolveCurrentMapName();
 	if (PendingHostMapName.IsNone())
 	{
-		OnHostComplete.Broadcast(false, TEXT("Unable to resolve the current map."));
+		BroadcastHostComplete(false, TEXT("Unable to resolve the current map."));
 		return false;
 	}
 
@@ -300,7 +300,7 @@ bool UWeaponSessionSubsystem::BeginCreateSessionInternal(
 		}
 		else
 		{
-			OnHostComplete.Broadcast(false, TEXT("CreateSession request was rejected."));
+			BroadcastHostComplete(false, TEXT("CreateSession request was rejected."));
 		}
 	}
 
@@ -329,7 +329,9 @@ void UWeaponSessionSubsystem::HandleCreateSessionComplete(const FName SessionNam
 	}
 	else
 	{
-		OnHostComplete.Broadcast(bSuccess, bSuccess ? TEXT("LAN host is listening and advertised.") : TEXT("Failed to create LAN Session."));
+		BroadcastHostComplete(
+			bSuccess,
+			bSuccess ? TEXT("LAN host is listening and advertised.") : TEXT("Failed to create LAN Session."));
 	}
 }
 
@@ -903,7 +905,7 @@ void UWeaponSessionSubsystem::FailPendingAction(const FString& Message)
 
 	if (FailedAction == EPendingAction::Host)
 	{
-		OnHostComplete.Broadcast(false, Message);
+		BroadcastHostComplete(false, Message);
 	}
 	else if (FailedAction == EPendingAction::JoinSearchResult || FailedAction == EPendingAction::DirectTravel)
 	{
@@ -918,6 +920,14 @@ void UWeaponSessionSubsystem::FailPendingAction(const FString& Message)
 		bJoiningRecoverySession = false;
 		OnRecoveryJoinComplete.Broadcast(false, Message);
 	}
+}
+
+void UWeaponSessionSubsystem::BroadcastHostComplete(
+	const bool bWasSuccessful,
+	const FString& Message)
+{
+	OnLanHostComplete.Broadcast(bWasSuccessful, Message);
+	OnHostComplete.Broadcast(bWasSuccessful, Message);
 }
 
 void UWeaponSessionSubsystem::ResetRecoveryOperationFlags()

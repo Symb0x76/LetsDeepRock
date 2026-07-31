@@ -40,6 +40,14 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
 
+	/** Candidate -> owning survivor: the restored World is ready for presentation acknowledgement. */
+	UFUNCTION(Client, Reliable)
+	void ClientRequestRecoveryReadyAcknowledgement(
+		FGuid MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		FGuid RecoveryAttemptId);
+
 protected:
 
 	/** 默认输入映射上下文 */
@@ -57,4 +65,23 @@ protected:
 	/** Owning Backup -> Host: emitted only after local Pending promotion succeeds. */
 	UFUNCTION(Server, Reliable)
 	void ServerAcknowledgeMigrationPayload(const FWeaponMigrationPayloadAck& Ack);
+
+	/** Backup -> Host: confirms the announced CommonCommitted payload is pinned locally. */
+	UFUNCTION(Server, Reliable)
+	void ServerConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
+
+	UFUNCTION(Server, Reliable)
+	void ServerAcknowledgeRecoveryReady(
+		FGuid MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		FGuid RecoveryAttemptId);
+
+	void SendPendingRecoveryReadyAcknowledgement();
+
+	FGuid PendingRecoveryReadyMatchId;
+	FGuid PendingRecoveryReadyAttemptId;
+	uint64 PendingRecoveryReadyEpoch = 0;
+	uint64 PendingRecoveryReadyRosterRevision = 0;
+	bool bRecoveryReadyAcknowledgementPending = false;
 };

@@ -126,6 +126,75 @@ bool FWeaponMigrationPayloadAck::IdentifiesSamePayload(
 		PayloadHash == Other.PayloadHash;
 }
 
+const TCHAR* UWeaponHostMigrationSubsystem::LexMigrationState(
+	const EWeaponHostMigrationState State)
+{
+	switch (State)
+	{
+	case EWeaponHostMigrationState::Idle: return TEXT("Idle");
+	case EWeaponHostMigrationState::Monitoring: return TEXT("Monitoring");
+	case EWeaponHostMigrationState::WaitingForDisconnectTravel: return TEXT("WaitingForDisconnectTravel");
+	case EWeaponHostMigrationState::PreparingCandidate: return TEXT("PreparingCandidate");
+	case EWeaponHostMigrationState::SearchingCandidate: return TEXT("SearchingCandidate");
+	case EWeaponHostMigrationState::JoiningCandidate: return TEXT("JoiningCandidate");
+	case EWeaponHostMigrationState::Restoring: return TEXT("Restoring");
+	case EWeaponHostMigrationState::AdvertisingCandidate: return TEXT("AdvertisingCandidate");
+	case EWeaponHostMigrationState::WaitingForReadyAcks: return TEXT("WaitingForReadyAcks");
+	case EWeaponHostMigrationState::PlannedHandoff: return TEXT("PlannedHandoff");
+	case EWeaponHostMigrationState::LoadingLocalFork: return TEXT("LoadingLocalFork");
+	case EWeaponHostMigrationState::PreparingLocalFork: return TEXT("PreparingLocalFork");
+	case EWeaponHostMigrationState::RestoringLocalFork: return TEXT("RestoringLocalFork");
+	case EWeaponHostMigrationState::AdvertisingLocalFork: return TEXT("AdvertisingLocalFork");
+	case EWeaponHostMigrationState::Failed: return TEXT("Failed");
+	default: return TEXT("Unknown");
+	}
+}
+
+void UWeaponHostMigrationSubsystem::SetMigrationState(
+	const EWeaponHostMigrationState NewState,
+	const FString& Message,
+	const float Progress,
+	const bool bShowOverlay)
+{
+	const EWeaponHostMigrationState PreviousState = MigrationState;
+	MigrationState = NewState;
+	bMigrationOverlayVisible = bShowOverlay;
+	MigrationOverlayMessage = FText::FromString(Message);
+	MigrationProgress = FMath::Clamp(Progress, 0.0f, 1.0f);
+
+	const FGuid MatchId = ActiveRecoverySession.MatchId.IsValid()
+		? ActiveRecoverySession.MatchId
+		: RecoveryBaselineAck.MatchId.IsValid()
+			? RecoveryBaselineAck.MatchId
+			: bHasCurrentRoleAssignment ? CurrentRoleAssignment.MatchId : FGuid();
+	const uint64 Epoch = ActiveRecoverySession.AuthorityEpoch > 0
+		? ActiveRecoverySession.AuthorityEpoch
+		: RecoveryBaselineAck.AuthorityEpoch > 0
+			? RecoveryBaselineAck.AuthorityEpoch
+			: bHasCurrentRoleAssignment ? CurrentRoleAssignment.AuthorityEpoch : 0;
+	const int64 SnapshotRevision = RecoveryBaselineAck.SnapshotRevision;
+	const uint64 RosterRevision = RecoveryReadyRosterRevision > 0
+		? RecoveryReadyRosterRevision
+		: RecoveryBaselineAck.RosterRevision;
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("HostMigration state %s -> %s Match=%s Epoch=%llu Snapshot=%lld Roster=%llu Attempt=%s Candidate=%s: %s"),
+		LexMigrationState(PreviousState),
+		LexMigrationState(NewState),
+		*MatchId.ToString(),
+		Epoch,
+		SnapshotRevision,
+		RosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString(),
+		*Message);
+	OnMigrationPresentationChanged.Broadcast(
+		bMigrationOverlayVisible,
+		MigrationOverlayMessage,
+		MigrationProgress);
+}
+
 void UWeaponHostMigrationSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -153,6 +222,9 @@ void UWeaponHostMigrationSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		RecoveryJoinCompleteDelegateHandle = SessionSubsystem->OnRecoveryJoinComplete.AddUObject(
 			this,
 			&UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete);
+		LanHostCompleteDelegateHandle = SessionSubsystem->OnLanHostComplete.AddUObject(
+			this,
+			&UWeaponHostMigrationSubsystem::HandleLanHostComplete);
 	}
 
 	RecoveryTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
@@ -183,7 +255,10 @@ void UWeaponHostMigrationSubsystem::Deinitialize()
 		SessionSubsystem->OnRecoveryWorldPrepared.Remove(RecoveryWorldPreparedDelegateHandle);
 		SessionSubsystem->OnRecoveryHostComplete.Remove(RecoveryHostCompleteDelegateHandle);
 		SessionSubsystem->OnRecoveryJoinComplete.Remove(RecoveryJoinCompleteDelegateHandle);
+		SessionSubsystem->OnLanHostComplete.Remove(LanHostCompleteDelegateHandle);
 	}
+	++LocalForkRequestSerial;
+	PendingLocalForkSaveGame = nullptr;
 	ResetRecoveryAttemptContext();
 	StopHostSnapshotTransport();
 	ResetPayloadBuffers();
@@ -218,6 +293,8 @@ bool UWeaponHostMigrationSubsystem::PrepareAuthorityTerm(
 		CommonCommittedRoleAssignment = FWeaponMigrationRoleAssignment();
 		bHasCommonCommittedPayload = false;
 		bHasCommonCommittedRoleAssignment = false;
+		bBackupAConfirmedCommonCommitted = false;
+		bBackupBConfirmedCommonCommitted = false;
 		LastLocalSaveRevision = 0;
 		CurrentRoleAssignment = MoveTemp(ProposedAssignment);
 		bHasCurrentRoleAssignment = true;
@@ -319,7 +396,11 @@ bool UWeaponHostMigrationSubsystem::SetAuthorityRoleAssignment(
 	bCurrentRoleAssignmentIsProvisional = false;
 	if (MigrationState == EWeaponHostMigrationState::Idle)
 	{
-		MigrationState = EWeaponHostMigrationState::Monitoring;
+		SetMigrationState(
+			EWeaponHostMigrationState::Monitoring,
+			TEXT("Host migration redundancy is monitoring the current authority term."),
+			1.0f,
+			false);
 	}
 	return true;
 }
@@ -340,7 +421,11 @@ bool UWeaponHostMigrationSubsystem::AcceptRoleAssignment(
 		bCurrentRoleAssignmentIsProvisional = false;
 		if (MigrationState == EWeaponHostMigrationState::Idle)
 		{
-			MigrationState = EWeaponHostMigrationState::Monitoring;
+			SetMigrationState(
+				EWeaponHostMigrationState::Monitoring,
+				TEXT("Host migration redundancy is monitoring the current authority term."),
+				1.0f,
+				false);
 		}
 		return true;
 	}
@@ -402,7 +487,11 @@ bool UWeaponHostMigrationSubsystem::AcceptRoleAssignment(
 	bCurrentRoleAssignmentIsProvisional = false;
 	if (MigrationState == EWeaponHostMigrationState::Idle)
 	{
-		MigrationState = EWeaponHostMigrationState::Monitoring;
+		SetMigrationState(
+			EWeaponHostMigrationState::Monitoring,
+			TEXT("Host migration redundancy is monitoring the current authority term."),
+			1.0f,
+			false);
 	}
 	return true;
 }
@@ -457,6 +546,8 @@ bool UWeaponHostMigrationSubsystem::AcceptCommonCommittedAnnouncement(
 	bHasCommonCommittedPayload = true;
 	CommonCommittedRoleAssignment = CurrentRoleAssignment;
 	bHasCommonCommittedRoleAssignment = true;
+	bBackupAConfirmedCommonCommitted = false;
+	bBackupBConfirmedCommonCommitted = false;
 	return true;
 }
 
@@ -476,9 +567,12 @@ void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
 {
 	const bool bHostConnectionFailure = FailureType == ENetworkFailure::ConnectionLost ||
 		FailureType == ENetworkFailure::ConnectionTimeout;
+	const bool bRecoveringCandidateConnection =
+		MigrationState == EWeaponHostMigrationState::JoiningCandidate ||
+		MigrationState == EWeaponHostMigrationState::WaitingForReadyAcks;
 	const bool bCandidateConnectionFailure =
-		MigrationState == EWeaponHostMigrationState::JoiningCandidate &&
-		FailureType == ENetworkFailure::PendingConnectionFailure;
+		bRecoveringCandidateConnection &&
+		(FailureType == ENetworkFailure::PendingConnectionFailure || bHostConnectionFailure);
 	if (!World || World->GetGameInstance() != GetGameInstance() || !NetDriver ||
 		NetDriver->GetNetMode() != NM_Client ||
 		(!bHostConnectionFailure && !bCandidateConnectionFailure))
@@ -486,7 +580,7 @@ void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
 		return;
 	}
 
-	if (MigrationState == EWeaponHostMigrationState::JoiningCandidate)
+	if (bRecoveringCandidateConnection)
 	{
 		UE_LOG(
 			LogLetsDeepRock,
@@ -505,11 +599,19 @@ void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
 			RecoveryCandidateRole = EWeaponMigrationRole::BackupB;
 			RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
 			bRecoveryTravelCompleted = false;
-			MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+			SetMigrationState(
+				EWeaponHostMigrationState::WaitingForDisconnectTravel,
+				TEXT("Backup A disconnected; preparing the clean Backup B attempt."),
+				0.35f,
+				true);
 		}
 		else
 		{
-			MigrationState = EWeaponHostMigrationState::Failed;
+			SetMigrationState(
+				EWeaponHostMigrationState::Failed,
+				TEXT("Both migration candidates are unavailable. Returning to the lobby."),
+				0.0f,
+				true);
 		}
 		return;
 	}
@@ -520,7 +622,7 @@ void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
 	}
 
 	FString Error;
-	if (!BeginRecoveryFromNetworkFailure(World, Error))
+	if (!PrimeRecoveryFromCommittedBaseline(World, Error))
 	{
 		UE_LOG(
 			LogLetsDeepRock,
@@ -528,27 +630,31 @@ void UWeaponHostMigrationSubsystem::HandleNetworkFailure(
 			TEXT("Host migration cannot start after network failure: %s (engine error: %s)"),
 			*Error,
 			*ErrorString);
-		MigrationState = EWeaponHostMigrationState::Failed;
+		SetMigrationState(
+			EWeaponHostMigrationState::Failed,
+			Error,
+			0.0f,
+			true);
 	}
 }
 
-bool UWeaponHostMigrationSubsystem::BeginRecoveryFromNetworkFailure(
-	UWorld* FailedWorld,
+bool UWeaponHostMigrationSubsystem::PrimeRecoveryFromCommittedBaseline(
+	UWorld* SourceWorld,
 	FString& OutError)
 {
 	OutError.Reset();
 	UGameInstance* GameInstance = GetGameInstance();
 	const APlayerController* LocalController = GameInstance
-		? GameInstance->GetFirstLocalPlayerController(FailedWorld)
+		? GameInstance->GetFirstLocalPlayerController(SourceWorld)
 		: nullptr;
 	const APlayerState* LocalPlayerState = LocalController
 		? LocalController->GetPlayerState<APlayerState>()
 		: nullptr;
-	const AWeaponGameState* GameState = FailedWorld
-		? FailedWorld->GetGameState<AWeaponGameState>()
+	const AWeaponGameState* GameState = SourceWorld
+		? SourceWorld->GetGameState<AWeaponGameState>()
 		: nullptr;
 	FWeaponMigrationPayloadAck CommonAck;
-	if (!FailedWorld || !bHasCommonCommittedRoleAssignment ||
+	if (!SourceWorld || !bHasCommonCommittedRoleAssignment ||
 		!GetCommonCommittedAck(CommonAck) || !LocalPlayerState ||
 		!LocalPlayerState->GetUniqueId().IsValid() || !GameState ||
 		!CommonCommittedRoleAssignment.BackupA.IsAssigned() ||
@@ -573,7 +679,7 @@ bool UWeaponHostMigrationSubsystem::BeginRecoveryFromNetworkFailure(
 		}
 	}
 
-	const FString MapPackageName = UWorld::RemovePIEPrefix(FailedWorld->GetOutermost()->GetName());
+	const FString MapPackageName = UWorld::RemovePIEPrefix(SourceWorld->GetOutermost()->GetName());
 	if (MapPackageName.IsEmpty() || GameState->GetMaxPlayers() < 1 || GameState->GetMaxPlayers() > 4)
 	{
 		OutError = TEXT("Failed World map or capacity is invalid for recovery discovery");
@@ -596,12 +702,16 @@ bool UWeaponHostMigrationSubsystem::BeginRecoveryFromNetworkFailure(
 	NextRecoverySearchSeconds = 0.0;
 	bRecoverySearchInFlight = false;
 	bRecoveryTravelCompleted = false;
-	MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+	SetMigrationState(
+		EWeaponHostMigrationState::WaitingForDisconnectTravel,
+		TEXT("Authority was lost. Waiting for the disposable lobby World before trying Backup A."),
+		0.1f,
+		true);
 
 	UE_LOG(
 		LogLetsDeepRock,
 		Warning,
-		TEXT("Host failure fenced for Match %s Epoch %llu CommonRevision %lld; waiting for engine disconnect travel"),
+		TEXT("Authority loss fenced for Match %s Epoch %llu CommonRevision %lld; waiting for disconnect travel"),
 		*CommonAck.MatchId.ToString(),
 		CommonAck.AuthorityEpoch,
 		CommonAck.SnapshotRevision);
@@ -624,7 +734,12 @@ void UWeaponHostMigrationSubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
 	if (MigrationState == EWeaponHostMigrationState::JoiningCandidate &&
 		LoadedWorld->GetNetMode() == NM_Client)
 	{
-		CompleteRecoveryConnection();
+		bRecoveryTravelCompleted = true;
+		SetMigrationState(
+			EWeaponHostMigrationState::JoiningCandidate,
+			TEXT("Connected to the successor. Waiting for its fenced RecoveryReady request."),
+			0.85f,
+			true);
 	}
 }
 
@@ -697,11 +812,22 @@ bool UWeaponHostMigrationSubsystem::EnterRecoveryCandidatePhase(
 	}
 	NextRecoverySearchSeconds = 0.0;
 	bRecoverySearchInFlight = false;
+	bRecoveryTravelCompleted = false;
+	bRecoveryReadyRequestReceived = false;
+	RecoveryPublicationRosterRevision = 0;
+	RecoveryReadyRosterRevision = 0;
+	RecoveryReadyPlayerAcks.Reset();
 	ActiveRecoverySession = Descriptor;
 
 	if (!bLocalCandidate)
 	{
-		MigrationState = EWeaponHostMigrationState::SearchingCandidate;
+		SetMigrationState(
+			EWeaponHostMigrationState::SearchingCandidate,
+			CandidateRole == EWeaponMigrationRole::BackupA
+				? TEXT("Searching for Backup A's fenced Recovery Session.")
+				: TEXT("Searching for Backup B's fenced Recovery Session."),
+			0.35f,
+			true);
 		return true;
 	}
 
@@ -725,7 +851,11 @@ bool UWeaponHostMigrationSubsystem::EnterRecoveryCandidatePhase(
 
 	UWeaponSessionSubsystem* SessionSubsystem =
 		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
-	MigrationState = EWeaponHostMigrationState::PreparingCandidate;
+	SetMigrationState(
+		EWeaponHostMigrationState::PreparingCandidate,
+		TEXT("Preparing a clean gated listen World for Snapshot restore."),
+		0.3f,
+		true);
 	if (!SessionSubsystem || !SessionSubsystem->PrepareRecoveryHost(Descriptor))
 	{
 		OutError = TEXT("Recovery Session subsystem could not prepare the candidate listen World");
@@ -738,6 +868,38 @@ bool UWeaponHostMigrationSubsystem::TickRecovery(const float DeltaSeconds)
 {
 	(void)DeltaSeconds;
 	const double Now = FPlatformTime::Seconds();
+	if (MigrationState == EWeaponHostMigrationState::PlannedHandoff &&
+		PlannedHandoffDeadlineSeconds > 0.0 && Now >= PlannedHandoffDeadlineSeconds)
+	{
+		CompletePlannedHostHandoff(
+			false,
+			TEXT("Final A/B CommonCommitted convergence deadline expired."));
+		return true;
+	}
+
+	if (MigrationState == EWeaponHostMigrationState::WaitingForReadyAcks)
+	{
+		UWorld* World = GetWorld();
+		if (World && World->GetNetMode() == NM_ListenServer)
+		{
+			FString Error;
+			if (!RefreshRecoveryReadyFence(Error) || !TryReleaseRecoveryBarrier(Error))
+			{
+				RestartRecoveryCandidateAttempt(Error);
+			}
+		}
+		else if (World && World->GetNetMode() == NM_Client &&
+			bRecoveryReadyRequestReceived && bRecoveryTravelCompleted)
+		{
+			const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
+			if (GameState && !GameState->IsGameplayRecoveryBlocked())
+			{
+				CompleteRecoveryConnection();
+			}
+		}
+		return true;
+	}
+
 	if (MigrationState == EWeaponHostMigrationState::WaitingForDisconnectTravel &&
 		bRecoveryTravelCompleted)
 	{
@@ -802,6 +964,27 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryWorldPrepared(
 	const bool bSuccess,
 	const FString& Message)
 {
+	if (MigrationState == EWeaponHostMigrationState::PreparingLocalFork)
+	{
+		if (!bSuccess)
+		{
+			FailLocalSaveFork(Message);
+			return;
+		}
+
+		SetMigrationState(
+			EWeaponHostMigrationState::RestoringLocalFork,
+			TEXT("Restoring the local SaveGame under a new MatchId."),
+			0.55f,
+			true);
+		FString Error;
+		if (!RestoreLocalSaveFork(Error))
+		{
+			FailLocalSaveFork(Error);
+		}
+		return;
+	}
+
 	if (MigrationState != EWeaponHostMigrationState::PreparingCandidate)
 	{
 		return;
@@ -812,7 +995,11 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryWorldPrepared(
 		return;
 	}
 
-	MigrationState = EWeaponHostMigrationState::Restoring;
+	SetMigrationState(
+		EWeaponHostMigrationState::Restoring,
+		TEXT("Validating, staging and applying the committed Snapshot."),
+		0.55f,
+		true);
 	FString Error;
 	if (!RestoreCandidateWorld(Error))
 	{
@@ -820,8 +1007,21 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryWorldPrepared(
 		return;
 	}
 
+	const AWeaponGameMode* GameMode = GetWorld()
+		? GetWorld()->GetAuthGameMode<AWeaponGameMode>()
+		: nullptr;
+	if (!GameMode)
+	{
+		AdvanceRecoveryCandidate(TEXT("Restored candidate has no authoritative GameMode"));
+		return;
+	}
+	RecoveryPublicationRosterRevision = GameMode->GetRosterRevision();
 	ActiveRecoverySession.State = EWeaponRecoverySessionState::Ready;
-	MigrationState = EWeaponHostMigrationState::AdvertisingCandidate;
+	SetMigrationState(
+		EWeaponHostMigrationState::AdvertisingCandidate,
+		TEXT("Publishing the fenced RecoveryReady Session while gameplay remains blocked."),
+		0.72f,
+		true);
 	UWeaponSessionSubsystem* SessionSubsystem =
 		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
 	if (!SessionSubsystem || !SessionSubsystem->AdvertiseRecoverySession(ActiveRecoverySession))
@@ -897,9 +1097,12 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryHostComplete(
 	}
 
 	AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
-	if (!GameMode || !GameMode->ReleaseGameplayRecoveryBarrier())
+	if (!GameMode || !GetWorld() || GetWorld()->GetNetMode() != NM_ListenServer ||
+		!ActiveRecoverySession.RecoveryAttemptId.IsValid() ||
+		GameMode->GetRosterRevision() != RecoveryPublicationRosterRevision)
 	{
-		AdvanceRecoveryCandidate(TEXT("Recovery Session was created but the gameplay barrier could not be released"));
+		RestartRecoveryCandidateAttempt(
+			TEXT("Recovery roster changed before RecoveryReady publication completed"));
 		return;
 	}
 
@@ -912,7 +1115,20 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryHostComplete(
 		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
 		ActiveRecoverySession.BaseSnapshotRevision,
 		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString());
-	CompleteRecoveryConnection();
+
+	RecoveryCandidateDeadlineSeconds = 0.0;
+	RecoveryReadyRosterRevision = 0;
+	RecoveryReadyPlayerAcks.Reset();
+	SetMigrationState(
+		EWeaponHostMigrationState::WaitingForReadyAcks,
+		TEXT("RecoveryReady is published. Waiting for roster survivors and presentation ACKs."),
+		0.82f,
+		true);
+	FString Error;
+	if (!RefreshRecoveryReadyFence(Error) || !TryReleaseRecoveryBarrier(Error))
+	{
+		RestartRecoveryCandidateAttempt(Error);
+	}
 }
 
 void UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete(
@@ -945,7 +1161,11 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete(
 	}
 
 	ActiveRecoverySession = *Selected;
-	MigrationState = EWeaponHostMigrationState::JoiningCandidate;
+	SetMigrationState(
+		EWeaponHostMigrationState::JoiningCandidate,
+		TEXT("Joining the exact RecoveryReady Session selected by the fenced search."),
+		0.75f,
+		true);
 	UE_LOG(
 		LogLetsDeepRock,
 		Log,
@@ -954,6 +1174,240 @@ void UWeaponHostMigrationSubsystem::HandleRecoveryJoinComplete(
 		Selected->AuthorityEpoch,
 		*Selected->RecoveryAttemptId.ToString(),
 		*Message);
+}
+
+bool UWeaponHostMigrationSubsystem::RefreshRecoveryReadyFence(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	AWeaponGameState* GameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (MigrationState != EWeaponHostMigrationState::WaitingForReadyAcks ||
+		!World || World->GetNetMode() != NM_ListenServer || !GameMode || !GameState ||
+		!GameState->IsGameplayRecoveryBlocked() || !ActiveRecoverySession.IsValid(true))
+	{
+		OutError = TEXT("RecoveryReady ACK fence requires the active gated candidate World");
+		return false;
+	}
+
+	const uint64 CurrentRosterRevision = GameMode->GetRosterRevision();
+	if (CurrentRosterRevision == 0 || CurrentRosterRevision == MAX_uint64)
+	{
+		OutError = TEXT("RecoveryReady ACK fence has an invalid RosterRevision");
+		return false;
+	}
+	if (CurrentRosterRevision == RecoveryReadyRosterRevision)
+	{
+		return true;
+	}
+
+	RecoveryReadyRosterRevision = CurrentRosterRevision;
+	RecoveryReadyPlayerAcks.Reset();
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		AWeaponPlayerController* Controller = Cast<AWeaponPlayerController>(It->Get());
+		const APlayerState* PlayerState = Controller
+			? Controller->GetPlayerState<APlayerState>()
+			: nullptr;
+		const FUniqueNetIdRepl PlayerId = PlayerState
+			? PlayerState->GetUniqueId()
+			: FUniqueNetIdRepl();
+		const FWeaponRecoveryRosterEntry* RosterEntry = GameMode->GetRecoveryRoster().Find(PlayerId);
+		if (!Controller || !PlayerId.IsValid() || !RosterEntry ||
+			RosterEntry->Status != EWeaponRecoveryPlayerStatus::Ready)
+		{
+			continue;
+		}
+
+		if (Controller->IsLocalController())
+		{
+			RecoveryReadyPlayerAcks.Add(PlayerId);
+			continue;
+		}
+		Controller->ClientRequestRecoveryReadyAcknowledgement(
+			ActiveRecoverySession.MatchId,
+			ActiveRecoverySession.AuthorityEpoch,
+			RecoveryReadyRosterRevision,
+			ActiveRecoverySession.RecoveryAttemptId);
+	}
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("RecoveryReady fence issued Match=%s Epoch=%llu Snapshot=%lld Roster=%llu Attempt=%s Candidate=%s"),
+		*ActiveRecoverySession.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		ActiveRecoverySession.BaseSnapshotRevision,
+		RecoveryReadyRosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString());
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::TryReleaseRecoveryBarrier(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	if (MigrationState != EWeaponHostMigrationState::WaitingForReadyAcks ||
+		!GameMode || RecoveryReadyRosterRevision == 0 ||
+		GameMode->GetRosterRevision() != RecoveryReadyRosterRevision)
+	{
+		OutError = TEXT("RecoveryReady release check does not match the current roster fence");
+		return false;
+	}
+
+	for (const auto& [PlayerId, RosterEntry] : GameMode->GetRecoveryRoster())
+	{
+		if (RosterEntry.Status == EWeaponRecoveryPlayerStatus::Pending)
+		{
+			return true;
+		}
+		if (RosterEntry.Status == EWeaponRecoveryPlayerStatus::Ready &&
+			!RecoveryReadyPlayerAcks.Contains(PlayerId))
+		{
+			return true;
+		}
+	}
+
+	if (!GameMode->ReleaseGameplayRecoveryBarrier())
+	{
+		OutError = TEXT("All RecoveryReady ACKs arrived but the gameplay barrier could not be released");
+		return false;
+	}
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("RecoveryReady complete Match=%s Epoch=%llu Snapshot=%lld Roster=%llu Attempt=%s Candidate=%s"),
+		*ActiveRecoverySession.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		ActiveRecoverySession.BaseSnapshotRevision,
+		RecoveryReadyRosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString());
+	CompleteRecoveryConnection();
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::AcceptRecoveryReadyRequest(
+	const FGuid& MatchId,
+	const uint64 AuthorityEpoch,
+	const uint64 RosterRevision,
+	const FGuid& RecoveryAttemptId,
+	FString& OutError)
+{
+	OutError.Reset();
+	if ((MigrationState != EWeaponHostMigrationState::JoiningCandidate &&
+		 MigrationState != EWeaponHostMigrationState::WaitingForReadyAcks) ||
+		!bRecoveryTravelCompleted || !ActiveRecoverySession.IsValid(true) ||
+		MatchId != ActiveRecoverySession.MatchId ||
+		AuthorityEpoch != ActiveRecoverySession.AuthorityEpoch ||
+		RecoveryAttemptId != ActiveRecoverySession.RecoveryAttemptId ||
+		RosterRevision < ActiveRecoverySession.BaseRosterRevision ||
+		RosterRevision < RecoveryReadyRosterRevision || RosterRevision == MAX_uint64)
+	{
+		OutError = TEXT("RecoveryReady request is stale or does not identify the joined recovery attempt");
+		return false;
+	}
+
+	RecoveryReadyRosterRevision = RosterRevision;
+	bRecoveryReadyRequestReceived = true;
+	SetMigrationState(
+		EWeaponHostMigrationState::WaitingForReadyAcks,
+		TEXT("Successor state arrived. Acknowledging local presentation readiness."),
+		0.9f,
+		true);
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::RecordRecoveryReadyAcknowledgement(
+	const AWeaponPlayerController* Sender,
+	const FGuid& MatchId,
+	const uint64 AuthorityEpoch,
+	const uint64 RosterRevision,
+	const FGuid& RecoveryAttemptId,
+	FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	const APlayerState* PlayerState = Sender ? Sender->GetPlayerState<APlayerState>() : nullptr;
+	const FUniqueNetIdRepl PlayerId = PlayerState
+		? PlayerState->GetUniqueId()
+		: FUniqueNetIdRepl();
+	const FWeaponRecoveryRosterEntry* RosterEntry = GameMode
+		? GameMode->GetRecoveryRoster().Find(PlayerId)
+		: nullptr;
+	if (MigrationState != EWeaponHostMigrationState::WaitingForReadyAcks ||
+		!World || World->GetNetMode() != NM_ListenServer || !Sender || Sender->GetWorld() != World ||
+		!GameMode || !PlayerId.IsValid() || !RosterEntry ||
+		RosterEntry->Status != EWeaponRecoveryPlayerStatus::Ready ||
+		MatchId != ActiveRecoverySession.MatchId ||
+		AuthorityEpoch != ActiveRecoverySession.AuthorityEpoch ||
+		RosterRevision != RecoveryReadyRosterRevision ||
+		RecoveryAttemptId != ActiveRecoverySession.RecoveryAttemptId)
+	{
+		OutError = TEXT("RecoveryReady ACK is stale, unfenced or not from a Ready connected survivor");
+		return false;
+	}
+
+	RecoveryReadyPlayerAcks.Add(PlayerId);
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("RecoveryReady ACK Match=%s Epoch=%llu Snapshot=%lld Roster=%llu Attempt=%s Player=%s"),
+		*MatchId.ToString(),
+		AuthorityEpoch,
+		ActiveRecoverySession.BaseSnapshotRevision,
+		RosterRevision,
+		*RecoveryAttemptId.ToString(),
+		*PlayerId.ToDebugString());
+	return TryReleaseRecoveryBarrier(OutError);
+}
+
+void UWeaponHostMigrationSubsystem::RestartRecoveryCandidateAttempt(const FString& Reason)
+{
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Restarting recovery attempt Match=%s Epoch=%llu Snapshot=%lld Roster=%llu Attempt=%s Candidate=%s: %s"),
+		*RecoveryBaselineAck.MatchId.ToString(),
+		ActiveRecoverySession.AuthorityEpoch,
+		RecoveryBaselineAck.SnapshotRevision,
+		RecoveryReadyRosterRevision,
+		*ActiveRecoverySession.RecoveryAttemptId.ToString(),
+		*ActiveRecoverySession.Candidate.PlayerId.ToDebugString(),
+		*Reason);
+
+	StopHostSnapshotTransport();
+	if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+	{
+		GameMode->EnterGameplayRecoveryBarrier();
+	}
+	if (bCurrentRoleAssignmentIsProvisional && RecoveryOriginAssignment.MatchId.IsValid())
+	{
+		CurrentRoleAssignment = RecoveryOriginAssignment;
+		bCurrentRoleAssignmentIsProvisional = false;
+	}
+
+	RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
+	RecoveryReadyRosterRevision = 0;
+	RecoveryReadyPlayerAcks.Reset();
+	bRecoveryReadyRequestReceived = false;
+	bRecoverySearchInFlight = false;
+	bRecoveryTravelCompleted = false;
+	SetMigrationState(
+		EWeaponHostMigrationState::WaitingForDisconnectTravel,
+		TEXT("Roster changed before publication; restarting the same candidate in a clean World."),
+		0.2f,
+		true);
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem ||
+		!SessionSubsystem->ReturnToRecoveryLobby(FName(*ActiveRecoverySession.MapPackageName)))
+	{
+		AdvanceRecoveryCandidate(TEXT("Unable to discard the stale recovery attempt World"));
+	}
 }
 
 void UWeaponHostMigrationSubsystem::AdvanceRecoveryCandidate(const FString& Reason)
@@ -992,7 +1446,11 @@ void UWeaponHostMigrationSubsystem::AdvanceRecoveryCandidate(const FString& Reas
 	RecoveryCandidateDeadlineSeconds = FPlatformTime::Seconds() + GetCandidateRecoveryTimeoutSeconds();
 	bRecoverySearchInFlight = false;
 	bRecoveryTravelCompleted = false;
-	MigrationState = EWeaponHostMigrationState::WaitingForDisconnectTravel;
+	SetMigrationState(
+		EWeaponHostMigrationState::WaitingForDisconnectTravel,
+		TEXT("Backup A failed. Discarding its World before the identical-byte Backup B attempt."),
+		0.2f,
+		true);
 	UWeaponSessionSubsystem* SessionSubsystem =
 		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
 	if (!SessionSubsystem ||
@@ -1019,7 +1477,11 @@ void UWeaponHostMigrationSubsystem::FailRecoveryToLobby(const FString& Reason)
 	{
 		GameMode->EnterGameplayRecoveryBarrier();
 	}
-	MigrationState = EWeaponHostMigrationState::Failed;
+	SetMigrationState(
+		EWeaponHostMigrationState::Failed,
+		TEXT("Backup A and Backup B are exhausted. Waiting in the lobby."),
+		0.0f,
+		true);
 	if (UWeaponSessionSubsystem* SessionSubsystem =
 		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>())
 	{
@@ -1030,7 +1492,11 @@ void UWeaponHostMigrationSubsystem::FailRecoveryToLobby(const FString& Reason)
 
 void UWeaponHostMigrationSubsystem::CompleteRecoveryConnection()
 {
-	MigrationState = EWeaponHostMigrationState::Monitoring;
+	SetMigrationState(
+		EWeaponHostMigrationState::Monitoring,
+		TEXT("Host migration completed. Gameplay is authoritative and live."),
+		1.0f,
+		false);
 	ResetRecoveryAttemptContext();
 }
 
@@ -1045,6 +1511,392 @@ void UWeaponHostMigrationSubsystem::ResetRecoveryAttemptContext()
 	NextRecoverySearchSeconds = 0.0;
 	bRecoverySearchInFlight = false;
 	bRecoveryTravelCompleted = false;
+	bRecoveryReadyRequestReceived = false;
+	RecoveryPublicationRosterRevision = 0;
+	RecoveryReadyRosterRevision = 0;
+	RecoveryReadyPlayerAcks.Reset();
+}
+
+bool UWeaponHostMigrationSubsystem::RequestPlannedHostHandoff()
+{
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	FWeaponMigrationPayloadAck PreviousCommonAck;
+	FString Error;
+	if (MigrationState != EWeaponHostMigrationState::Monitoring ||
+		!World || World->GetNetMode() != NM_ListenServer || !GameMode ||
+		!GetCommonCommittedAck(PreviousCommonAck) ||
+		!bHasCurrentRoleAssignment || !bHasCommonCommittedRoleAssignment ||
+		!CommonCommittedRoleAssignment.IdentifiesSameAssignment(CurrentRoleAssignment) ||
+		!bBackupAConfirmedCommonCommitted || !bBackupBConfirmedCommonCommitted ||
+		!IsHostTransportReady(Error))
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("Planned Host handoff rejected: %s"),
+			Error.IsEmpty()
+				? TEXT("a live listen Host with two backups and a converged current-role CommonCommitted baseline is required")
+				: *Error);
+		return false;
+	}
+
+	if (OutgoingTransfer.bActive)
+	{
+		ResetOutgoingTransfer();
+	}
+	if (!CaptureAndDistributeSnapshot(Error))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Planned Host final capture failed: %s"), *Error);
+		return false;
+	}
+	PlannedHandoffTargetRevision = OutgoingTransfer.Envelope.SnapshotRevision;
+	if (!GameMode->EnterGameplayRecoveryBarrier())
+	{
+		ResetOutgoingTransfer();
+		PlannedHandoffTargetRevision = 0;
+		UE_LOG(LogLetsDeepRock, Error, TEXT("Planned Host handoff could not close the gameplay barrier"));
+		return false;
+	}
+
+	World->GetTimerManager().ClearTimer(SnapshotCaptureTimerHandle);
+	PlannedHandoffDeadlineSeconds =
+		FPlatformTime::Seconds() + GetTransferAckTimeoutSeconds();
+	SetMigrationState(
+		EWeaponHostMigrationState::PlannedHandoff,
+		TEXT("Gameplay is frozen while the final Snapshot is committed to Backup A and Backup B."),
+		0.25f,
+		true);
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("Planned handoff final revision %lld started; previous CommonCommitted revision is %lld"),
+		PlannedHandoffTargetRevision,
+		PreviousCommonAck.SnapshotRevision);
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::CompletePlannedHostHandoff(
+	const bool bFinalRevisionCommitted,
+	const FString& Reason)
+{
+	if (MigrationState != EWeaponHostMigrationState::PlannedHandoff)
+	{
+		return;
+	}
+	if (!bFinalRevisionCommitted)
+	{
+		CancelPlannedHostHandoff(Reason);
+		return;
+	}
+
+	FWeaponMigrationPayloadAck SelectedCommonAck;
+	if (!GetCommonCommittedAck(SelectedCommonAck) ||
+		SelectedCommonAck.SnapshotRevision != PlannedHandoffTargetRevision ||
+		!bBackupAConfirmedCommonCommitted || !bBackupBConfirmedCommonCommitted)
+	{
+		CancelPlannedHostHandoff(TEXT("No recoverable CommonCommitted baseline is available"));
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	FString Error;
+	if (!PrimeRecoveryFromCommittedBaseline(World, Error))
+	{
+		CancelPlannedHostHandoff(Error);
+		return;
+	}
+	PlannedHandoffTargetRevision = 0;
+	PlannedHandoffDeadlineSeconds = 0.0;
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("Planned Host departure selected CommonCommitted revision %lld: %s"),
+		SelectedCommonAck.SnapshotRevision,
+		*Reason);
+
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem ||
+		!SessionSubsystem->ReturnToRecoveryLobby(FName(*ActiveRecoverySession.MapPackageName)))
+	{
+		CancelPlannedHostHandoff(TEXT("The Host could not leave for a standalone recovery lobby"));
+	}
+}
+
+void UWeaponHostMigrationSubsystem::CancelPlannedHostHandoff(const FString& Reason)
+{
+	PlannedHandoffTargetRevision = 0;
+	PlannedHandoffDeadlineSeconds = 0.0;
+	StopHostSnapshotTransport();
+	ResetRecoveryAttemptContext();
+
+	AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	if (GameMode && GameMode->ReleaseGameplayRecoveryBarrier())
+	{
+		SetMigrationState(
+			EWeaponHostMigrationState::Monitoring,
+			FString::Printf(TEXT("Planned handoff was cancelled: %s"), *Reason),
+			1.0f,
+			false);
+		return;
+	}
+	SetMigrationState(
+		EWeaponHostMigrationState::Failed,
+		FString::Printf(TEXT("Planned handoff failed closed: %s"), *Reason),
+		0.0f,
+		true);
+}
+
+bool UWeaponHostMigrationSubsystem::RestartLatestLocalSaveAsNewMatch(
+	const FString& ServerName)
+{
+	UWorld* World = GetWorld();
+	const UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>() : nullptr;
+	if ((MigrationState != EWeaponHostMigrationState::Idle &&
+		 MigrationState != EWeaponHostMigrationState::Failed) ||
+		!World || World->GetNetMode() != NM_Standalone || !SessionSubsystem ||
+		SessionSubsystem->GetCurrentOperation() != EWeaponSessionOperation::Idle ||
+		GetLocalHostSaveSlotName().IsEmpty())
+	{
+		return false;
+	}
+
+	PendingLocalForkServerName = ServerName.TrimStartAndEnd();
+	if (PendingLocalForkServerName.IsEmpty())
+	{
+		PendingLocalForkServerName = TEXT("LetsDeepRock Local Save Fork");
+	}
+	const uint64 RequestSerial = ++LocalForkRequestSerial;
+	SetMigrationState(
+		EWeaponHostMigrationState::LoadingLocalFork,
+		TEXT("Loading the latest local Host SaveGame for an explicit new-Match fork."),
+		0.15f,
+		true);
+
+	FAsyncLoadGameFromSlotDelegate LoadedDelegate;
+	LoadedDelegate.BindWeakLambda(
+		this,
+		[this, RequestSerial](const FString&, const int32, USaveGame* LoadedSaveGame)
+		{
+			HandleLocalForkSaveLoaded(RequestSerial, LoadedSaveGame);
+		});
+	UGameplayStatics::AsyncLoadGameFromSlot(
+		GetLocalHostSaveSlotName(),
+		GetLocalHostSaveUserIndex(),
+		MoveTemp(LoadedDelegate));
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandleLocalForkSaveLoaded(
+	const uint64 RequestSerial,
+	USaveGame* LoadedSaveGame)
+{
+	if (RequestSerial != LocalForkRequestSerial ||
+		MigrationState != EWeaponHostMigrationState::LoadingLocalFork)
+	{
+		return;
+	}
+
+	UWeaponMatchSaveGame* SaveGame = Cast<UWeaponMatchSaveGame>(LoadedSaveGame);
+	UWeaponSnapshotCoordinator* Coordinator =
+		GetGameInstance()->GetSubsystem<UWeaponSnapshotCoordinator>();
+	UWorld* World = GetWorld();
+	const APlayerController* LocalController = GetGameInstance()
+		? GetGameInstance()->GetFirstLocalPlayerController(World)
+		: nullptr;
+	const APlayerState* LocalPlayerState = LocalController
+		? LocalController->GetPlayerState<APlayerState>()
+		: nullptr;
+	const FUniqueNetIdRepl LocalPlayerId = LocalPlayerState
+		? LocalPlayerState->GetUniqueId()
+		: FUniqueNetIdRepl();
+	FString Error;
+	if (!Coordinator || !SaveGame || !LocalPlayerId.IsValid() ||
+		!UWeaponSnapshotCoordinator::ValidateSaveGame(SaveGame, Error))
+	{
+		FailLocalSaveFork(
+			Error.IsEmpty()
+				? TEXT("The local SaveGame or current stable player identity is unavailable")
+				: Error);
+		return;
+	}
+
+	const FWeaponRecoveryRosterSnapshot* LocalRosterEntry = SaveGame->Snapshot.RecoveryRoster.FindByPredicate(
+		[&LocalPlayerId](const FWeaponRecoveryRosterSnapshot& Entry)
+		{
+			return Entry.PlayerId == LocalPlayerId &&
+				Entry.Status != EWeaponRecoveryPlayerStatus::Departed;
+		});
+	if (!LocalRosterEntry)
+	{
+		FailLocalSaveFork(TEXT("The current OSS identity does not own a live Slot in the local SaveGame"));
+		return;
+	}
+
+	LocalForkSourceMatchId = SaveGame->Snapshot.MatchId;
+	SaveGame->Snapshot.MatchId = FGuid::NewGuid();
+	TArray<uint8> SerializedBytes;
+	if (!UWeaponSnapshotCoordinator::ValidateSaveGame(SaveGame, Error) ||
+		!UWeaponSnapshotCoordinator::SerializeSaveGame(SaveGame, SerializedBytes, Error))
+	{
+		FailLocalSaveFork(Error);
+		return;
+	}
+
+	PendingLocalForkDescriptor = FWeaponRecoverySessionDescriptor();
+	PendingLocalForkDescriptor.MatchId = SaveGame->Snapshot.MatchId;
+	PendingLocalForkDescriptor.AuthorityEpoch = 1;
+	PendingLocalForkDescriptor.BaseSnapshotRevision = SaveGame->Snapshot.Revision;
+	PendingLocalForkDescriptor.BaseRosterRevision = SaveGame->Snapshot.RosterRevision;
+	PendingLocalForkDescriptor.RecoveryAttemptId = FGuid::NewGuid();
+	PendingLocalForkDescriptor.Candidate.PlayerId = LocalPlayerId;
+	PendingLocalForkDescriptor.Candidate.OriginalSlot = LocalRosterEntry->OriginalSlot;
+	PendingLocalForkDescriptor.MapPackageName = SaveGame->MapPackageName;
+	PendingLocalForkDescriptor.MaxPlayers = SaveGame->MaxPlayers;
+	PendingLocalForkDescriptor.State = EWeaponRecoverySessionState::Restoring;
+	if (!ComputePayloadHash(SerializedBytes, PendingLocalForkDescriptor.PayloadHash) ||
+		!PendingLocalForkDescriptor.IsValid(true))
+	{
+		FailLocalSaveFork(TEXT("The re-identified local SaveGame could not form a valid fork descriptor"));
+		return;
+	}
+
+	PendingLocalForkSaveGame = SaveGame;
+	SetMigrationState(
+		EWeaponHostMigrationState::PreparingLocalFork,
+		TEXT("Opening a clean gated listen World for the new-Match local SaveGame fork."),
+		0.35f,
+		true);
+	UWeaponSessionSubsystem* MutableSessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!MutableSessionSubsystem)
+	{
+		FailLocalSaveFork(TEXT("The Session subsystem could not prepare the local SaveGame fork World"));
+		return;
+	}
+	if (!MutableSessionSubsystem->PrepareRecoveryHost(PendingLocalForkDescriptor) &&
+		MigrationState == EWeaponHostMigrationState::PreparingLocalFork)
+	{
+		FailLocalSaveFork(TEXT("The Session subsystem could not prepare the local SaveGame fork World"));
+	}
+}
+
+bool UWeaponHostMigrationSubsystem::RestoreLocalSaveFork(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	AWeaponGameState* GameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	UWeaponSnapshotCoordinator* Coordinator =
+		GetGameInstance()->GetSubsystem<UWeaponSnapshotCoordinator>();
+	if (!World || World->GetNetMode() != NM_ListenServer || !GameMode || !GameState ||
+		!GameState->IsGameplayRecoveryBlocked() || !Coordinator || !PendingLocalForkSaveGame ||
+		PendingLocalForkSaveGame->Snapshot.MatchId != PendingLocalForkDescriptor.MatchId ||
+		!Coordinator->RestoreSaveGame(PendingLocalForkSaveGame, OutError))
+	{
+		if (OutError.IsEmpty())
+		{
+			OutError = TEXT("The local SaveGame fork World or restore payload is invalid");
+		}
+		return false;
+	}
+
+	SetMigrationState(
+		EWeaponHostMigrationState::AdvertisingLocalFork,
+		TEXT("Local state restored under a new MatchId. Advertising the new LAN authority."),
+		0.8f,
+		true);
+	UWeaponSessionSubsystem* SessionSubsystem =
+		GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	if (!SessionSubsystem)
+	{
+		OutError = TEXT("The restored local SaveGame fork could not start LAN advertisement");
+		return false;
+	}
+	if (!SessionSubsystem->HostLanGame(
+		PendingLocalForkSaveGame->MaxPlayers,
+		PendingLocalForkServerName) &&
+		MigrationState == EWeaponHostMigrationState::AdvertisingLocalFork)
+	{
+		OutError = TEXT("The restored local SaveGame fork could not start LAN advertisement");
+		return false;
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandleLanHostComplete(
+	const bool bSuccess,
+	const FString& Message)
+{
+	if (MigrationState != EWeaponHostMigrationState::AdvertisingLocalFork)
+	{
+		return;
+	}
+	if (!bSuccess)
+	{
+		FailLocalSaveFork(Message);
+		return;
+	}
+
+	AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	UWeaponSnapshotCoordinator* Coordinator =
+		GetGameInstance()->GetSubsystem<UWeaponSnapshotCoordinator>();
+	if (!GameMode || !Coordinator || !PendingLocalForkSaveGame ||
+		Coordinator->GetOrCreateActiveMatchId() != PendingLocalForkSaveGame->Snapshot.MatchId ||
+		!GameMode->ReleaseGameplayRecoveryBarrier())
+	{
+		FailLocalSaveFork(TEXT("The new LAN Session was created but its fork barrier could not be released"));
+		return;
+	}
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Local Host SaveGame forked from Match %s to new Match %s; the old MatchId will not be advertised"),
+		*LocalForkSourceMatchId.ToString(),
+		*PendingLocalForkSaveGame->Snapshot.MatchId.ToString());
+	PendingLocalForkSaveGame = nullptr;
+	PendingLocalForkDescriptor = FWeaponRecoverySessionDescriptor();
+	LocalForkSourceMatchId.Invalidate();
+	PendingLocalForkServerName.Reset();
+	SetMigrationState(
+		EWeaponHostMigrationState::Monitoring,
+		TEXT("Local SaveGame fork is live under a new MatchId."),
+		1.0f,
+		false);
+}
+
+void UWeaponHostMigrationSubsystem::FailLocalSaveFork(const FString& Reason)
+{
+	const FName LobbyMap = PendingLocalForkDescriptor.MapPackageName.IsEmpty()
+		? NAME_None
+		: FName(*PendingLocalForkDescriptor.MapPackageName);
+	UE_LOG(
+		LogLetsDeepRock,
+		Error,
+		TEXT("Local SaveGame fork failed SourceMatch=%s NewMatch=%s: %s"),
+		*LocalForkSourceMatchId.ToString(),
+		*PendingLocalForkDescriptor.MatchId.ToString(),
+		*Reason);
+	PendingLocalForkSaveGame = nullptr;
+	PendingLocalForkDescriptor = FWeaponRecoverySessionDescriptor();
+	LocalForkSourceMatchId.Invalidate();
+	PendingLocalForkServerName.Reset();
+	SetMigrationState(
+		EWeaponHostMigrationState::Failed,
+		FString::Printf(TEXT("Local SaveGame fork failed: %s"), *Reason),
+		0.0f,
+		true);
+	if (!LobbyMap.IsNone())
+	{
+		if (UWeaponSessionSubsystem* SessionSubsystem =
+			GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>())
+		{
+			SessionSubsystem->ReturnToRecoveryLobby(LobbyMap);
+		}
+	}
 }
 
 bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
@@ -1333,6 +2185,60 @@ bool UWeaponHostMigrationSubsystem::RecordBackupAcknowledgement(
 		CommonCommittedAck.AuthorityEpoch);
 	BroadcastCommonCommittedAck();
 	ResetOutgoingTransfer();
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::RecordCommonCommittedConfirmation(
+	const AWeaponPlayerController* Sender,
+	const FWeaponMigrationPayloadAck& Ack,
+	FString& OutError)
+{
+	OutError.Reset();
+	const bool bFromBackupA = Sender && Sender == HostBackupA.Get();
+	const bool bFromBackupB = Sender && Sender == HostBackupB.Get();
+	const APlayerState* SenderPlayerState = Sender
+		? Sender->GetPlayerState<APlayerState>()
+		: nullptr;
+	const EWeaponMigrationRole SenderRole = SenderPlayerState
+		? GetRoleForPlayer(SenderPlayerState->GetUniqueId())
+		: EWeaponMigrationRole::None;
+	if (!bHasCommonCommittedPayload || !Ack.IdentifiesSamePayload(CommonCommittedAck) ||
+		(!bFromBackupA && !bFromBackupB) ||
+		(bFromBackupA && SenderRole != EWeaponMigrationRole::BackupA) ||
+		(bFromBackupB && SenderRole != EWeaponMigrationRole::BackupB))
+	{
+		OutError = TEXT("CommonCommitted confirmation is stale or not from the fenced Backup A/B");
+		return false;
+	}
+
+	if (bFromBackupA)
+	{
+		bBackupAConfirmedCommonCommitted = true;
+	}
+	if (bFromBackupB)
+	{
+		bBackupBConfirmedCommonCommitted = true;
+	}
+	if (!bBackupAConfirmedCommonCommitted || !bBackupBConfirmedCommonCommitted)
+	{
+		return true;
+	}
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("CommonCommitted converged on Backup A/B Match=%s Epoch=%llu Snapshot=%lld Roster=%llu"),
+		*Ack.MatchId.ToString(),
+		Ack.AuthorityEpoch,
+		Ack.SnapshotRevision,
+		Ack.RosterRevision);
+	if (MigrationState == EWeaponHostMigrationState::PlannedHandoff &&
+		Ack.SnapshotRevision == PlannedHandoffTargetRevision)
+	{
+		CompletePlannedHostHandoff(
+			true,
+			TEXT("Backup A and Backup B pinned and confirmed the final CommonCommitted Snapshot."));
+	}
 	return true;
 }
 
@@ -1862,6 +2768,10 @@ void UWeaponHostMigrationSubsystem::HandleLocalSaveComplete(
 			TEXT("Local Host SaveGame write failed for migration revision %lld"),
 			OutgoingTransfer.Envelope.SnapshotRevision);
 		ResetOutgoingTransfer();
+		if (MigrationState == EWeaponHostMigrationState::PlannedHandoff)
+		{
+			CancelPlannedHostHandoff(TEXT("The final local SaveGame write failed"));
+		}
 		return;
 	}
 
@@ -1882,6 +2792,12 @@ void UWeaponHostMigrationSubsystem::SendNextOutgoingChunk()
 	{
 		UE_LOG(LogLetsDeepRock, Warning, TEXT("Migration payload send aborted: %s"), *Error);
 		ResetOutgoingTransfer();
+		if (MigrationState == EWeaponHostMigrationState::PlannedHandoff)
+		{
+			CompletePlannedHostHandoff(
+				false,
+				TEXT("Final transport became unavailable before CommonCommitted convergence."));
+		}
 		return;
 	}
 
@@ -1935,6 +2851,12 @@ void UWeaponHostMigrationSubsystem::HandleTransferAckTimeout()
 		OutgoingTransfer.bBackupBAcked ? TEXT("true") : TEXT("false"),
 		GetCommonCommittedRevision());
 	ResetOutgoingTransfer();
+	if (MigrationState == EWeaponHostMigrationState::PlannedHandoff)
+	{
+		CompletePlannedHostHandoff(
+			false,
+			TEXT("Final A/B payload ACK timed out before CommonCommitted convergence."));
+	}
 }
 
 void UWeaponHostMigrationSubsystem::HandleChunkAssemblyTimeout()
