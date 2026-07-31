@@ -71,5 +71,7 @@ struct FWeaponMigrationPayloadAck
 
 	UPROPERTY()
 	TArray<uint8> PayloadHash;
-};
 
+	bool IdentifiesPayload(const FWeaponMigrationPayloadEnvelope& Envelope) const;
+	bool IdentifiesSamePayload(const FWeaponMigrationPayloadAck& Other) const;
+};

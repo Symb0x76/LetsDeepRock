@@ -2,7 +2,7 @@
 
 Updated: 2026-07-31
 
-Status: Accepted design contract; orchestration is not implemented yet.
+Status: Accepted design contract; payload transport is implemented, while role election and recovery-session orchestration remain pending.
 
 ## 1. Purpose
 
@@ -161,7 +161,9 @@ The full payload is promoted from Pending to Committed only after:
 
 Invalid or incomplete Pending data is discarded without modifying the previous Committed payload.
 
-The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. Transport and timeout code may discard Pending, but cannot mutate Committed. Network RPCs, A/B ACK aggregation and current-term Epoch fencing remain separate orchestration layers.
+The concrete cross-travel owner is `UWeaponHostMigrationSubsystem`, one `UGameInstanceSubsystem` per process. Its receive side has exactly two buffers: replaceable `Pending` chunk assembly and immutable `Committed` bytes. It validates envelope limits before allocation, accepts identical duplicate chunks, rejects or invalidates conflicting/stale chunks within the buffered authority term, verifies full-payload SHA-256, then deserializes and validates the SaveGame before promotion. Transport and timeout code may discard Pending, but cannot mutate Committed.
+
+The Host supplies two already-selected remote `AWeaponPlayerController` instances and a non-zero current Epoch to the subsystem. The subsystem performs `CaptureSaveGame -> SerializeSaveGame -> envelope`, completes the local asynchronous SaveGame write, then sends one reliable application chunk per Tick through each owning controller. A Backup promotes locally before its controller emits the Server ACK. Assembly timeout discards only Pending; ACK timeout discards only the Host's outgoing transfer record. Deterministic A/B selection and current-term Epoch fencing remain the next orchestration layer.
 
 ## 10. Common committed revision
 
@@ -171,6 +173,8 @@ The Active Host tracks the latest identical SnapshotRevision/hash ACKed by both 
 - A revision ACKed only by B is not common committed.
 - The Host local SaveGame may contain a newer revision, but it does not change the A/B crash baseline.
 - Backup B's Committed bytes remain immutable while A attempts recovery.
+
+The concrete Host aggregator records ACKs only from its configured A/B controllers and only when MatchId, Epoch, SnapshotRevision, RosterRevision and hash identify the current outgoing payload. Duplicate ACKs are idempotent. It publishes `CommonCommittedRevision` only after both role-specific flags are true; an ACK timeout preserves the previous common value.
 
 After a successful migration, the new Active Host replenishes Backup A/B roles by stable original Slot where population permits. Reduced redundancy must be visible in logs/UI.
 
@@ -221,7 +225,7 @@ Failures must be observable with MatchId, AuthorityEpoch, SnapshotRevision, Rost
 
 For planned departure, the Active Host freezes gameplay, captures a final Snapshot and waits for A/B commit ACKs up to the configured deadline before leaving.
 
-The original Host writes validated payloads to a local SaveGame slot. A later local restart may continue only as:
+The original Host writes each validated payload asynchronously to the configured `WeaponHostMigrationLatest` local SaveGame slot before distributing that revision to A/B. The local file may therefore be newer than `CommonCommittedRevision`, but a failed local write prevents that revision from entering transport. A later local restart may continue only as:
 
 - a join to the already migrated authority; or
 - a new fork with a new MatchId.

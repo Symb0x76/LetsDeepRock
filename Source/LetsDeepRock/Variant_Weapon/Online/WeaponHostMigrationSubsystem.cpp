@@ -1,10 +1,16 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponHostMigrationSubsystem.h"
+#include "LetsDeepRock.h"
 #include "WeaponMatchSaveGame.h"
 #include "WeaponSnapshot.h"
 #include "WeaponSnapshotCoordinator.h"
+#include "WeaponPlayerController.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
 #include "HAL/PlatformMisc.h"
+#include "Kismet/GameplayStatics.h"
+#include "TimerManager.h"
 
 bool FWeaponMigrationPayloadEnvelope::IdentifiesSamePayload(
 	const FWeaponMigrationPayloadEnvelope& Other) const
@@ -19,6 +25,279 @@ bool FWeaponMigrationPayloadEnvelope::IdentifiesSamePayload(
 		PayloadByteCount == Other.PayloadByteCount &&
 		ChunkCount == Other.ChunkCount &&
 		PayloadHash == Other.PayloadHash;
+}
+
+bool FWeaponMigrationPayloadAck::IdentifiesPayload(
+	const FWeaponMigrationPayloadEnvelope& Envelope) const
+{
+	return MatchId == Envelope.MatchId &&
+		AuthorityEpoch == Envelope.AuthorityEpoch &&
+		SnapshotRevision == Envelope.SnapshotRevision &&
+		RosterRevision == Envelope.RosterRevision &&
+		PayloadHash == Envelope.PayloadHash;
+}
+
+bool FWeaponMigrationPayloadAck::IdentifiesSamePayload(
+	const FWeaponMigrationPayloadAck& Other) const
+{
+	return MatchId == Other.MatchId &&
+		AuthorityEpoch == Other.AuthorityEpoch &&
+		SnapshotRevision == Other.SnapshotRevision &&
+		RosterRevision == Other.RosterRevision &&
+		PayloadHash == Other.PayloadHash;
+}
+
+void UWeaponHostMigrationSubsystem::Deinitialize()
+{
+	StopHostSnapshotTransport();
+	ResetPayloadBuffers();
+	Super::Deinitialize();
+}
+
+bool UWeaponHostMigrationSubsystem::StartHostSnapshotTransport(
+	AWeaponPlayerController* BackupA,
+	AWeaponPlayerController* BackupB,
+	const uint64 SuppliedAuthorityEpoch,
+	FString& OutError)
+{
+	OutError.Reset();
+	StopHostSnapshotTransport();
+	bHasCommonCommittedPayload = false;
+	CommonCommittedAck = FWeaponMigrationPayloadAck();
+	LastLocalSaveRevision = 0;
+
+	UWorld* World = BackupA ? BackupA->GetWorld() : nullptr;
+	if (!World || World->GetNetMode() == NM_Client || BackupA == BackupB ||
+		!BackupB || BackupB->GetWorld() != World ||
+		!BackupA->HasAuthority() || !BackupB->HasAuthority() ||
+		!BackupA->GetNetConnection() || !BackupB->GetNetConnection())
+	{
+		OutError = TEXT("Host transport requires two distinct authoritative remote PlayerControllers in one server World");
+		return false;
+	}
+	if (SuppliedAuthorityEpoch == 0)
+	{
+		OutError = TEXT("Host transport requires a non-zero externally supplied AuthorityEpoch");
+		return false;
+	}
+	if (GetLocalHostSaveSlotName().IsEmpty())
+	{
+		OutError = TEXT("Host transport requires a non-empty local SaveGame slot name");
+		return false;
+	}
+
+	HostWorld = World;
+	HostBackupA = BackupA;
+	HostBackupB = BackupB;
+	HostAuthorityEpoch = SuppliedAuthorityEpoch;
+	if (!CaptureAndDistributeSnapshot(OutError))
+	{
+		StopHostSnapshotTransport();
+		return false;
+	}
+
+	World->GetTimerManager().SetTimer(
+		SnapshotCaptureTimerHandle,
+		this,
+		&UWeaponHostMigrationSubsystem::HandleSnapshotInterval,
+		GetSnapshotIntervalSeconds(),
+		true);
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::StopHostSnapshotTransport()
+{
+	ClearHostTimers();
+	ResetOutgoingTransfer();
+	HostBackupA.Reset();
+	HostBackupB.Reset();
+	HostWorld.Reset();
+	HostAuthorityEpoch = 0;
+}
+
+bool UWeaponHostMigrationSubsystem::CaptureAndDistributeSnapshot(FString& OutError)
+{
+	OutError.Reset();
+	if (!IsHostTransportReady(OutError))
+	{
+		return false;
+	}
+	if (OutgoingTransfer.bActive)
+	{
+		OutError = TEXT("A migration payload is already awaiting local save, send completion or A/B ACKs");
+		return false;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	UWeaponSnapshotCoordinator* Coordinator =
+		GameInstance ? GameInstance->GetSubsystem<UWeaponSnapshotCoordinator>() : nullptr;
+	if (!Coordinator)
+	{
+		OutError = TEXT("WeaponSnapshotCoordinator is unavailable during Host capture");
+		return false;
+	}
+
+	UWeaponMatchSaveGame* SaveGame = nullptr;
+	TArray<uint8> PayloadBytes;
+	FWeaponMigrationPayloadEnvelope Envelope;
+	if (!Coordinator->CaptureSaveGame(HostWorld.Get(), SaveGame, OutError) ||
+		!Coordinator->SerializeSaveGame(SaveGame, PayloadBytes, OutError) ||
+		!BuildPayloadEnvelope(SaveGame, PayloadBytes, HostAuthorityEpoch, Envelope, OutError))
+	{
+		return false;
+	}
+
+	OutgoingTransfer = FOutgoingPayloadTransfer();
+	OutgoingTransfer.Envelope = Envelope;
+	OutgoingTransfer.Bytes = MoveTemp(PayloadBytes);
+	OutgoingTransfer.bWaitingForLocalSave = true;
+	OutgoingTransfer.bActive = true;
+
+	const uint64 RequestSerial = ++LocalSaveRequestSerial;
+	FAsyncSaveGameToSlotDelegate SavedDelegate;
+	SavedDelegate.BindWeakLambda(
+		this,
+		[this, RequestSerial](const FString&, const int32, const bool bSuccess)
+		{
+			HandleLocalSaveComplete(RequestSerial, bSuccess);
+		});
+	UGameplayStatics::AsyncSaveGameToSlot(
+		SaveGame,
+		GetLocalHostSaveSlotName(),
+		GetLocalHostSaveUserIndex(),
+		MoveTemp(SavedDelegate));
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::ReceivePayloadChunk(
+	const FWeaponMigrationPayloadEnvelope& Envelope,
+	const TArray<uint8>& ChunkBytes,
+	bool& bOutAckReady,
+	FWeaponMigrationPayloadAck& OutAck,
+	FString& OutError)
+{
+	bOutAckReady = false;
+	OutAck = FWeaponMigrationPayloadAck();
+	OutError.Reset();
+
+	const bool bHadPending = PendingPayload.bActive;
+	const FWeaponMigrationPayloadEnvelope PreviousPendingEnvelope = PendingPayload.Envelope;
+	bool bPayloadComplete = false;
+	if (!StorePendingChunk(Envelope, ChunkBytes, bPayloadComplete, OutError))
+	{
+		if (!PendingPayload.bActive)
+		{
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().ClearTimer(ChunkAssemblyTimerHandle);
+			}
+		}
+		return false;
+	}
+
+	if (!bPayloadComplete)
+	{
+		FWeaponMigrationPayloadAck ExistingAck;
+		if (GetCommittedAck(ExistingAck) && ExistingAck.IdentifiesPayload(Envelope))
+		{
+			OutAck = MoveTemp(ExistingAck);
+			bOutAckReady = true;
+			return true;
+		}
+
+		const bool bStartedNewPending = PendingPayload.bActive &&
+			(!bHadPending || !PreviousPendingEnvelope.IdentifiesSamePayload(PendingPayload.Envelope));
+		if (bStartedNewPending)
+		{
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().SetTimer(
+					ChunkAssemblyTimerHandle,
+					this,
+					&UWeaponHostMigrationSubsystem::HandleChunkAssemblyTimeout,
+					GetChunkAssemblyTimeoutSeconds(),
+					false);
+			}
+		}
+		return true;
+	}
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ChunkAssemblyTimerHandle);
+	}
+	if (!PromotePendingPayload(OutAck, OutError))
+	{
+		return false;
+	}
+	bOutAckReady = true;
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::RecordBackupAcknowledgement(
+	const AWeaponPlayerController* Sender,
+	const FWeaponMigrationPayloadAck& Ack,
+	FString& OutError)
+{
+	OutError.Reset();
+	const bool bFromBackupA = Sender && Sender == HostBackupA.Get();
+	const bool bFromBackupB = Sender && Sender == HostBackupB.Get();
+	if (!bFromBackupA && !bFromBackupB)
+	{
+		OutError = TEXT("Migration ACK sender is not the configured Backup A or Backup B");
+		return false;
+	}
+	if (bHasCommonCommittedPayload && Ack.IdentifiesSamePayload(CommonCommittedAck))
+	{
+		return true;
+	}
+	if (!OutgoingTransfer.bActive || OutgoingTransfer.bWaitingForLocalSave ||
+		!Ack.IdentifiesPayload(OutgoingTransfer.Envelope))
+	{
+		OutError = TEXT("Migration ACK does not identify the current outgoing payload");
+		return false;
+	}
+
+	if (bFromBackupA)
+	{
+		OutgoingTransfer.bBackupAAcked = true;
+	}
+	if (bFromBackupB)
+	{
+		OutgoingTransfer.bBackupBAcked = true;
+	}
+	if (!OutgoingTransfer.bBackupAAcked || !OutgoingTransfer.bBackupBAcked)
+	{
+		return true;
+	}
+
+	CommonCommittedAck = Ack;
+	bHasCommonCommittedPayload = true;
+	if (UWorld* World = HostWorld.Get())
+	{
+		World->GetTimerManager().ClearTimer(TransferAckTimerHandle);
+	}
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("Migration revision %lld is CommonCommitted for Match %s Epoch %llu"),
+		CommonCommittedAck.SnapshotRevision,
+		*CommonCommittedAck.MatchId.ToString(),
+		CommonCommittedAck.AuthorityEpoch);
+	ResetOutgoingTransfer();
+	return true;
+}
+
+bool UWeaponHostMigrationSubsystem::GetCommonCommittedAck(
+	FWeaponMigrationPayloadAck& OutAck) const
+{
+	OutAck = FWeaponMigrationPayloadAck();
+	if (!bHasCommonCommittedPayload)
+	{
+		return false;
+	}
+	OutAck = CommonCommittedAck;
+	return true;
 }
 
 bool UWeaponHostMigrationSubsystem::BuildPayloadEnvelope(
@@ -220,6 +499,10 @@ void UWeaponHostMigrationSubsystem::DiscardPendingPayload()
 
 void UWeaponHostMigrationSubsystem::ResetPayloadBuffers()
 {
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(ChunkAssemblyTimerHandle);
+	}
 	DiscardPendingPayload();
 	CommittedPayload = FCommittedPayloadBuffer();
 }
@@ -347,4 +630,162 @@ bool UWeaponHostMigrationSubsystem::HashesEqual(
 	return A.Num() == WeaponMigrationSHA256Bytes &&
 		B.Num() == WeaponMigrationSHA256Bytes &&
 		FMemory::Memcmp(A.GetData(), B.GetData(), WeaponMigrationSHA256Bytes) == 0;
+}
+
+bool UWeaponHostMigrationSubsystem::IsHostTransportReady(FString& OutError) const
+{
+	UWorld* World = HostWorld.Get();
+	const AWeaponPlayerController* BackupA = HostBackupA.Get();
+	const AWeaponPlayerController* BackupB = HostBackupB.Get();
+	if (!World || World->GetNetMode() == NM_Client || HostAuthorityEpoch == 0 ||
+		!BackupA || !BackupB || BackupA == BackupB ||
+		BackupA->GetWorld() != World || BackupB->GetWorld() != World ||
+		!BackupA->HasAuthority() || !BackupB->HasAuthority() ||
+		!BackupA->GetNetConnection() || !BackupB->GetNetConnection())
+	{
+		OutError = TEXT("Configured Host backup transport is no longer valid");
+		return false;
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::HandleSnapshotInterval()
+{
+	if (OutgoingTransfer.bActive)
+	{
+		return;
+	}
+
+	FString Error;
+	if (!CaptureAndDistributeSnapshot(Error))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Periodic migration Snapshot capture failed: %s"), *Error);
+	}
+}
+
+void UWeaponHostMigrationSubsystem::HandleLocalSaveComplete(
+	const uint64 RequestSerial,
+	const bool bSuccess)
+{
+	if (RequestSerial != LocalSaveRequestSerial || !OutgoingTransfer.bActive ||
+		!OutgoingTransfer.bWaitingForLocalSave)
+	{
+		return;
+	}
+	if (!bSuccess)
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Error,
+			TEXT("Local Host SaveGame write failed for migration revision %lld"),
+			OutgoingTransfer.Envelope.SnapshotRevision);
+		ResetOutgoingTransfer();
+		return;
+	}
+
+	LastLocalSaveRevision = OutgoingTransfer.Envelope.SnapshotRevision;
+	OutgoingTransfer.bWaitingForLocalSave = false;
+	SendNextOutgoingChunk();
+}
+
+void UWeaponHostMigrationSubsystem::SendNextOutgoingChunk()
+{
+	if (!OutgoingTransfer.bActive || OutgoingTransfer.bWaitingForLocalSave)
+	{
+		return;
+	}
+
+	FString Error;
+	if (!IsHostTransportReady(Error))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Migration payload send aborted: %s"), *Error);
+		ResetOutgoingTransfer();
+		return;
+	}
+
+	if (OutgoingTransfer.NextChunkIndex >= OutgoingTransfer.Envelope.ChunkCount)
+	{
+		if (UWorld* World = HostWorld.Get())
+		{
+			World->GetTimerManager().SetTimer(
+				TransferAckTimerHandle,
+				this,
+				&UWeaponHostMigrationSubsystem::HandleTransferAckTimeout,
+				GetTransferAckTimeoutSeconds(),
+				false);
+		}
+		return;
+	}
+
+	FWeaponMigrationPayloadEnvelope ChunkEnvelope = OutgoingTransfer.Envelope;
+	ChunkEnvelope.ChunkIndex = OutgoingTransfer.NextChunkIndex;
+	const int32 ChunkOffset = ChunkEnvelope.ChunkIndex * GetChunkPayloadBytes();
+	const int32 ChunkByteCount = FMath::Min(
+		GetChunkPayloadBytes(),
+		OutgoingTransfer.Bytes.Num() - ChunkOffset);
+	TArray<uint8> ChunkBytes;
+	ChunkBytes.Append(OutgoingTransfer.Bytes.GetData() + ChunkOffset, ChunkByteCount);
+
+	HostBackupA->ClientReceiveMigrationPayloadChunk(ChunkEnvelope, ChunkBytes);
+	HostBackupB->ClientReceiveMigrationPayloadChunk(ChunkEnvelope, ChunkBytes);
+	++OutgoingTransfer.NextChunkIndex;
+
+	if (UWorld* World = HostWorld.Get())
+	{
+		ChunkSendTimerHandle = World->GetTimerManager().SetTimerForNextTick(
+			this,
+			&UWeaponHostMigrationSubsystem::SendNextOutgoingChunk);
+	}
+}
+
+void UWeaponHostMigrationSubsystem::HandleTransferAckTimeout()
+{
+	if (!OutgoingTransfer.bActive)
+	{
+		return;
+	}
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Migration revision %lld ACK timeout (BackupA=%s BackupB=%s); CommonCommitted remains %lld"),
+		OutgoingTransfer.Envelope.SnapshotRevision,
+		OutgoingTransfer.bBackupAAcked ? TEXT("true") : TEXT("false"),
+		OutgoingTransfer.bBackupBAcked ? TEXT("true") : TEXT("false"),
+		GetCommonCommittedRevision());
+	ResetOutgoingTransfer();
+}
+
+void UWeaponHostMigrationSubsystem::HandleChunkAssemblyTimeout()
+{
+	if (!PendingPayload.bActive)
+	{
+		return;
+	}
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("Discarding incomplete migration revision %lld after chunk assembly timeout"),
+		PendingPayload.Envelope.SnapshotRevision);
+	DiscardPendingPayload();
+}
+
+void UWeaponHostMigrationSubsystem::ResetOutgoingTransfer()
+{
+	++LocalSaveRequestSerial;
+	if (UWorld* World = HostWorld.Get())
+	{
+		World->GetTimerManager().ClearTimer(ChunkSendTimerHandle);
+		World->GetTimerManager().ClearTimer(TransferAckTimerHandle);
+	}
+	OutgoingTransfer = FOutgoingPayloadTransfer();
+}
+
+void UWeaponHostMigrationSubsystem::ClearHostTimers()
+{
+	if (UWorld* World = HostWorld.Get())
+	{
+		World->GetTimerManager().ClearTimer(SnapshotCaptureTimerHandle);
+		World->GetTimerManager().ClearTimer(ChunkSendTimerHandle);
+		World->GetTimerManager().ClearTimer(TransferAckTimerHandle);
+	}
 }

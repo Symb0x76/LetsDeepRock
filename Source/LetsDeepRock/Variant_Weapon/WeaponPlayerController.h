@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Online/WeaponHostMigrationTypes.h"
 #include "WeaponPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -25,6 +26,12 @@ public:
 
 	AWeaponPlayerController();
 
+	/** Server -> owning Backup: one paced chunk of an immutable migration payload. */
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveMigrationPayloadChunk(
+		const FWeaponMigrationPayloadEnvelope& Envelope,
+		const TArray<uint8>& ChunkBytes);
+
 protected:
 
 	/** 默认输入映射上下文 */
@@ -38,4 +45,8 @@ protected:
 
 	/** Preserve an inert attribution source before the engine's default Pawn destruction. */
 	virtual void PawnLeavingGame() override;
+
+	/** Owning Backup -> Host: emitted only after local Pending promotion succeeds. */
+	UFUNCTION(Server, Reliable)
+	void ServerAcknowledgeMigrationPayload(const FWeaponMigrationPayloadAck& Ack);
 };
