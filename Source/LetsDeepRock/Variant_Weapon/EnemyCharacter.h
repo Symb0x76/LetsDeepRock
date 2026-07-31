@@ -31,5 +31,5 @@ protected:
 
 	/** 配置表行名（对应 DT_EnemyConfig 中的 RowName） */
 	UPROPERTY(EditAnywhere, Category = "DataTable")
-	FName EnemyConfigRowName = NAME_None;
+	FName EnemyConfigRowName = TEXT("BasicGrunt");
 };

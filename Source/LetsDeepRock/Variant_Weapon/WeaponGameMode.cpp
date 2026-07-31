@@ -56,6 +56,10 @@ bool AWeaponGameMode::RefreshHostMigrationRoles(FString& OutError)
 		OutError = TEXT("Migration roles require an authoritative Weapon server World");
 		return false;
 	}
+	if (World->GetNetMode() != NM_ListenServer)
+	{
+		return true;
+	}
 	if (WeaponGameState->IsGameplayRecoveryBlocked())
 	{
 		return true;

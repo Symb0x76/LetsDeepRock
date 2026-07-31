@@ -263,6 +263,8 @@ There is no third arbitrary-client candidate in this MVP. Peer RTT does not part
 
 ## 15. Acceptance evidence for this contract
 
+### 15.1 Deterministic protocol evidence
+
 The deterministic Editor Automation layer currently proves, through the production subsystem/coordinator paths:
 
 - complete out-of-order assembly, incomplete rejection, newer-Pending replacement, identical/conflicting duplicate behavior, corrupt hash rejection, byte/chunk limits, protocol-version rejection and preservation of the previous Committed payload;
@@ -273,18 +275,47 @@ The deterministic Editor Automation layer currently proves, through the producti
 
 These tests run one Editor process with `NewMap` loaded. They prove local protocol invariants, not RPC delivery, disconnect Travel, runtime Actor parity or failover timing.
 
-Implementation is not considered complete until packaged multi-process tests prove:
+### 15.2 Packaged three-process failover evidence
 
-- A and B promote only complete, hash-valid payloads;
-- only a revision ACKed by both becomes CommonCommitted;
+`UWeaponHostMigrationHarnessSubsystem` is an opt-in, non-Shipping `UGameInstanceSubsystem`. It is inert unless `-WeaponMigrationHarnessRole=Host|Client1|Client2` is present. The driver uses the public LAN Session APIs and observes the production migration subsystem; it does not assign roles, inject payloads or mutate the recovery state machine directly. Machine-readable `WMH|...` log markers expose only observation points such as `BaselineReady`, `MigrationState` and `RecoveryLive`.
+
+`Tools/RunHostMigrationHarness.ps1` starts three packaged processes, verifies that all three observe one Match/Epoch/Roster/Snapshot/hash baseline with unique OSS identities, kills the requested authority process, and compares the recovered authority against that pinned baseline. When passed the outer packaged bootstrap executable, the runner resolves and owns the inner `Binaries/Win64/LetsDeepRock.exe` process so that crash injection and final cleanup target the real game process.
+
+With an existing Development package, run both scenarios from the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File Tools/RunHostMigrationHarness.ps1 `
+  -Executable Saved/HostMigrationHarnessPackage/<build>/Windows/LetsDeepRock.exe `
+  -Scenario All `
+  -OutputRoot Saved/HostMigrationHarnessRuns/<run>
+```
+
+The scenarios can also be isolated with `-Scenario HostCrashToA` or `-Scenario HostThenBackupACrashToB`. The checked 2026-07-31 package was `Saved/HostMigrationHarnessPackage/20260731-160000/Windows/LetsDeepRock.exe`.
+
+The following packaged runs passed on one Windows machine and exercised the real 60-second connection timeout:
+
+- `HostCrashToA`, RunId `74ff6b188a7d464d91cbb8f1395155c9`: Epoch 1 / Snapshot 2 recovered on Backup A as an Epoch 2 Listen Server. MatchId, Snapshot revision and SHA-256 stayed identical, and the surviving client converged on the same recovery fence.
+- `HostThenBackupACrashToB`, RunId `c734058d16f24d53852101d79e48804b`: after the original Host failed, A reached `WaitingForReadyAcks` and was killed; Backup B then handled a second `ConnectionTimeout`, created a clean Epoch 3 attempt and reached `RecoveryLive` as a Listen Server with the original MatchId, Snapshot revision and SHA-256.
+
+An early revision-1 chunk can be rejected by a client before its Backup role assignment arrives. The passing baseline is the later revision 2 that all three processes report as CommonCommitted; the rejection is fail-closed and does not replace the previous committed bytes.
+
+This packaged evidence proves the local-machine happy path for LAN discovery/join, paced Host-to-A/B transport, common-baseline convergence, Engine disconnect handling, gated Recovery Session travel, A takeover, A-crash-to-B retry, byte-identical baseline reuse, Epoch advancement, survivor reconnect and RecoveryReady release. It is stronger than Editor compilation and single-process Automation, but it is not real multi-machine or gameplay-fidelity evidence.
+
+### 15.3 Remaining acceptance work
+
+The following behavior still requires targeted packaged failure injection, gameplay assertions or real multi-machine tests:
+
 - Host crash loses no more than the latest configured Snapshot interval under normal transfer conditions;
 - reversed reconnect order reclaims original Slots by stable identity;
 - a Pending player can time out while its prior projectiles retain valid damage attribution;
 - RosterRevision changes prevent RecoveryReady publication;
-- A failure before/during Restore leaves B's Committed bytes unchanged;
-- B retries the identical revision/hash and B failure returns survivors to Lobby;
+- incomplete, corrupt, oversized and incompatible payloads fail closed over real RPC transport;
+- one-sided chunk/ACK timeout and duplicate delivery preserve the previous CommonCommitted bytes;
+- failures injected inside Restore abandon the candidate World without changing B's pinned bytes;
+- B failure returns survivors to Lobby;
 - stale Epoch/session/messages cannot become authoritative;
 - GridMap, Enemy, Projectile and Grenade runtime results match the committed Snapshot;
-- corrupt, incomplete, oversized and incompatible payloads fail closed.
+- planned Host handoff and local SaveGame restart-as-new-Match follow their separate contracts;
+- the same scenarios converge across distinct machines and realistic LAN loss/latency.
 
 Editor compilation proves only source compatibility. It does not prove host migration behavior.
