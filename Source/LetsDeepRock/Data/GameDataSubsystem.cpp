@@ -5,7 +5,7 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 
-	// 加载 7 张装备配置 DataTable：Profession、Weapon、WeaponFireMode、Grenade、StatusEffect、Tool、Drone
+	// 加载装备配置 DataTable
 	// 路径格式: /Game/Data/资产名.资产名
 	// 如果资产不存在（尚未在编辑器中创建），返回 nullptr 不会崩溃
 	EnemyConfigTable = LoadObject<UDataTable>(nullptr,
@@ -18,6 +18,8 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		TEXT("/Game/Data/DT_CharacterAttributes.DT_CharacterAttributes"));
 	ProfessionConfigTable = LoadObject<UDataTable>(nullptr,
 		TEXT("/Game/Data/DT_ProfessionConfig.DT_ProfessionConfig"));
+	ProfessionWeaponPoolTable = LoadObject<UDataTable>(nullptr,
+		TEXT("/Game/Data/DT_ProfessionWeaponPool.DT_ProfessionWeaponPool"));
 	WeaponConfigTable = LoadObject<UDataTable>(nullptr,
 		TEXT("/Game/Data/DT_WeaponConfig.DT_WeaponConfig"));
 	WeaponFireModeConfigTable = LoadObject<UDataTable>(nullptr,
@@ -48,6 +50,7 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_CharacterAttributes not found at /Game/Data/. DataTable-driven values will use defaults."));
 	}
 	if (!ProfessionConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_ProfessionConfig not found at /Game/Data/."));
+	if (!ProfessionWeaponPoolTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_ProfessionWeaponPool not found at /Game/Data/."));
 	if (!WeaponConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_WeaponConfig not found at /Game/Data/."));
 	if (!WeaponFireModeConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_WeaponFireModeConfig not found at /Game/Data/."));
 	if (!GrenadeConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_GrenadeConfig not found at /Game/Data/."));
@@ -84,6 +87,45 @@ const FProfessionConfigRow* UGameDataSubsystem::GetProfessionConfig(FName RowNam
 {
 	if (!ProfessionConfigTable) return nullptr;
 	return ProfessionConfigTable->FindRow<FProfessionConfigRow>(RowName, TEXT("GetProfessionConfig"));
+}
+
+const FProfessionWeaponPoolRow* UGameDataSubsystem::GetProfessionWeaponPool(FName RowName) const
+{
+	if (!ProfessionWeaponPoolTable) return nullptr;
+	return ProfessionWeaponPoolTable->FindRow<FProfessionWeaponPoolRow>(RowName, TEXT("GetProfessionWeaponPool"));
+}
+
+TArray<FName> UGameDataSubsystem::GetProfessionWeaponIds(FName ProfessionId, FName SlotType) const
+{
+	TArray<FName> Result;
+	if (!ProfessionWeaponPoolTable) return Result;
+
+	TArray<FProfessionWeaponPoolRow*> Rows;
+	ProfessionWeaponPoolTable->GetAllRows(TEXT("GetProfessionWeaponIds"), Rows);
+	for (const FProfessionWeaponPoolRow* Row : Rows)
+	{
+		if (Row && Row->ProfessionId == ProfessionId && Row->SlotType == SlotType)
+		{
+			Result.Add(Row->WeaponId);
+		}
+	}
+	return Result;
+}
+
+FName UGameDataSubsystem::GetDefaultProfessionWeaponId(FName ProfessionId, FName SlotType) const
+{
+	if (!ProfessionWeaponPoolTable) return NAME_None;
+
+	TArray<FProfessionWeaponPoolRow*> Rows;
+	ProfessionWeaponPoolTable->GetAllRows(TEXT("GetDefaultProfessionWeaponId"), Rows);
+	for (const FProfessionWeaponPoolRow* Row : Rows)
+	{
+		if (Row && Row->ProfessionId == ProfessionId && Row->SlotType == SlotType && Row->bDefaultEquipped)
+		{
+			return Row->WeaponId;
+		}
+	}
+	return NAME_None;
 }
 
 const FWeaponConfigRow* UGameDataSubsystem::GetWeaponConfig(FName RowName) const

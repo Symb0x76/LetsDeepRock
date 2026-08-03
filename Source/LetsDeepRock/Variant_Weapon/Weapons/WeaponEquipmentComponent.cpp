@@ -46,7 +46,7 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
-	// 1. 授予射击 Ability
+	// 1. 授予射击 Ability。阶段1保留 DataAsset 强类型类引用；表内字符串类路径不做猜测式加载。
 	if (ASC && InWeaponData->FireAbilityClass)
 	{
 		FGameplayAbilitySpec AbilitySpec(InWeaponData->FireAbilityClass, 1, INDEX_NONE, this);
@@ -61,6 +61,7 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 	}
 
 	// 2. Spawn 武器 Actor 并 Attach 到角色（可选：如果没有配武器网格则不 Spawn）
+	// 阶段1保留 DataAsset 的 WeaponMesh；表内字符串可能是包路径或对象路径，不做猜测式同步加载。
 	// 俯视角本期可能没有角色骨骼/武器外观需求，WeaponActor 纯粹是可选的视觉表现
 	if (!InWeaponData->WeaponMesh.IsNull())
 	{

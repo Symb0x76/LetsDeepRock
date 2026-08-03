@@ -24,6 +24,9 @@ class UWeaponDataAsset : public UPrimaryDataAsset
 	GENERATED_BODY()
 
 public:
+	/** DT_WeaponConfig 行名；为空时完全沿用本 DataAsset 配置 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Info")
+	FName WeaponConfigId;
 
 	/** 武器显示名称 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Info")

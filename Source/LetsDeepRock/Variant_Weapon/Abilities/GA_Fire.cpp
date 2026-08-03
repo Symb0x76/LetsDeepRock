@@ -10,6 +10,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "WeaponGameplayTags.h"
+#include "Data/GameDataSubsystem.h"
 
 UGA_Fire::UGA_Fire()
 {
@@ -127,6 +128,22 @@ AWeaponBase* UGA_Fire::GetWeaponActor(const FGameplayAbilityActorInfo* ActorInfo
 
 void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData)
 {
+	const FWeaponFireModeConfigRow* FireModeConfig = nullptr;
+	if (!WeaponData->WeaponConfigId.IsNone())
+	{
+		if (UGameInstance* GameInstance = ActorInfo->AvatarActor.IsValid() ? ActorInfo->AvatarActor->GetGameInstance() : nullptr)
+		{
+			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FWeaponConfigRow* WeaponConfig = DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId))
+				{
+					FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId);
+				}
+			}
+		}
+	}
+
+	// 表中的类路径暂不接入：现有内容使用强类型 DataAsset 引用，避免猜测蓝图生成类路径。
 	if (!WeaponData->ProjectileClass)
 	{
 		return;
@@ -169,13 +186,33 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 
 	if (Projectile)
 	{
-		// 设置伤害参数和投射物速度（包含 DamageTags 和穿透设置）
+		FGameplayTagContainer DamageTags = WeaponData->DamageTags;
+		if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
+		{
+			const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
+			if (DamageTypeRootTag.IsValid())
+			{
+				DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
+			}
+			DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+		}
+
+		const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
+		const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+
 		Projectile->InitDamageParams(
 			WeaponData->DamageEffectClass,
-			WeaponData->BaseDamage,
+			BaseDamage,
 			Avatar,
-			WeaponData->DamageTags,
+			DamageTags,
 			WeaponData->bProjectilePenetratesTerrain);
-		Projectile->SetProjectileSpeed(WeaponData->ProjectileSpeed);
+		Projectile->SetProjectileSpeed(ProjectileSpeed);
+		if (FireModeConfig)
+		{
+			Projectile->InitFlightParams(
+				FireModeConfig->ProjectileLifetime,
+				FireModeConfig->ProjectileGravityScale,
+				FireModeConfig->MaxHitTargets);
+		}
 	}
 }

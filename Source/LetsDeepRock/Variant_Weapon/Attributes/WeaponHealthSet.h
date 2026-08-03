@@ -6,7 +6,10 @@
 #include "AttributeSet.h"
 #include "AbilitySystemComponent.h"
 #include "AttributeMacros.h"
+#include "UI/WeaponDebugTypes.h"
 #include "WeaponHealthSet.generated.h"
+
+class AWeaponPlayerController;
 
 /** 死亡事件委托：Health <= 0 时广播 */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnHealthDepleted, AActor* /*OwningActor*/);
@@ -73,6 +76,9 @@ public:
 	/** 死亡事件（服务端 Health 归零时广播），供 Owner（PlayerState/NPC）订阅执行死亡流程 */
 	FOnHealthDepleted OnHealthDepleted;
 
+	/** ExecCalc 在同步 Instant GE 扣值前暂存本次权威伤害元数据。 */
+	void SetPendingWeaponDamageDebug(const FWeaponDamageDebugEvent& Event, AWeaponPlayerController* SourceController);
+
 protected:
 
 	//~ 属性变更前 clamp
@@ -109,4 +115,11 @@ private:
 
 	/** clamp 当前 Health 到 [0, MaxHealth] 的公共入口 */
 	void ClampHealth(float& NewValue) const;
+
+	FWeaponDamageDebugEvent PendingDamageDebugEvent;
+	TWeakObjectPtr<AWeaponPlayerController> PendingDamageSourceController;
+	bool bHasPendingDamageDebug = false;
+
+	/** 无论本次伤害是否实际扣值，都消费并清空 pending，避免串到后续 GE。 */
+	void ConsumePendingWeaponDamageDebug(float ShieldDamage, float HealthDamage);
 };

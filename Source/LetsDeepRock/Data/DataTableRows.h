@@ -45,6 +45,29 @@ struct FProfessionConfigRow : public FTableRowBase
 };
 
 /**
+ * 职业武器池配置表行
+ * 对应 DataTable: DT_ProfessionWeaponPool
+ */
+USTRUCT(BlueprintType)
+struct FProfessionWeaponPoolRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName ProfessionId;
+
+	/** Primary 或 Secondary */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName SlotType;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName WeaponId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	bool bDefaultEquipped = false;
+};
+
+/**
  * 武器定义表行
  * 对应 DataTable: DT_WeaponConfig
  */
@@ -129,6 +152,16 @@ struct FWeaponFireModeConfigRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
 	float ProjectileLifetime = 0.0f;
+
+	/** 后续状态效果机制使用的配置行 ID；阶段1仅保证可读取 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effect")
+	FName StatusEffectId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float ProjectileGravityScale = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1))
+	int32 MaxHitTargets = 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1))
 	int32 ProjectileCount = 1;

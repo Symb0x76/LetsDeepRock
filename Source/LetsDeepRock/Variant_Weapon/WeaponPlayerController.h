@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "UI/WeaponDebugTypes.h"
 #include "WeaponPlayerController.generated.h"
 
 class UInputMappingContext;
@@ -25,6 +26,10 @@ public:
 
 	AWeaponPlayerController();
 
+	/** 接收服务端权威伤害结果，仅用于本地 Debug HUD。 */
+	UFUNCTION(Client, Unreliable)
+	void ClientReceiveWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event);
+
 protected:
 
 	/** 默认输入映射上下文 */
@@ -35,4 +40,7 @@ protected:
 
 	/** 初始化输入绑定 */
 	virtual void SetupInputComponent() override;
+
+	/** F8 切换 Weapon.DebugUI。 */
+	void ToggleWeaponDebugUI();
 };
