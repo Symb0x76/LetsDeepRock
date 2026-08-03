@@ -37,6 +37,9 @@ public:
 	/** 设置投射物速度（由 GA_Fire 在 Spawn 后调用，覆盖构造函数默认值） */
 	void SetProjectileSpeed(float InSpeed);
 
+	/** 设置表驱动的生命期、重力和最大不同 Pawn 命中数 */
+	void InitFlightParams(float InLifetime, float InGravityScale, int32 InMaxHitTargets);
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -71,6 +74,10 @@ protected:
 	/** 是否穿透地形障碍物 */
 	bool bPenetratesTerrain = false;
 
+	int32 MaxHitTargets = 1;
+	TSet<TWeakObjectPtr<APawn>> HitPawns;
+	TOptional<FHitResult> PendingHitResult;
+
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;
 
@@ -85,5 +92,6 @@ protected:
 	virtual void OnProjectileStop(const FHitResult& ImpactResult);
 
 	/** 对目标施加伤害 GE（可用于手雷等子类的爆炸伤害） */
+	bool ApplyDamageToTarget(APawn* TargetPawn);
 	virtual void ApplyDamageToTarget(AActor* TargetActor);
 };

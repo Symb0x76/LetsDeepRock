@@ -9,9 +9,13 @@
 #include "GameFramework/PlayerStart.h"
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponHUD.h"
 
 AWeaponGameMode::AWeaponGameMode()
 {
+	// 默认使用 AWeaponHUD 绘制当前武器调试信息；
+	// 若 BP_WeaponGameMode 在编辑器中显式指定了其他 HUD Class，会覆盖此默认值。
+	HUDClass = AWeaponHUD::StaticClass();
 }
 
 void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)

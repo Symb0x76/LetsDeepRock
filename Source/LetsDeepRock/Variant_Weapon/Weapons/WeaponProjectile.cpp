@@ -96,6 +96,19 @@ void AWeaponProjectile::SetProjectileSpeed(float InSpeed)
 	}
 }
 
+void AWeaponProjectile::InitFlightParams(float InLifetime, float InGravityScale, int32 InMaxHitTargets)
+{
+	if (InLifetime > 0.0f)
+	{
+		SetLifeSpan(InLifetime);
+	}
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->ProjectileGravityScale = InGravityScale;
+	}
+	MaxHitTargets = FMath::Max(1, InMaxHitTargets);
+}
+
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
 	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
 	bool bFromSweep, const FHitResult& SweepResult)
@@ -112,9 +125,26 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
-	// Overlap 只对 Pawn 生效（敌人命中）
-	ApplyDamageToTarget(OtherActor);
-	Destroy();
+	APawn* HitPawn = Cast<APawn>(OtherActor);
+	if (!HitPawn || HitPawns.Contains(HitPawn))
+	{
+		return;
+	}
+
+	if (bFromSweep)
+	{
+		PendingHitResult = SweepResult;
+	}
+	const bool bDamageApplied = ApplyDamageToTarget(HitPawn);
+	PendingHitResult.Reset();
+	if (bDamageApplied)
+	{
+		HitPawns.Add(HitPawn);
+		if (HitPawns.Num() >= MaxHitTargets)
+		{
+			Destroy();
+		}
+	}
 }
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
@@ -148,24 +178,24 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	}
 }
 
-void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
+bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn)
 {
 	if (!DamageEffectClass || DamageValue <= 0.0f)
 	{
-		return;
+		return false;
 	}
 
 	// 通过 IAbilitySystemInterface 获取目标 ASC（统一入口，不 Cast 具体类）
-	IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(TargetActor);
+	IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(TargetPawn);
 	if (!TargetASCInterface)
 	{
-		return;
+		return false;
 	}
 
 	UAbilitySystemComponent* TargetASC = TargetASCInterface->GetAbilitySystemComponent();
 	if (!TargetASC)
 	{
-		return;
+		return false;
 	}
 
 	// 获取射击者（Source）的 ASC，用于正确的伤害归因
@@ -185,17 +215,27 @@ void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 	// 构建 EffectContext：携带因果信息（谁射的、用什么射的）
 	FGameplayEffectContextHandle Context = SpecOwnerASC->MakeEffectContext();
 	Context.AddInstigator(InstigatorActor.Get(), this);
+	if (PendingHitResult.IsSet())
+	{
+		Context.AddHitResult(PendingHitResult.GetValue());
+	}
 
 	// 创建 GE Spec
 	FGameplayEffectSpecHandle SpecHandle = SpecOwnerASC->MakeOutgoingSpec(DamageEffectClass, 1.0f, Context);
 	if (!SpecHandle.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	// 注入 SetByCaller 伤害值
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, DamageValue);
+	SpecHandle.Data->AppendDynamicAssetTags(DamageTags);
 
 	// 对目标应用伤害（从 Source 施加到 Target）
-	SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+	return SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC).IsValid();
+}
+
+void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
+{
+	ApplyDamageToTarget(Cast<APawn>(TargetActor));
 }

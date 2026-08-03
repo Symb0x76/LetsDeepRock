@@ -4,6 +4,9 @@
 #include "WeaponPlayerController.h"
 #include "EnhancedInputSubsystems.h"
 #include "InputMappingContext.h"
+#include "InputCoreTypes.h"
+#include "UI/WeaponDebugTypes.h"
+#include "UI/WeaponHUD.h"
 
 AWeaponPlayerController::AWeaponPlayerController()
 {
@@ -32,4 +35,26 @@ void AWeaponPlayerController::SetupInputComponent()
 			}
 		}
 	}
+
+#if !UE_BUILD_SHIPPING
+	InputComponent->BindKey(EKeys::F8, IE_Pressed, this, &AWeaponPlayerController::ToggleWeaponDebugUI);
+#endif
+}
+
+void AWeaponPlayerController::ToggleWeaponDebugUI()
+{
+	SetWeaponDebugUIEnabled(!IsWeaponDebugUIEnabled());
+}
+
+void AWeaponPlayerController::ClientReceiveWeaponDamageDebugEvent_Implementation(const FWeaponDamageDebugEvent& Event)
+{
+#if !UE_BUILD_SHIPPING
+	if (IsWeaponDebugUIEnabled())
+	{
+		if (AWeaponHUD* WeaponHUD = GetHUD<AWeaponHUD>())
+		{
+			WeaponHUD->AddWeaponDamageDebugEvent(Event);
+		}
+	}
+#endif
 }

@@ -4,6 +4,7 @@
 #include "WeaponHealthSet.h"
 #include "GameplayEffectExtension.h"
 #include "Net/UnrealNetwork.h"
+#include "WeaponPlayerController.h"
 
 UWeaponHealthSet::UWeaponHealthSet()
 {
@@ -16,6 +17,38 @@ UWeaponHealthSet::UWeaponHealthSet()
 	ShieldRegenRate = 5.0f;
 	ShieldRegenDelay = 3.0f;
 	Armor = 0.0f;
+}
+
+void UWeaponHealthSet::SetPendingWeaponDamageDebug(const FWeaponDamageDebugEvent& Event, AWeaponPlayerController* SourceController)
+{
+#if !UE_BUILD_SHIPPING
+	PendingDamageDebugEvent = Event;
+	PendingDamageSourceController = SourceController;
+	bHasPendingDamageDebug = SourceController != nullptr;
+#endif
+}
+
+void UWeaponHealthSet::ConsumePendingWeaponDamageDebug(float ShieldDamage, float HealthDamage)
+{
+#if !UE_BUILD_SHIPPING
+	const bool bShouldSend = bHasPendingDamageDebug;
+	FWeaponDamageDebugEvent Event = PendingDamageDebugEvent;
+	TWeakObjectPtr<AWeaponPlayerController> SourceController = PendingDamageSourceController;
+	bHasPendingDamageDebug = false;
+	PendingDamageSourceController.Reset();
+	PendingDamageDebugEvent = FWeaponDamageDebugEvent();
+
+	if (bShouldSend)
+	{
+		Event.ShieldDamage = ShieldDamage;
+		Event.HealthDamage = HealthDamage;
+		Event.FinalDamage = ShieldDamage + HealthDamage;
+		if (AWeaponPlayerController* Controller = SourceController.Get())
+		{
+			Controller->ClientReceiveWeaponDamageDebugEvent(Event);
+		}
+	}
+#endif
 }
 
 void UWeaponHealthSet::ClampHealth(float& NewValue) const
@@ -67,6 +100,9 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 	{
 		const float LocalDamage = GetDamage();
 		SetDamage(0.0f);
+		float AppliedShieldDamage = 0.0f;
+		float AppliedHealthDamage = 0.0f;
+		bool bJustDied = false;
 
 		if (LocalDamage > 0.0f)
 		{
@@ -76,15 +112,16 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 			const float OldShield = GetShield();
 			if (OldShield > 0.0f && RemainingDamage > 0.0f)
 			{
-				const float ShieldDamage = FMath::Min(RemainingDamage, OldShield);
-				SetShield(OldShield - ShieldDamage);
-				RemainingDamage -= ShieldDamage;
+				AppliedShieldDamage = FMath::Min(RemainingDamage, OldShield);
+				SetShield(OldShield - AppliedShieldDamage);
+				RemainingDamage -= AppliedShieldDamage;
 			}
 
 			// 剩余伤害扣生命
 			if (RemainingDamage > 0.0f)
 			{
 				const float OldHealth = GetHealth();
+				AppliedHealthDamage = FMath::Min(RemainingDamage, OldHealth);
 				const float NewHealth = FMath::Clamp(OldHealth - RemainingDamage, 0.0f, GetMaxHealth());
 				SetHealth(NewHealth);
 
@@ -92,11 +129,14 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 				// 避免重复触发死亡流程（重复销毁 / 重复发奖）。
 				const AActor* OwningActor = GetOwningActor();
 				const bool bHasAuthority = OwningActor && OwningActor->HasAuthority();
-				if (bHasAuthority && OldHealth > 0.0f && NewHealth <= 0.0f)
-				{
-					OnHealthDepleted.Broadcast(GetOwningActor());
-				}
+				bJustDied = bHasAuthority && OldHealth > 0.0f && NewHealth <= 0.0f;
 			}
+		}
+
+		ConsumePendingWeaponDamageDebug(AppliedShieldDamage, AppliedHealthDamage);
+		if (bJustDied)
+		{
+			OnHealthDepleted.Broadcast(GetOwningActor());
 		}
 	}
 
