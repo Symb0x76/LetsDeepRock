@@ -3,7 +3,7 @@
 #include "WeaponHUD.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Data/GameDataSubsystem.h"
-#include "WeaponNPC.h"
+#include "EnemyCharacter.h"
 #include "Weapons/WeaponDataAsset.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Engine/Canvas.h"
@@ -161,9 +161,9 @@ void AWeaponHUD::DrawNPCDebugInfo()
 	}
 
 	UFont* Font = GEngine->GetSmallFont();
-	for (TActorIterator<AWeaponNPC> It(GetWorld()); It; ++It)
+	for (TActorIterator<AEnemyCharacter> It(GetWorld()); It; ++It)
 	{
-		AWeaponNPC* NPC = *It;
+		AEnemyCharacter* NPC = *It;
 		if (FVector::DistSquared(OwningPawn->GetActorLocation(), NPC->GetActorLocation()) > FMath::Square(5000.0f))
 		{
 			continue;

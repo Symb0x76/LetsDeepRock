@@ -7,7 +7,7 @@
 #include "Attributes/WeaponCombatSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "WeaponGameplayTags.h"
-#include "WeaponNPC.h"
+#include "EnemyCharacter.h"
 #include "WeaponPlayerController.h"
 #include "UI/WeaponDebugTypes.h"
 
@@ -229,7 +229,7 @@ void UDamageExecCalculation::Execute_Implementation(
 				DebugEvent.bCritical = bCritical;
 				DebugEvent.bWeakpoint = false;
 				DebugEvent.TargetName = TargetAvatar ? TargetAvatar->GetName() : TEXT("Unknown");
-				if (const AWeaponNPC* TargetNPC = Cast<AWeaponNPC>(TargetAvatar))
+				if (const AEnemyCharacter* TargetNPC = Cast<AEnemyCharacter>(TargetAvatar))
 				{
 					if (!TargetNPC->GetEnemyConfigRowName().IsNone())
 					{

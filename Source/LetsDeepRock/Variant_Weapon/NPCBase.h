@@ -35,7 +35,6 @@ public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
-	FName GetEnemyConfigRowName() const { return EnemyConfigRowName; }
 
 protected:
 
