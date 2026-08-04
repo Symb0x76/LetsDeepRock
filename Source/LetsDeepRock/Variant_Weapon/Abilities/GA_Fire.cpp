@@ -181,38 +181,50 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	SpawnParams.Instigator = Cast<APawn>(Avatar);
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
-		WeaponData->ProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
-
-	if (Projectile)
+	FGameplayTagContainer DamageTags = WeaponData->DamageTags;
+	if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
 	{
-		FGameplayTagContainer DamageTags = WeaponData->DamageTags;
-		if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
+		const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
+		if (DamageTypeRootTag.IsValid())
 		{
-			const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
-			if (DamageTypeRootTag.IsValid())
-			{
-				DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
-			}
-			DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+			DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
+		}
+		DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+	}
+
+	const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
+	const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+	const int32 ProjectileCount = FMath::Max(FireModeConfig ? FireModeConfig->ProjectileCount : 1, 1);
+	const float HalfSpreadAngle = FMath::Max(FireModeConfig ? FireModeConfig->SpreadAngle : 0.0f, 0.0f) * 0.5f;
+
+	for (int32 ProjectileIndex = 0; ProjectileIndex < ProjectileCount; ++ProjectileIndex)
+	{
+		FRotator ProjectileRotation = SpawnRotation;
+		if (HalfSpreadAngle > 0.0f)
+		{
+			ProjectileRotation.Yaw += FMath::FRandRange(-HalfSpreadAngle, HalfSpreadAngle);
 		}
 
-		const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
-		const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+		AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
+			WeaponData->ProjectileClass, SpawnLocation, ProjectileRotation, SpawnParams);
 
-		Projectile->InitDamageParams(
-			WeaponData->DamageEffectClass,
-			BaseDamage,
-			Avatar,
-			DamageTags,
-			WeaponData->bProjectilePenetratesTerrain);
-		Projectile->SetProjectileSpeed(ProjectileSpeed);
-		if (FireModeConfig)
+		if (Projectile)
 		{
-			Projectile->InitFlightParams(
-				FireModeConfig->ProjectileLifetime,
-				FireModeConfig->ProjectileGravityScale,
-				FireModeConfig->MaxHitTargets);
+			Projectile->SetActorRotation(ProjectileRotation);
+			Projectile->InitDamageParams(
+				WeaponData->DamageEffectClass,
+				BaseDamage,
+				Avatar,
+				DamageTags,
+				WeaponData->bProjectilePenetratesTerrain);
+			Projectile->SetProjectileSpeed(ProjectileSpeed);
+			if (FireModeConfig)
+			{
+				Projectile->InitFlightParams(
+					FireModeConfig->ProjectileLifetime,
+					FireModeConfig->ProjectileGravityScale,
+					FireModeConfig->MaxHitTargets);
+			}
 		}
 	}
 }
