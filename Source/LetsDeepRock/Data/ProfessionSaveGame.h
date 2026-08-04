@@ -16,6 +16,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Profession|Save", meta = (WorldContext = "WorldContextObject"))
 	static bool SelectProfession(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
+	/** 纯校验职业与主副武器组合，不读写存档。 */
+	static bool IsProfessionSelectionValid(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
+
 	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Profession")
 	FName SelectedProfession;
 

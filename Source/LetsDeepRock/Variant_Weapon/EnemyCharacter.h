@@ -21,7 +21,9 @@ class AEnemyCharacter : public ANPCBase
 public:
 
 	AEnemyCharacter();
+
 	FName GetEnemyConfigRowName() const { return EnemyConfigRowName; }
+	void SetEnemyConfigRowName(FName NewRowName) { EnemyConfigRowName = NewRowName; }
 
 protected:
 

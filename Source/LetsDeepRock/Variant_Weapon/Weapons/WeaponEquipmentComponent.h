@@ -11,6 +11,8 @@
 class AWeaponBase;
 class UAbilitySystemComponent;
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponEquipmentChanged, int32, NewWeaponIndex);
+
 USTRUCT(BlueprintType)
 struct FWeaponAmmoState
 {
@@ -21,6 +23,42 @@ struct FWeaponAmmoState
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
 	int32 ReserveAmmo = 0;
+};
+
+USTRUCT()
+struct FWeaponEquipmentReplicatedState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY()
+	TArray<FWeaponAmmoState> WeaponAmmoStates;
+
+	UPROPERTY()
+	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY()
+	bool bIsReloading = false;
+};
+
+USTRUCT()
+struct FWeaponEquipmentSnapshotState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY()
+	TArray<FWeaponAmmoState> WeaponAmmoStates;
+
+	UPROPERTY()
+	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY()
+	bool bWasReloading = false;
 };
 
 /**
@@ -84,10 +122,15 @@ public:
 	void SwitchToPrevious();
 
 	/** 获取武器库存 */
-	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return WeaponInventory; }
+	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return EquipmentState.WeaponInventory; }
 
 	/** 获取当前武器索引 */
-	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
+	int32 GetCurrentWeaponIndex() const { return EquipmentState.CurrentWeaponIndex; }
+
+	/** 服务端根据动态库存恢复选择；INDEX_NONE 表示不装备。 */
+	bool RestoreWeaponSelection(int32 SavedWeaponIndex);
+	void CaptureSnapshotState(FWeaponEquipmentSnapshotState& OutState) const;
+	bool RestoreSnapshotState(const FWeaponEquipmentSnapshotState& InState);
 
 	/** 当前弹匣内弹药数。 */
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
@@ -103,7 +146,7 @@ public:
 
 	/** 当前武器是否正在换弹。 */
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
-	bool IsReloading() const { return bIsReloading; }
+	bool IsReloading() const { return EquipmentState.bIsReloading; }
 
 	/** 当前换弹计时剩余秒数。 */
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
@@ -124,6 +167,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData);
 
+	void SelectNonWeaponSlot();
+
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	UPROPERTY(BlueprintAssignable, Category = "Weapon")
+	FOnWeaponEquipmentChanged OnEquipmentChanged;
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -137,6 +187,15 @@ protected:
 	FName AttachSocketName = TEXT("hand_r");
 
 private:
+	UFUNCTION(Server, Reliable)
+	void ServerSwitchWeapon(int32 NewIndex);
+
+	void SwitchWeaponAuthority(int32 NewIndex);
+
+	UFUNCTION()
+	void OnRep_EquipmentState();
+
+	void NotifyEquipmentChanged();
 
 	/** 获取 Owner 的 ASC */
 	UAbilitySystemComponent* GetOwnerASC() const;
@@ -164,17 +223,8 @@ private:
 	/** 已授予的近战 Ability Handle */
 	FGameplayAbilitySpecHandle MeleeAbilityHandle;
 
-	/** 武器库存（所有可用武器） */
-	UPROPERTY()
-	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+	UPROPERTY(ReplicatedUsing = OnRep_EquipmentState)
+	FWeaponEquipmentReplicatedState EquipmentState;
 
-	/** 与 WeaponInventory 同索引的独立弹药状态。 */
-	UPROPERTY()
-	TArray<FWeaponAmmoState> WeaponAmmoStates;
-
-	/** 当前装备的武器在库存中的索引 */
-	int32 CurrentWeaponIndex = INDEX_NONE;
-
-	bool bIsReloading = false;
 	FTimerHandle ReloadTimerHandle;
 };

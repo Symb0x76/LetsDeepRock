@@ -8,8 +8,9 @@
 #include "Weapons/WeaponProjectile.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "GameFramework/Character.h"
-#include "GameFramework/PlayerController.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponCharacter.h"
+#include "Engine/World.h"
 #include "Data/GameDataSubsystem.h"
 
 UGA_Fire::UGA_Fire()
@@ -81,7 +82,10 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: empty magazine Weapon=%s Magazine=%d Reserve=%d"),
 			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
 		#endif
-		EquipComp->StartReload();
+		if (HasAuthority(&ActivationInfo))
+		{
+			EquipComp->StartReload();
+		}
 		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
 		return;
 	}
@@ -96,8 +100,9 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 		return;
 	}
 
-	// 一次成功射击固定消耗一发；多弹丸只影响后续 Spawn 循环。
-	if (!EquipComp->ConsumeAmmoForShot())
+	const bool bHasAuthority = HasAuthority(&ActivationInfo);
+	// 一次成功射击固定消耗一发，且只由服务端权威修改弹药状态。
+	if (bHasAuthority && !EquipComp->ConsumeAmmoForShot())
 	{
 		#if !UE_BUILD_SHIPPING
 		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire ConsumeAmmo failed Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
@@ -109,7 +114,7 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	}
 
 	// 仅服务端生成投射物（bReplicates=true 的投射物会自动复制到客户端）
-	if (HasAuthority(&ActivationInfo))
+	if (bHasAuthority)
 	{
 		ServerSpawnProjectile(ActorInfo, WeaponData);
 	}
@@ -262,31 +267,35 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 		return;
 	}
 
-	// 确定生成位置：优先用武器 Actor 的枪口，否则用角色位置+朝向
+	// 确定生成位置：优先用武器 Actor 的枪口，否则用角色位置。
 	FVector SpawnLocation;
 	FRotator SpawnRotation;
+	const FVector AimDirection = Cast<AWeaponCharacter>(Avatar)
+		? Cast<AWeaponCharacter>(Avatar)->GetAimDirection().GetSafeNormal2D()
+		: Avatar->GetActorForwardVector().GetSafeNormal2D();
 
-	AWeaponBase* WeaponActor = GetWeaponActor(ActorInfo);
-	if (WeaponActor)
+	if (AWeaponBase* WeaponActor = GetWeaponActor(ActorInfo))
 	{
 		SpawnLocation = WeaponActor->GetMuzzleLocation();
 		SpawnRotation = WeaponActor->GetMuzzleRotation();
 	}
 	else
 	{
-		// 后备：从角色位置 + 角色自身朝向（俯视角中角色面向鼠标，不依赖 ControlRotation）
+		// 后备：从角色位置生成，方向统一使用服务器确认的 AimDirection。
 		SpawnLocation = Avatar->GetActorLocation() + FVector(0.f, 0.f, 50.f);
-		SpawnRotation = Avatar->GetActorRotation();
+		SpawnRotation = AimDirection.Rotation();
 	}
+
+	// 即使武器枪口自身旋转滞后，投射物仍以服务器确认的瞄准方向飞行。
+	SpawnRotation = AimDirection.Rotation();
 
 	// 俯视角射击：保持投射物水平飞行（Pitch=0）
 	SpawnRotation.Pitch = 0.0f;
 
-	// 生成投射物
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = Avatar;
-	SpawnParams.Instigator = Cast<APawn>(Avatar);
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	UE_LOG(LogTemp, Warning, TEXT("[GA_Fire] AimDir=(%.2f, %.2f) Yaw=%.1f SpawnYaw=%.1f CharFwd=(%.2f, %.2f)"),
+		AimDirection.X, AimDirection.Y,
+		AimDirection.Rotation().Yaw, SpawnRotation.Yaw,
+		Avatar->GetActorForwardVector().X, Avatar->GetActorForwardVector().Y);
 
 	FGameplayTagContainer DamageTags = WeaponData->DamageTags;
 	if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
@@ -315,20 +324,24 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 			ProjectileRotation.Yaw += FMath::FRandRange(-HalfSpreadAngle, HalfSpreadAngle);
 		}
 
-		AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
-			WeaponData->ProjectileClass, SpawnLocation, ProjectileRotation, SpawnParams);
+		const FTransform SpawnTransform(ProjectileRotation, SpawnLocation);
+		AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActorDeferred<AWeaponProjectile>(
+			WeaponData->ProjectileClass,
+			FTransform::Identity,
+			Avatar,
+			Cast<APawn>(Avatar),
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
 
 		if (Projectile)
 		{
-			Projectile->SetActorRotation(ProjectileRotation);
-			Projectile->InitDamageParams(
+			Projectile->InitializeProjectile(
 				WeaponData->DamageEffectClass,
 				BaseDamage,
 				Avatar,
 				DamageTags,
-				WeaponData->bProjectilePenetratesTerrain);
+				WeaponData->bProjectilePenetratesTerrain,
+				ProjectileSpeed);
 			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
-			Projectile->SetProjectileSpeed(ProjectileSpeed);
 			if (FireModeConfig)
 			{
 				Projectile->InitFlightParams(
@@ -336,6 +349,7 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 					FireModeConfig->ProjectileGravityScale,
 					FireModeConfig->MaxHitTargets);
 			}
+			Projectile->FinishSpawning(SpawnTransform);
 		}
 	}
 }

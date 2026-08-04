@@ -42,15 +42,18 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 	{
 		return;
 	}
+	GrenadeDataPath = FSoftObjectPath(GrenadeData);
 
-	// 调用父类 InitDamageParams：设置 DamageEffectClass、BaseDamage、Instigator、DamageTags
-	InitDamageParams(
+	// 调用父类统一初始化：设置伤害、来源、标签和基础速度。
+	InitializeProjectile(
 		GrenadeData->DamageEffectClass,
 		GrenadeData->BaseDamage,
 		InInstigator,
 		GrenadeData->DamageTags,
-		false // 手雷不穿透地形
+		false,
+		GrenadeData->ThrowSpeed
 	);
+	InitFlightParams(0.0f, GrenadeData->GravityScale, 1);
 
 	// 手雷专属弹道配置
 	FuseSeconds = GrenadeData->FuseSeconds;
@@ -104,6 +107,29 @@ void AGrenadeProjectile::SetInitialThrowVelocity(const FVector& WorldVelocity)
 	ProjectileMovement->MaxSpeed = 0.0f;
 }
 
+float AGrenadeProjectile::GetRemainingFuseTime() const
+{
+	if (bHasExploded)
+	{
+		return 0.0f;
+	}
+
+	if (GetWorld() && FuseTimerHandle.IsValid())
+	{
+		const float Remaining = GetWorldTimerManager().GetTimerRemaining(FuseTimerHandle);
+		if (Remaining >= 0.0f)
+		{
+			return Remaining;
+		}
+	}
+	return FuseSeconds;
+}
+
+void AGrenadeProjectile::SetFuseTimeForSnapshotRestore(float RemainingFuseTime)
+{
+	FuseSeconds = RemainingFuseTime;
+}
+
 void AGrenadeProjectile::BeginPlay()
 {
 	Super::BeginPlay();
@@ -144,7 +170,7 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 {
 	// 覆写父类：额外注入 DynamicAssetTags，使 ExecCalc 能识别伤害类型（如 Damage.Type.Explosion）
 	// 从而正确应用对应的元素抗性（Resist.Explosion）
-	if (!DamageEffectClass || DamageValue <= 0.0f)
+	if (!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
 	{
 		return;
 	}
@@ -162,9 +188,9 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 	}
 
 	UAbilitySystemComponent* SourceASC = nullptr;
-	if (InstigatorActor.IsValid())
+	if (InitializationState.InstigatorActor)
 	{
-		if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InstigatorActor.Get()))
+		if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InitializationState.InstigatorActor))
 		{
 			SourceASC = SourceASCInterface->GetAbilitySystemComponent();
 		}
@@ -177,25 +203,27 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 	if (!SourceASC)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[GrenadeProjectile] ApplyDamageToTarget: SourceASC 缺失，跳过对 %s 的 GAS 伤害（InstigatorActor=%s）"),
-			*GetNameSafe(TargetActor), *GetNameSafe(InstigatorActor.Get()));
+			*GetNameSafe(TargetActor), *GetNameSafe(InitializationState.InstigatorActor));
 		return;
 	}
 
 	FGameplayEffectContextHandle Context = SourceASC->MakeEffectContext();
-	Context.AddInstigator(InstigatorActor.Get(), this);
+	Context.AddInstigator(InitializationState.InstigatorActor, this);
 
-	FGameplayEffectSpecHandle SpecHandle = SourceASC->MakeOutgoingSpec(DamageEffectClass, 1.0f, Context);
+	FGameplayEffectSpecHandle SpecHandle = SourceASC->MakeOutgoingSpec(
+		InitializationState.DamageEffectClass, 1.0f, Context);
 	if (!SpecHandle.IsValid())
 	{
 		return;
 	}
 
 	// 注入 SetByCaller 伤害值
-	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, DamageValue);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
+		SpecHandle, DamageTag, InitializationState.DamageValue);
 
 	// ★ 关键：注入 DynamicAssetTags，使 ExecCalc 能从 Spec.GetDynamicAssetTags() 读取伤害类型 Tag
 	// 用于 ⑦ 抗性减免：Damage.Type.Explosion → Resist.Explosion
-	SpecHandle.Data->AppendDynamicAssetTags(DamageTags);
+	SpecHandle.Data->AppendDynamicAssetTags(InitializationState.DamageTags);
 
 	SourceASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
 }
@@ -315,9 +343,9 @@ void AGrenadeProjectile::ExplodeOnce()
 
 				// 获取 Source ASC 用于正确归因
 				UAbilitySystemComponent* SourceASC = nullptr;
-				if (InstigatorActor.IsValid())
+				if (InitializationState.InstigatorActor)
 				{
-					if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InstigatorActor.Get()))
+					if (IAbilitySystemInterface* SourceASCInterface = Cast<IAbilitySystemInterface>(InitializationState.InstigatorActor))
 					{
 						SourceASC = SourceASCInterface->GetAbilitySystemComponent();
 					}
@@ -332,7 +360,7 @@ void AGrenadeProjectile::ExplodeOnce()
 				}
 
 				FGameplayEffectContextHandle EffectContext = SourceASC->MakeEffectContext();
-				EffectContext.AddInstigator(InstigatorActor.Get(), this);
+				EffectContext.AddInstigator(InitializationState.InstigatorActor, this);
 
 				FGameplayEffectSpecHandle SpecHandle = SourceASC->MakeOutgoingSpec(EffectClass, 1.0f, EffectContext);
 				if (SpecHandle.IsValid())
@@ -363,7 +391,7 @@ void AGrenadeProjectile::ExplodeOnce()
 						RectExtentX,
 						RectExtentY,
 						TerrainMaxDamage,
-						DamageTags
+						InitializationState.DamageTags
 					);
 				}
 				break;
@@ -376,7 +404,7 @@ void AGrenadeProjectile::ExplodeOnce()
 					ExplosionCenter,
 					TerrainDamageRadius,
 					TerrainMaxDamage,
-					DamageTags
+					InitializationState.DamageTags
 				);
 				break;
 			}

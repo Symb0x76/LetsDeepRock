@@ -151,7 +151,7 @@ void UGA_ThrowGrenade::ServerSpawnGrenade(const FGameplayAbilityActorInfo* Actor
 	// ── 第6步：Deferred Spawn → Init → FinishSpawning → 速度覆写 ──
 	AGrenadeProjectile* Grenade = World->SpawnActorDeferred<AGrenadeProjectile>(
 		GrenadeData->ProjectileClass,
-		SpawnTransform,
+		FTransform::Identity,
 		Avatar,                        // Owner
 		Cast<APawn>(Avatar),           // Instigator
 		ESpawnActorCollisionHandlingMethod::AlwaysSpawn

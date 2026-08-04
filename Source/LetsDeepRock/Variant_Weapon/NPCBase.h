@@ -36,6 +36,7 @@ public:
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
 
+
 protected:
 
 	virtual void BeginPlay() override;

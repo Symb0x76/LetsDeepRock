@@ -10,6 +10,7 @@
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
+#include "Net/UnrealNetwork.h"
 
 UWeaponEquipmentComponent::UWeaponEquipmentComponent()
 {
@@ -71,7 +72,12 @@ UWeaponDataAsset* UWeaponEquipmentComponent::ResolveWeaponData(FName WeaponId) c
 
 void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 {
-	if (!InWeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !InWeaponData)
+	{
+		return;
+	}
+	const int32 InventoryIndex = EquipmentState.WeaponInventory.IndexOfByKey(InWeaponData);
+	if (InventoryIndex == INDEX_NONE)
 	{
 		return;
 	}
@@ -83,13 +89,7 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 	}
 
 	CurrentWeaponData = InWeaponData;
-	CurrentWeaponIndex = WeaponInventory.IndexOfByKey(InWeaponData);
-
-	// 仅服务端授予 Ability 和 Spawn 武器 Actor
-	if (!GetOwner() || !GetOwner()->HasAuthority())
-	{
-		return;
-	}
+	EquipmentState.CurrentWeaponIndex = InventoryIndex;
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -126,31 +126,67 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 			}
 		}
 	}
+
+	GetOwner()->ForceNetUpdate();
+	NotifyEquipmentChanged();
 }
 
 void UWeaponEquipmentComponent::EquipWeaponLocal(UWeaponDataAsset* InWeaponData)
 {
-	// 客户端仅设置数据引用，用于 Fire() 中获取 FireAbilityClass
-	// 不 GiveAbility（服务端已通过 GAS 复制 AbilitySpec 到客户端）
-	// 不 Spawn 武器 Actor（武器视觉本期仅服务端辅助枪口定位）
-	if (InWeaponData)
+	// 保留旧 API，但装备状态只能由服务端修改；客户端等待 EquipmentState 复制。
+	EquipWeapon(InWeaponData);
+}
+
+void UWeaponEquipmentComponent::OnRep_EquipmentState()
+{
+	CurrentWeaponData = EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex)
+		? EquipmentState.WeaponInventory[EquipmentState.CurrentWeaponIndex]
+		: nullptr;
+	NotifyEquipmentChanged();
+}
+
+void UWeaponEquipmentComponent::NotifyEquipmentChanged()
+{
+	OnEquipmentChanged.Broadcast(EquipmentState.CurrentWeaponIndex);
+}
+
+void UWeaponEquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(UWeaponEquipmentComponent, EquipmentState);
+}
+
+void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 NewIndex)
+{
+	SwitchWeaponAuthority(NewIndex);
+}
+
+void UWeaponEquipmentComponent::SwitchWeaponAuthority(const int32 NewIndex)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
-		CurrentWeaponData = InWeaponData;
-		CurrentWeaponIndex = WeaponInventory.IndexOfByKey(InWeaponData);
+		return;
 	}
+	if (NewIndex == INDEX_NONE)
+	{
+		SelectNonWeaponSlot();
+		return;
+	}
+	if (!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) || NewIndex == EquipmentState.CurrentWeaponIndex)
+	{
+		return;
+	}
+
+	EquipWeapon(EquipmentState.WeaponInventory[NewIndex]);
 }
 
 void UWeaponEquipmentComponent::UnequipWeapon()
 {
-	CancelReload();
-
-	// 非服务端只清理本地数据引用
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
-		CurrentWeaponData = nullptr;
-		CurrentWeaponActor = nullptr;
 		return;
 	}
+	CancelReload();
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -197,33 +233,18 @@ UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
 
 void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 {
-	// 边界检查
-	if (NewIndex < 0 || NewIndex >= WeaponInventory.Num())
+	if (!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) || NewIndex == EquipmentState.CurrentWeaponIndex || !GetOwner())
 	{
 		return;
 	}
 
-	// 已经是当前武器，无需切换
-	if (NewIndex == CurrentWeaponIndex)
+	if (GetOwner()->HasAuthority())
 	{
-		return;
-	}
-
-	const bool bHasAuthority = GetOwner() && GetOwner()->HasAuthority();
-
-	if (bHasAuthority)
-	{
-		// 服务端：完整卸载旧武器 + 装备新武器
-		UnequipWeapon();
-		CurrentWeaponIndex = NewIndex;
-		EquipWeapon(WeaponInventory[NewIndex]);
+		SwitchWeaponAuthority(NewIndex);
 	}
 	else
 	{
-		// 客户端：仅清理本地数据引用 + 设置新武器数据
-		UnequipWeapon();
-		CurrentWeaponIndex = NewIndex;
-		EquipWeaponLocal(WeaponInventory[NewIndex]);
+		ServerSwitchWeapon(NewIndex);
 	}
 }
 
@@ -253,12 +274,12 @@ bool UWeaponEquipmentComponent::GetCurrentAmmoConfig(int32& OutMagazineSize, int
 
 int32 UWeaponEquipmentComponent::GetCurrentMagazineAmmo() const
 {
-	return WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex) ? WeaponAmmoStates[CurrentWeaponIndex].MagazineAmmo : 0;
+	return EquipmentState.WeaponAmmoStates.IsValidIndex(EquipmentState.CurrentWeaponIndex) ? EquipmentState.WeaponAmmoStates[EquipmentState.CurrentWeaponIndex].MagazineAmmo : 0;
 }
 
 int32 UWeaponEquipmentComponent::GetCurrentReserveAmmo() const
 {
-	return WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex) ? WeaponAmmoStates[CurrentWeaponIndex].ReserveAmmo : 0;
+	return EquipmentState.WeaponAmmoStates.IsValidIndex(EquipmentState.CurrentWeaponIndex) ? EquipmentState.WeaponAmmoStates[EquipmentState.CurrentWeaponIndex].ReserveAmmo : 0;
 }
 
 int32 UWeaponEquipmentComponent::GetCurrentMagazineSize() const
@@ -272,22 +293,31 @@ int32 UWeaponEquipmentComponent::GetCurrentMagazineSize() const
 
 float UWeaponEquipmentComponent::GetReloadTimeRemaining() const
 {
-	return bIsReloading && GetWorld() ? GetWorld()->GetTimerManager().GetTimerRemaining(ReloadTimerHandle) : 0.0f;
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return 0.0f;
+	}
+	return EquipmentState.bIsReloading && GetWorld() ? GetWorld()->GetTimerManager().GetTimerRemaining(ReloadTimerHandle) : 0.0f;
 }
 
 void UWeaponEquipmentComponent::StartReload()
 {
-	if (bIsReloading)
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	if (EquipmentState.bIsReloading)
 	{
 		#if !UE_BUILD_SHIPPING
 		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: already reloading Weapon=%s"), *GetNameSafe(CurrentWeaponData));
 		#endif
 		return;
 	}
-	if (!WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	if (!EquipmentState.WeaponAmmoStates.IsValidIndex(EquipmentState.CurrentWeaponIndex))
 	{
 		#if !UE_BUILD_SHIPPING
-		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: invalid weapon index Index=%d Weapon=%s"), CurrentWeaponIndex, *GetNameSafe(CurrentWeaponData));
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: invalid weapon index Index=%d Weapon=%s"), EquipmentState.CurrentWeaponIndex, *GetNameSafe(CurrentWeaponData));
 		#endif
 		return;
 	}
@@ -304,7 +334,7 @@ void UWeaponEquipmentComponent::StartReload()
 		return;
 	}
 
-	const FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+	const FWeaponAmmoState& AmmoState = EquipmentState.WeaponAmmoStates[EquipmentState.CurrentWeaponIndex];
 	if (AmmoState.MagazineAmmo >= MagazineSize)
 	{
 		#if !UE_BUILD_SHIPPING
@@ -322,7 +352,8 @@ void UWeaponEquipmentComponent::StartReload()
 		return;
 	}
 
-	bIsReloading = true;
+	EquipmentState.bIsReloading = true;
+	GetOwner()->ForceNetUpdate();
 	#if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload started Weapon=%s Magazine=%d/%d Reserve=%d Duration=%.3f"),
 		*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, MagazineSize, AmmoState.ReserveAmmo, ReloadDuration);
@@ -338,7 +369,7 @@ void UWeaponEquipmentComponent::StartReload()
 
 void UWeaponEquipmentComponent::FinishReload()
 {
-	if (!bIsReloading || !WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	if (!EquipmentState.bIsReloading || !EquipmentState.WeaponAmmoStates.IsValidIndex(EquipmentState.CurrentWeaponIndex))
 	{
 		return;
 	}
@@ -348,12 +379,13 @@ void UWeaponEquipmentComponent::FinishReload()
 	float ReloadDuration = 0.0f;
 	if (GetCurrentAmmoConfig(MagazineSize, InitialReserve, ReloadDuration))
 	{
-		FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+		FWeaponAmmoState& AmmoState = EquipmentState.WeaponAmmoStates[EquipmentState.CurrentWeaponIndex];
 		const int32 AmmoToLoad = FMath::Min(MagazineSize - AmmoState.MagazineAmmo, AmmoState.ReserveAmmo);
 		AmmoState.MagazineAmmo += AmmoToLoad;
 		AmmoState.ReserveAmmo -= AmmoToLoad;
 	}
-	bIsReloading = false;
+	EquipmentState.bIsReloading = false;
+	GetOwner()->ForceNetUpdate();
 	#if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload completed Weapon=%s Magazine=%d Reserve=%d"),
 		*GetNameSafe(CurrentWeaponData), GetCurrentMagazineAmmo(), GetCurrentReserveAmmo());
@@ -362,12 +394,16 @@ void UWeaponEquipmentComponent::FinishReload()
 
 void UWeaponEquipmentComponent::CancelReload()
 {
-	const bool bWasReloading = bIsReloading;
+	const bool bWasReloading = EquipmentState.bIsReloading;
 	if (GetWorld())
 	{
 		GetWorld()->GetTimerManager().ClearTimer(ReloadTimerHandle);
 	}
-	bIsReloading = false;
+	EquipmentState.bIsReloading = false;
+	if (bWasReloading && GetOwner())
+	{
+		GetOwner()->ForceNetUpdate();
+	}
 	#if !UE_BUILD_SHIPPING
 	if (bWasReloading)
 	{
@@ -379,16 +415,21 @@ void UWeaponEquipmentComponent::CancelReload()
 
 bool UWeaponEquipmentComponent::ConsumeAmmoForShot()
 {
-	if (bIsReloading || !WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return false;
+	}
+
+	if (EquipmentState.bIsReloading || !EquipmentState.WeaponAmmoStates.IsValidIndex(EquipmentState.CurrentWeaponIndex))
 	{
 		#if !UE_BUILD_SHIPPING
 		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] ConsumeAmmo failed Weapon=%s Reloading=%s Index=%d"),
-			*GetNameSafe(CurrentWeaponData), bIsReloading ? TEXT("true") : TEXT("false"), CurrentWeaponIndex);
+			*GetNameSafe(CurrentWeaponData), EquipmentState.bIsReloading ? TEXT("true") : TEXT("false"), EquipmentState.CurrentWeaponIndex);
 		#endif
 		return false;
 	}
 
-	FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+	FWeaponAmmoState& AmmoState = EquipmentState.WeaponAmmoStates[EquipmentState.CurrentWeaponIndex];
 	if (AmmoState.MagazineAmmo <= 0)
 	{
 		#if !UE_BUILD_SHIPPING
@@ -404,65 +445,70 @@ bool UWeaponEquipmentComponent::ConsumeAmmoForShot()
 	{
 		StartReload();
 	}
+	GetOwner()->ForceNetUpdate();
 	#if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FireTrace] ConsumeAmmo succeeded Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
-		*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, AmmoState.ReserveAmmo, bIsReloading ? TEXT("true") : TEXT("false"));
+		*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, AmmoState.ReserveAmmo, EquipmentState.bIsReloading ? TEXT("true") : TEXT("false"));
 	#endif
 	return true;
 }
 
 void UWeaponEquipmentComponent::SwitchToNext()
 {
-	if (WeaponInventory.Num() <= 1)
+	if (EquipmentState.WeaponInventory.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (CurrentWeaponIndex + 1) % WeaponInventory.Num();
+	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex + 1) % EquipmentState.WeaponInventory.Num();
 	SwitchWeapon(NewIndex);
 }
 
 void UWeaponEquipmentComponent::SwitchToPrevious()
 {
-	if (WeaponInventory.Num() <= 1)
+	if (EquipmentState.WeaponInventory.Num() <= 1)
 	{
 		return;
 	}
 
-	const int32 NewIndex = (CurrentWeaponIndex - 1 + WeaponInventory.Num()) % WeaponInventory.Num();
+	const int32 NewIndex = (EquipmentState.CurrentWeaponIndex - 1 + EquipmentState.WeaponInventory.Num()) % EquipmentState.WeaponInventory.Num();
 	SwitchWeapon(NewIndex);
 }
 
 void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponData)
 {
-	if (!WeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
 	{
 		return;
 	}
 
 	// 不重复添加
-	if (WeaponInventory.Contains(WeaponData))
+	if (EquipmentState.WeaponInventory.Contains(WeaponData))
 	{
 		return;
 	}
 
-	WeaponInventory.Add(WeaponData);
+	EquipmentState.WeaponInventory.Add(WeaponData);
 
-	FWeaponAmmoState& AmmoState = WeaponAmmoStates.AddDefaulted_GetRef();
-	const int32 AddedIndex = WeaponInventory.Num() - 1;
-	const int32 PreviousIndex = CurrentWeaponIndex;
+	FWeaponAmmoState& AmmoState = EquipmentState.WeaponAmmoStates.AddDefaulted_GetRef();
+	const int32 AddedIndex = EquipmentState.WeaponInventory.Num() - 1;
+	const int32 PreviousIndex = EquipmentState.CurrentWeaponIndex;
 	UWeaponDataAsset* PreviousWeapon = CurrentWeaponData;
-	CurrentWeaponIndex = AddedIndex;
+	EquipmentState.CurrentWeaponIndex = AddedIndex;
 	CurrentWeaponData = WeaponData;
 	int32 MagazineSize = 0;
 	float ReloadDuration = 0.0f;
 	GetCurrentAmmoConfig(MagazineSize, AmmoState.ReserveAmmo, ReloadDuration);
 	AmmoState.MagazineAmmo = MagazineSize;
-	CurrentWeaponIndex = PreviousIndex;
+	EquipmentState.CurrentWeaponIndex = PreviousIndex;
 	CurrentWeaponData = PreviousWeapon;
+	if (EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex))
+	{
+		CurrentWeaponData = EquipmentState.WeaponInventory[EquipmentState.CurrentWeaponIndex];
+	}
 
 	// 如果是第一把武器，自动装备
-	if (CurrentWeaponIndex == INDEX_NONE)
+	if (EquipmentState.CurrentWeaponIndex == INDEX_NONE)
 	{
 		SwitchWeapon(0);
 	}
@@ -470,45 +516,124 @@ void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponDat
 
 void UWeaponEquipmentComponent::RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData)
 {
-	if (!WeaponData)
+	if (!GetOwner() || !GetOwner()->HasAuthority() || !WeaponData)
 	{
 		return;
 	}
 
-	const int32 RemoveIndex = WeaponInventory.IndexOfByKey(WeaponData);
+	const int32 RemoveIndex = EquipmentState.WeaponInventory.IndexOfByKey(WeaponData);
 	if (RemoveIndex == INDEX_NONE)
 	{
 		return;
 	}
 
 	// 如果移除的是当前装备的武器
-	if (RemoveIndex == CurrentWeaponIndex)
+	if (RemoveIndex == EquipmentState.CurrentWeaponIndex)
 	{
 		UnequipWeapon();
-		WeaponInventory.RemoveAt(RemoveIndex);
-		WeaponAmmoStates.RemoveAt(RemoveIndex);
-		CurrentWeaponIndex = INDEX_NONE;
+		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
+		EquipmentState.WeaponAmmoStates.RemoveAt(RemoveIndex);
+		EquipmentState.CurrentWeaponIndex = INDEX_NONE;
 
 		// 库存还有武器则切到第 0 个，否则没有武器
-		if (WeaponInventory.Num() > 0)
+		if (EquipmentState.WeaponInventory.Num() > 0)
 		{
 			SwitchWeapon(0);
 		}
 		else
 		{
-			CurrentWeaponIndex = INDEX_NONE;
+			EquipmentState.CurrentWeaponIndex = INDEX_NONE;
 		}
 	}
 	else
 	{
 		// 移除的不是当前装备的武器，只从数组移除
-		WeaponInventory.RemoveAt(RemoveIndex);
-		WeaponAmmoStates.RemoveAt(RemoveIndex);
+		EquipmentState.WeaponInventory.RemoveAt(RemoveIndex);
+		EquipmentState.WeaponAmmoStates.RemoveAt(RemoveIndex);
 
 		// 如果移除的武器索引在当前武器之前，需要前移索引
-		if (RemoveIndex < CurrentWeaponIndex)
+		if (RemoveIndex < EquipmentState.CurrentWeaponIndex)
 		{
-			CurrentWeaponIndex--;
+			EquipmentState.CurrentWeaponIndex--;
 		}
 	}
+}
+
+void UWeaponEquipmentComponent::SelectNonWeaponSlot()
+{
+	if (!GetOwner())
+	{
+		return;
+	}
+	if (!GetOwner()->HasAuthority())
+	{
+		ServerSwitchWeapon(INDEX_NONE);
+		return;
+	}
+
+	UnequipWeapon();
+	EquipmentState.CurrentWeaponIndex = INDEX_NONE;
+	CurrentWeaponData = nullptr;
+	GetOwner()->ForceNetUpdate();
+	NotifyEquipmentChanged();
+}
+
+bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIndex)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		(SavedWeaponIndex != INDEX_NONE && !EquipmentState.WeaponInventory.IsValidIndex(SavedWeaponIndex)))
+	{
+		return false;
+	}
+
+	UnequipWeapon();
+	EquipmentState.CurrentWeaponIndex = INDEX_NONE;
+	CurrentWeaponData = nullptr;
+
+	if (SavedWeaponIndex != INDEX_NONE)
+	{
+		EquipWeapon(EquipmentState.WeaponInventory[SavedWeaponIndex]);
+	}
+	else
+	{
+		GetOwner()->ForceNetUpdate();
+		NotifyEquipmentChanged();
+	}
+
+	return true;
+}
+
+void UWeaponEquipmentComponent::CaptureSnapshotState(FWeaponEquipmentSnapshotState& OutState) const
+{
+	OutState.WeaponInventory = EquipmentState.WeaponInventory;
+	OutState.WeaponAmmoStates = EquipmentState.WeaponAmmoStates;
+	OutState.CurrentWeaponIndex = EquipmentState.CurrentWeaponIndex;
+	OutState.bWasReloading = EquipmentState.bIsReloading;
+}
+
+bool UWeaponEquipmentComponent::RestoreSnapshotState(const FWeaponEquipmentSnapshotState& InState)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		InState.WeaponInventory.Num() != InState.WeaponAmmoStates.Num() ||
+		(InState.CurrentWeaponIndex != INDEX_NONE && !InState.WeaponInventory.IsValidIndex(InState.CurrentWeaponIndex)))
+	{
+		return false;
+	}
+
+	UnequipWeapon();
+	EquipmentState.WeaponInventory = InState.WeaponInventory;
+	EquipmentState.WeaponAmmoStates = InState.WeaponAmmoStates;
+	EquipmentState.CurrentWeaponIndex = INDEX_NONE;
+	EquipmentState.bIsReloading = false; // 快照不恢复计时器，避免无可靠剩余时间时卡死。
+	CurrentWeaponData = nullptr;
+	if (InState.CurrentWeaponIndex != INDEX_NONE)
+	{
+		EquipWeapon(EquipmentState.WeaponInventory[InState.CurrentWeaponIndex]);
+	}
+	else
+	{
+		GetOwner()->ForceNetUpdate();
+		NotifyEquipmentChanged();
+	}
+	return true;
 }

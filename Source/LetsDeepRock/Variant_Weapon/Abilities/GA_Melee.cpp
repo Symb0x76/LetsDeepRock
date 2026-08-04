@@ -12,6 +12,7 @@
 #include "GameplayTagContainer.h"
 #include "WeaponGameplayTags.h"
 #include "GridMap/GridDamageHelper.h"
+#include "WeaponCharacter.h"
 
 UGA_Melee::UGA_Melee()
 {
@@ -116,7 +117,10 @@ void UGA_Melee::ServerMeleeSweep(const FGameplayAbilityActorInfo* ActorInfo, con
 
 	// Sweep 中心放角色位置，半径 = MeleeRange
 	const FVector AvatarLocation = Avatar->GetActorLocation();
-	const FVector ForwardDir = Avatar->GetActorForwardVector().GetSafeNormal2D();
+	const AWeaponCharacter* WeaponCharacter = Cast<AWeaponCharacter>(Avatar);
+	const FVector ForwardDir = WeaponCharacter
+		? WeaponCharacter->GetAimDirection().GetSafeNormal2D()
+		: Avatar->GetActorForwardVector().GetSafeNormal2D();
 	const float SweepRadius = WeaponData->MeleeRange;
 
 	// 球形重叠检测：按 Pawn ObjectType 查询
@@ -252,7 +256,10 @@ void UGA_Melee::ServerMeleeTerrainSweep(const FGameplayAbilityActorInfo* ActorIn
 
 	// 近战攻击点在角色正前方 MeleeRange 距离处
 	const FVector AvatarLocation = Avatar->GetActorLocation();
-	const FVector ForwardDir = Avatar->GetActorForwardVector().GetSafeNormal2D();
+	const AWeaponCharacter* WeaponCharacter = Cast<AWeaponCharacter>(Avatar);
+	const FVector ForwardDir = WeaponCharacter
+		? WeaponCharacter->GetAimDirection().GetSafeNormal2D()
+		: Avatar->GetActorForwardVector().GetSafeNormal2D();
 	const FVector HitPoint = AvatarLocation + ForwardDir * WeaponData->MeleeRange * 0.5f;
 
 	// 对命中点施加地形伤害

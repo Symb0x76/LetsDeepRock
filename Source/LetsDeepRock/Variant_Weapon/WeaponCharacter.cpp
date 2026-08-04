@@ -24,7 +24,11 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Data/GameDataSubsystem.h"
-#include "Data/ProfessionSaveGame.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "Net/UnrealNetwork.h"
+#include "GridMap/GridDamageHelper.h"
+#include "GridMap/GridMapManager.h"
 #include "Abilities/GameplayAbility.h"
 #include "Abilities/GA_ThrowGrenade.h"
 #include "Vision/VisionSourceComponent.h"
@@ -94,6 +98,7 @@ void AWeaponCharacter::OnRep_PlayerState()
 	// 用于本地预测、输入绑定与 UI 属性监听。
 	InitAbilitySystem();
 
+	// 装备库存与当前武器由服务器复制；客户端不得在这里重建或修改它们。
 }
 
 void AWeaponCharacter::InitAbilitySystem()
@@ -113,13 +118,27 @@ void AWeaponCharacter::InitAbilitySystem()
 
 	VisionSource->TeamId = PS->GetTeamId();
 
-	// 服务端和客户端使用同一份职业存档选择属性与装备配置。
-	UProfessionSaveGame* Configuration = UProfessionSaveGame::LoadCurrentConfiguration();
-	const bool bHasSavedProfession = Configuration && !Configuration->SelectedProfession.IsNone();
-	FName ProfessionId = bHasSavedProfession
-		? Configuration->SelectedProfession
-		: FName(TEXT("Ranger"));
-	const UProfessionSaveGame* EffectiveConfiguration = bHasSavedProfession ? Configuration : nullptr;
+	// 每名玩家只读取自身 PlayerState 上的服务端权威职业装备状态。
+	if (HasAuthority() && PS->GetProfessionId().IsNone())
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FProfessionConfigRow* RangerRow = DataSys->GetProfessionConfig(FName(TEXT("Ranger"))))
+				{
+					PS->SetProfessionLoadout(FName(TEXT("Ranger")), RangerRow->PrimaryWeaponId, RangerRow->SecondaryWeaponId);
+				}
+			}
+		}
+	}
+	FName ProfessionId = PS->GetProfessionId();
+	FName PrimaryWeaponId = PS->GetPrimaryWeaponId();
+	FName SecondaryWeaponId = PS->GetSecondaryWeaponId();
+	if (HasAuthority() && ProfessionId.IsNone())
+	{
+		ProfessionId = FName(TEXT("Ranger"));
+	}
 
 	const FCharacterAttributeRow* CharacterRow = nullptr;
 	const FProfessionConfigRow* ProfessionRow = nullptr;
@@ -128,11 +147,12 @@ void AWeaponCharacter::InitAbilitySystem()
 		if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
 		{
 			ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
-			if (!ProfessionRow)
+			if (!ProfessionRow && HasAuthority())
 			{
 				ProfessionId = FName(TEXT("Ranger"));
 				ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
-				EffectiveConfiguration = nullptr;
+				PrimaryWeaponId = NAME_None;
+				SecondaryWeaponId = NAME_None;
 			}
 			if (ProfessionRow)
 			{
@@ -142,11 +162,13 @@ void AWeaponCharacter::InitAbilitySystem()
 					ProfessionId = FName(TEXT("Ranger"));
 					ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
 					CharacterRow = ProfessionRow ? DataSys->GetCharacterAttributes(ProfessionRow->CharacterAttributeRow) : nullptr;
-					EffectiveConfiguration = nullptr;
+					PrimaryWeaponId = NAME_None;
+					SecondaryWeaponId = NAME_None;
 				}
 			}
 		}
 	}
+	ActiveCharacterAttributeRow = ProfessionRow ? ProfessionRow->CharacterAttributeRow : NAME_None;
 	if (CharacterRow)
 	{
 		VisionSource->ConfigureCone(CharacterRow->VisionRange, CharacterRow->VisionHalfAngle);
@@ -176,26 +198,35 @@ void AWeaponCharacter::InitAbilitySystem()
 		GrenadeAbilityHandle = AbilitySystemComponent->GiveAbility(GrenadeSpec);
 	}
 
-	InitProfessionWeapons(ProfessionRow, EffectiveConfiguration);
+	InitProfessionWeapons(ProfessionRow, PrimaryWeaponId, SecondaryWeaponId);
 }
 
-void AWeaponCharacter::InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, const UProfessionSaveGame* Configuration)
+void AWeaponCharacter::RefreshProfessionLoadout()
 {
+	InitAbilitySystem();
+}
+
+bool AWeaponCharacter::SetCharacterConfigRowNameAuthoritative(const FName NewRowName)
+{
+	// 属性来源只允许职业配置；旧快照字段仅用于确认恢复目标与当前职业一致。
+	return HasAuthority() && !NewRowName.IsNone() && NewRowName == ActiveCharacterAttributeRow;
+}
+
+void AWeaponCharacter::InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, FName PrimaryWeaponId, FName SecondaryWeaponId)
+{
+	bHasSkillItem = ProfessionRow && !ProfessionRow->SkillItemId.IsNone();
+	bHasProfessionTool = ProfessionRow && !ProfessionRow->ClassEquipmentId.IsNone();
+	if (!HasAuthority()) return;
+
 	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
 	if (!EquipComp) return;
 
 	if (ProfessionRow)
 	{
-		bHasSkillItem = !(Configuration ? Configuration->SkillItemId : ProfessionRow->SkillItemId).IsNone();
-		bHasProfessionTool = !(Configuration ? Configuration->ClassEquipmentId : ProfessionRow->ClassEquipmentId).IsNone();
 		if (EquipComp->GetWeaponInventory().Num() > 0) return;
 
-		const FName PrimaryWeaponId = Configuration && !Configuration->PrimaryWeaponId.IsNone()
-			? Configuration->PrimaryWeaponId
-			: ProfessionRow->PrimaryWeaponId;
-		const FName SecondaryWeaponId = Configuration && !Configuration->SecondaryWeaponId.IsNone()
-			? Configuration->SecondaryWeaponId
-			: ProfessionRow->SecondaryWeaponId;
+		if (PrimaryWeaponId.IsNone()) PrimaryWeaponId = ProfessionRow->PrimaryWeaponId;
+		if (SecondaryWeaponId.IsNone()) SecondaryWeaponId = ProfessionRow->SecondaryWeaponId;
 		UWeaponDataAsset* PrimaryWeapon = EquipComp->ResolveWeaponData(PrimaryWeaponId);
 		UWeaponDataAsset* SecondaryWeapon = EquipComp->ResolveWeaponData(SecondaryWeaponId);
 		if (PrimaryWeapon && SecondaryWeapon)
@@ -280,7 +311,89 @@ void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 	const FRotator CurrentRotation = GetActorRotation();
 	const FRotator NewRotation = FMath::RInterpTo(CurrentRotation, TargetRotation, DeltaTime, 15.0f);
 
-	SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
+	const FVector NewAimDirection = FVector(NewRotation.Vector()).GetSafeNormal2D();
+	if (HasAuthority())
+	{
+		SetAimDirectionAuthoritative(NewAimDirection);
+	}
+	else
+	{
+		// 本地先更新表现，再把瞄准意图发送给服务器；战斗判定不会读取客户端旋转。
+		SetActorRotation(FRotator(0.0f, NewRotation.Yaw, 0.0f));
+		ServerSetAimDirection(NewAimDirection);
+	}
+}
+
+void AWeaponCharacter::SetAimDirectionAuthoritative(const FVector& NewAimDirection)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	const FVector SafeDirection = NewAimDirection.GetSafeNormal2D();
+	if (SafeDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	AimDirection = SafeDirection;
+	SetActorRotation(FRotator(0.0f, SafeDirection.Rotation().Yaw, 0.0f));
+	ForceNetUpdate();
+}
+
+void AWeaponCharacter::ServerSetAimDirection_Implementation(FVector_NetQuantizeNormal NewAimDirection)
+{
+	// 服务器只接受有限、非零的水平向量，避免客户端提交非法瞄准方向。
+	const FVector Candidate = FVector(NewAimDirection);
+	if (!FMath::IsFinite(Candidate.X) || !FMath::IsFinite(Candidate.Y) ||
+		!FMath::IsFinite(Candidate.Z) || Candidate.SizeSquared2D() < KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	SetAimDirectionAuthoritative(Candidate);
+}
+
+void AWeaponCharacter::OnRep_AimDirection()
+{
+	const FVector SafeDirection = FVector(AimDirection).GetSafeNormal2D();
+	if (!SafeDirection.IsNearlyZero())
+	{
+		SetActorRotation(FRotator(0.0f, SafeDirection.Rotation().Yaw, 0.0f));
+	}
+}
+
+void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AWeaponCharacter, AimDirection);
+	DOREPLIFETIME(AWeaponCharacter, CurrentEquipmentSlot);
+}
+
+void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)
+{
+	if (IsDead())
+	{
+		return;
+	}
+
+	ServerRequestBuildTile(WorldLocation, BuildType);
+}
+
+void AWeaponCharacter::ServerRequestBuildTile_Implementation(
+	FVector_NetQuantize WorldLocation, EGridTileType BuildType)
+{
+	if (IsDead() || !FMath::IsFinite(WorldLocation.X) ||
+		!FMath::IsFinite(WorldLocation.Y) || !FMath::IsFinite(WorldLocation.Z))
+	{
+		return;
+	}
+
+	if (AGridMapManager* Manager = FGridDamageHelper::FindGridMapManager(this))
+	{
+		Manager->TryBuildTileAtWorldLocation(this, WorldLocation, BuildType);
+	}
 }
 
 void AWeaponCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -642,31 +755,16 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 	}
 
 	const float ScrollValue = Value.Get<float>();
-	if (ScrollValue > 0.0f)
+	const int32 WeaponCount = EquipComp->GetWeaponInventory().Num();
+	if (WeaponCount <= 0 || FMath::IsNearlyZero(ScrollValue))
 	{
-		EquipComp->SwitchToNext();
+		return;
 	}
-	else if (ScrollValue < 0.0f)
-	{
-		EquipComp->SwitchToPrevious();
-	}
-
-	// 从技能/工具槽返回同一武器索引时，组件会因索引未变而跳过，需恢复实际装备。
-	if (!EquipComp->GetCurrentWeaponData())
-	{
-		const int32 WeaponIndex = EquipComp->GetCurrentWeaponIndex();
-		const TArray<TObjectPtr<UWeaponDataAsset>>& Inventory = EquipComp->GetWeaponInventory();
-		if (Inventory.IsValidIndex(WeaponIndex))
-		{
-			EquipComp->EquipWeapon(Inventory[WeaponIndex]);
-		}
-	}
-
-	const int32 WeaponIndex = EquipComp->GetCurrentWeaponIndex();
-	if (WeaponIndex == 0 || WeaponIndex == 1)
-	{
-		CurrentEquipmentSlot = static_cast<uint8>(WeaponIndex);
-	}
+	const int32 BaseIndex = CurrentEquipmentSlot < WeaponCount ? CurrentEquipmentSlot : 0;
+	const int32 NewIndex = ScrollValue > 0.0f
+		? (BaseIndex + 1) % WeaponCount
+		: (BaseIndex - 1 + WeaponCount) % WeaponCount;
+	SelectEquipmentSlot(static_cast<uint8>(NewIndex));
 }
 
 void AWeaponCharacter::SelectPrimary()
@@ -716,6 +814,12 @@ void AWeaponCharacter::SelectTool()
 void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
 {
 	if (IsDead()) return;
+	if (!HasAuthority())
+	{
+		ServerSelectEquipmentSlot(SlotIndex);
+		return;
+	}
+	if (SlotIndex > 3) return;
 	if (SlotIndex == 2 && !bHasSkillItem) return;
 	if (SlotIndex == 3 && !bHasProfessionTool) return;
 
@@ -731,21 +835,38 @@ void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
 
 	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
 	if (!EquipComp) return;
+	if (SlotIndex <= 1 && !EquipComp->GetWeaponInventory().IsValidIndex(SlotIndex)) return;
 
 	CurrentEquipmentSlot = SlotIndex;
 	if (SlotIndex <= 1)
 	{
 		EquipComp->SwitchWeapon(SlotIndex);
-		// 从非武器槽返回原武器时 CurrentWeaponIndex 未变，显式恢复该武器。
-		if (!EquipComp->GetCurrentWeaponData() && EquipComp->GetWeaponInventory().IsValidIndex(SlotIndex))
-		{
-			EquipComp->EquipWeapon(EquipComp->GetWeaponInventory()[SlotIndex]);
-		}
 	}
 	else
 	{
-		EquipComp->UnequipWeapon();
+		EquipComp->SelectNonWeaponSlot();
 	}
+	ForceNetUpdate();
+}
+
+void AWeaponCharacter::ServerSelectEquipmentSlot_Implementation(uint8 SlotIndex)
+{
+	SelectEquipmentSlot(SlotIndex);
+}
+
+void AWeaponCharacter::OnRep_CurrentEquipmentSlot()
+{
+	ActiveFireInputSlot = 255;
+}
+
+bool AWeaponCharacter::RestoreEquipmentSlot(uint8 SlotIndex)
+{
+	if (!HasAuthority() || SlotIndex > 3)
+	{
+		return false;
+	}
+	SelectEquipmentSlot(SlotIndex);
+	return CurrentEquipmentSlot == SlotIndex;
 }
 
 void AWeaponCharacter::DeployProfessionTool()

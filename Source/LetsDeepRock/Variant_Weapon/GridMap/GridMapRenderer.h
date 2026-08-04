@@ -67,6 +67,9 @@ public:
 	/** 移除指定格子坐标对应的渲染实例 */
 	void RemoveTileInstance(int32 GridX, int32 GridY);
 
+	/** 根据数据层中的最新状态局部重建一个格子的实例。 */
+	void RefreshTileInstance(UGridMapData* MapData, int32 GridX, int32 GridY);
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -104,4 +107,7 @@ private:
 
 	/** 获取对应类型的 HISM */
 	UHierarchicalInstancedStaticMeshComponent* GetHISMForType(EGridTileType Type);
+
+	/** 为单个非空格子添加 HISM 实例并更新索引映射。 */
+	void AddTileInstance(UGridMapData* MapData, const FGridTileData& Tile);
 };

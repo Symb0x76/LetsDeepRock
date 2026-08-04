@@ -8,15 +8,11 @@ const FString UProfessionSaveGame::SaveSlotName = TEXT("ProfessionConfiguration"
 
 bool UProfessionSaveGame::SelectProfession(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
+	if (!IsProfessionSelectionValid(WorldContextObject, ProfessionId, PrimaryWeaponId, SecondaryWeaponId)) return false;
+
 	UGameInstance* GameInstance = UGameplayStatics::GetGameInstance(WorldContextObject);
 	UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
 	const FProfessionConfigRow* ProfessionRow = DataSubsystem ? DataSubsystem->GetProfessionConfig(ProfessionId) : nullptr;
-	if (!ProfessionRow) return false;
-	if (!DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Primary")).Contains(PrimaryWeaponId)
-		|| !DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Secondary")).Contains(SecondaryWeaponId))
-	{
-		return false;
-	}
 
 	UProfessionSaveGame* Configuration = LoadCurrentConfiguration();
 	if (!Configuration) return false;
@@ -29,6 +25,16 @@ bool UProfessionSaveGame::SelectProfession(const UObject* WorldContextObject, FN
 	Configuration->SelectedArmorPerkIds.Reset();
 
 	return SaveCurrentConfiguration(WorldContextObject, Configuration);
+}
+
+bool UProfessionSaveGame::IsProfessionSelectionValid(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
+{
+	UGameInstance* GameInstance = UGameplayStatics::GetGameInstance(WorldContextObject);
+	UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	return DataSubsystem
+		&& DataSubsystem->GetProfessionConfig(ProfessionId)
+		&& DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Primary")).Contains(PrimaryWeaponId)
+		&& DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Secondary")).Contains(SecondaryWeaponId);
 }
 
 bool UProfessionSaveGame::SaveCurrentConfiguration(const UObject* WorldContextObject, UProfessionSaveGame* Configuration)

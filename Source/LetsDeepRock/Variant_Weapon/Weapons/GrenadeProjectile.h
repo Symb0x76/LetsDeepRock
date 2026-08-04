@@ -46,6 +46,13 @@ public:
 	 */
 	void SetInitialThrowVelocity(const FVector& WorldVelocity);
 
+	const FSoftObjectPath& GetGrenadeDataPath() const { return GrenadeDataPath; }
+	float GetRemainingFuseTime() const;
+	bool HasExploded() const { return bHasExploded; }
+
+	/** Deferred Spawn 完成前写入快照中的剩余引信。 */
+	void SetFuseTimeForSnapshotRestore(float RemainingFuseTime);
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -73,6 +80,10 @@ private:
 
 	/** 引信时间（秒） */
 	float FuseSeconds = 3.0f;
+
+	/** 恢复时重新加载静态手雷配置所需的资产身份。 */
+	UPROPERTY()
+	FSoftObjectPath GrenadeDataPath;
 
 	/** 爆炸范围（核心半径，cm。Sphere: 半径; Capsule: 胶囊半径; Box: 参考尺寸） */
 	float ExplosionRadius = 400.0f;

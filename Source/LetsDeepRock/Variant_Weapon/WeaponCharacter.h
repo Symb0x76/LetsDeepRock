@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "GridMap/GridMapTypes.h"
 #include "GameplayAbilitySpec.h"
 #include "WeaponCharacter.generated.h"
 
@@ -17,9 +18,9 @@ class UAbilitySystemComponent;
 class UWeaponEquipmentComponent;
 class UGameplayAbility;
 class UGrenadeTrajectoryPreviewComponent;
+struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
-class UProfessionSaveGame;
 class ADrone;
 struct FGrenadeBallisticsOutput;
 struct FProfessionConfigRow;
@@ -97,6 +98,7 @@ public:
 
 	//~ AActor
 	virtual void Tick(float DeltaTime) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
@@ -112,8 +114,27 @@ public:
 	/** 添加输入绑定 */
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-	// === 手雷 Pending Target（GA 消费接口） ===
+	/** 返回服务器确认并复制的水平瞄准方向；射击和近战统一读取此值。 */
+	UFUNCTION(BlueprintPure, Category = "Combat|Aim")
+	FVector GetAimDirection() const { return FVector(AimDirection); }
 
+	/** 服务器写入瞄准方向，并同步角色的水平 Rotation。 */
+	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
+
+	/** 快照兼容接口：返回职业配置派生出的属性行，不维护独立复制配置源。 */
+	FName GetCharacterConfigRowName() const { return ActiveCharacterAttributeRow; }
+	bool SetCharacterConfigRowNameAuthoritative(FName NewRowName);
+
+	/** PlayerState 职业状态复制到达后刷新派生属性表现；客户端不会建立库存。 */
+	void RefreshProfessionLoadout();
+
+	uint8 GetCurrentEquipmentSlot() const { return CurrentEquipmentSlot; }
+	bool RestoreEquipmentSlot(uint8 SlotIndex);
+
+	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
+	UFUNCTION(BlueprintCallable, Category = "GridMap")
+	void RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType);
+	
 	/** GA 调用：消费一次性 pending 手雷目标，返回 true 表示有有效目标 */
 	bool ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOutValid) const;
 
@@ -130,13 +151,16 @@ protected:
 	void InitAbilitySystem();
 
 	/** 按职业配置和存档初始化主副武器 */
-	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, const UProfessionSaveGame* Configuration);
+	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
 	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
 
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;
+
+	/** 当前职业配置派生出的属性行，仅供快照一致性校验。 */
+	FName ActiveCharacterAttributeRow = NAME_None;
 
 	/** 检查玩家是否处于死亡状态（ASC 是否持有 State.Dead Tag） */
 	bool IsDead() const;
@@ -181,6 +205,12 @@ protected:
 	void SelectTool();
 	void SelectEquipmentSlot(uint8 SlotIndex);
 
+	UFUNCTION(Server, Reliable)
+	void ServerSelectEquipmentSlot(uint8 SlotIndex);
+
+	UFUNCTION()
+	void OnRep_CurrentEquipmentSlot();
+
 	/** 在服务端部署职业工具无人机 */
 	void DeployProfessionTool();
 
@@ -216,6 +246,20 @@ protected:
 	/** 每 Tick 将角色朝向旋转到鼠标在地面的投影位置 */
 	void RotateToMouseCursor(float DeltaTime);
 
+	/** 客户端提交本地瞄准意图，服务器校验后写入权威方向。 */
+	UFUNCTION(Server, Unreliable)
+	void ServerSetAimDirection(FVector_NetQuantizeNormal NewAimDirection);
+
+	UFUNCTION()
+	void OnRep_AimDirection();
+
+	/** 当前服务器确认的水平瞄准方向。 */
+	UPROPERTY(ReplicatedUsing = OnRep_AimDirection, BlueprintReadOnly, Category = "Combat|Aim")
+	FVector_NetQuantizeNormal AimDirection = FVector(1.0f, 0.0f, 0.0f);
+
+	UFUNCTION(Server, Reliable)
+	void ServerRequestBuildTile(FVector_NetQuantize WorldLocation, EGridTileType BuildType);
+
 	// === 手雷预览 ===
 
 	/** 弹道预览组件（仅本地控制 Pawn 创建，非复制） */
@@ -239,7 +283,8 @@ protected:
 	/** PendingGrenadeTarget 是否有效 */
 	mutable bool bHasPendingGrenadeTarget = false;
 
-	/** 当前装备槽：0 主武器、1 副武器、2 技能道具、3 职业工具 */
+	/** 当前装备槽：由服务端权威选择并复制。 */
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentEquipmentSlot)
 	uint8 CurrentEquipmentSlot = 0;
 
 	/** 本次左键按下时使用的槽；255 表示当前没有持续中的左键输入 */

@@ -6,6 +6,11 @@
 #include "GridMapTypes.h"
 #include "GridMapData.generated.h"
 
+class AGridMapManager;
+class UGridMapGenerator_Default;
+class UGridMapGenerator_Simple;
+class UGridMapGenerator_Test;
+
 /**
  * UGridMapData
  * 
@@ -29,12 +34,6 @@ public:
 	/** 获取指定坐标的格子数据（只读） */
 	const FGridTileData* GetTile(int32 X, int32 Y) const;
 
-	/** 获取指定坐标的格子数据（可写） */
-	FGridTileData* GetTileMutable(int32 X, int32 Y);
-
-	/** 设置指定坐标的格子类型（自动设置对应耐久值） */
-	void SetTileType(int32 X, int32 Y, EGridTileType NewType);
-
 	/** 坐标是否有效 */
 	bool IsValidCoord(int32 X, int32 Y) const;
 
@@ -51,6 +50,15 @@ public:
 	int32 GetTotalTiles() const { return Tiles.Num(); }
 
 private:
+	friend class AGridMapManager;
+	friend class UGridMapGenerator_Default;
+	friend class UGridMapGenerator_Simple;
+	friend class UGridMapGenerator_Test;
+
+	/** 运行时仅允许 Manager 写入；生成阶段仅允许已登记的生成器写入。 */
+	FGridTileData* GetTileMutable(int32 X, int32 Y);
+	void SetTileType(int32 X, int32 Y, EGridTileType NewType);
+
 	/** 坐标转一维索引 */
 	int32 CoordToIndex(int32 X, int32 Y) const;
 

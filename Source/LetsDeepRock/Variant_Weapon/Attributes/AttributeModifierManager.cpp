@@ -119,54 +119,59 @@ bool UAttributeModifierManager::HasModifiers(FName SourceId) const
 	return ActiveModifiers.Contains(SourceId);
 }
 
-FGameplayAttribute UAttributeModifierManager::ResolveAttributeFromTag(const FGameplayTag& Tag)
+const TMap<FGameplayTag, FGameplayAttribute>& UAttributeModifierManager::GetAttributeTagMap()
 {
-	// 通过 Tag 映射到具体的 FGameplayAttribute（static 只初始化一次）
-	static TMap<FGameplayTag, FGameplayAttribute> TagToAttribute;
-
-	if (TagToAttribute.Num() == 0)
+	static TMap<FGameplayTag, FGameplayAttribute> Map = []()
 	{
+		TMap<FGameplayTag, FGameplayAttribute> M;
+
 		// --- HealthSet ---
-		TagToAttribute.Add(TAG_Attr_Health, UWeaponHealthSet::GetHealthAttribute());
-		TagToAttribute.Add(TAG_Attr_MaxHealth, UWeaponHealthSet::GetMaxHealthAttribute());
-		TagToAttribute.Add(TAG_Attr_Shield, UWeaponHealthSet::GetShieldAttribute());
-		TagToAttribute.Add(TAG_Attr_MaxShield, UWeaponHealthSet::GetMaxShieldAttribute());
-		TagToAttribute.Add(TAG_Attr_ShieldRegenRate, UWeaponHealthSet::GetShieldRegenRateAttribute());
-		TagToAttribute.Add(TAG_Attr_ShieldRegenDelay, UWeaponHealthSet::GetShieldRegenDelayAttribute());
-		TagToAttribute.Add(TAG_Attr_Armor, UWeaponHealthSet::GetArmorAttribute());
+		M.Add(TAG_Attr_Health, UWeaponHealthSet::GetHealthAttribute());
+		M.Add(TAG_Attr_MaxHealth, UWeaponHealthSet::GetMaxHealthAttribute());
+		M.Add(TAG_Attr_Shield, UWeaponHealthSet::GetShieldAttribute());
+		M.Add(TAG_Attr_MaxShield, UWeaponHealthSet::GetMaxShieldAttribute());
+		M.Add(TAG_Attr_ShieldRegenRate, UWeaponHealthSet::GetShieldRegenRateAttribute());
+		M.Add(TAG_Attr_ShieldRegenDelay, UWeaponHealthSet::GetShieldRegenDelayAttribute());
+		M.Add(TAG_Attr_Armor, UWeaponHealthSet::GetArmorAttribute());
 
 		// --- CombatSet ---
-		TagToAttribute.Add(TAG_Attr_CritChance, UWeaponCombatSet::GetCritChanceAttribute());
-		TagToAttribute.Add(TAG_Attr_CritDamage, UWeaponCombatSet::GetCritDamageAttribute());
-		TagToAttribute.Add(TAG_Attr_ArmorPenetration, UWeaponCombatSet::GetArmorPenetrationAttribute());
-		TagToAttribute.Add(TAG_Attr_DamageBonus, UWeaponCombatSet::GetDamageBonusAttribute());
-		TagToAttribute.Add(TAG_Attr_WeakpointBonus, UWeaponCombatSet::GetWeakpointBonusAttribute());
-		TagToAttribute.Add(TAG_Attr_AttackSpeed, UWeaponCombatSet::GetAttackSpeedAttribute());
-		TagToAttribute.Add(TAG_Attr_AreaDamageBonus, UWeaponCombatSet::GetAreaDamageBonusAttribute());
+		M.Add(TAG_Attr_CritChance, UWeaponCombatSet::GetCritChanceAttribute());
+		M.Add(TAG_Attr_CritDamage, UWeaponCombatSet::GetCritDamageAttribute());
+		M.Add(TAG_Attr_ArmorPenetration, UWeaponCombatSet::GetArmorPenetrationAttribute());
+		M.Add(TAG_Attr_DamageBonus, UWeaponCombatSet::GetDamageBonusAttribute());
+		M.Add(TAG_Attr_WeakpointBonus, UWeaponCombatSet::GetWeakpointBonusAttribute());
+		M.Add(TAG_Attr_AttackSpeed, UWeaponCombatSet::GetAttackSpeedAttribute());
+		M.Add(TAG_Attr_AreaDamageBonus, UWeaponCombatSet::GetAreaDamageBonusAttribute());
 
 		// --- MovementSet ---
-		TagToAttribute.Add(TAG_Attr_MoveSpeed, UWeaponMovementSet::GetMoveSpeedAttribute());
-		TagToAttribute.Add(TAG_Attr_SprintSpeed, UWeaponMovementSet::GetSprintSpeedAttribute());
-		TagToAttribute.Add(TAG_Attr_DodgeDistance, UWeaponMovementSet::GetDodgeDistanceAttribute());
+		M.Add(TAG_Attr_MoveSpeed, UWeaponMovementSet::GetMoveSpeedAttribute());
+		M.Add(TAG_Attr_SprintSpeed, UWeaponMovementSet::GetSprintSpeedAttribute());
+		M.Add(TAG_Attr_DodgeDistance, UWeaponMovementSet::GetDodgeDistanceAttribute());
 
 		// --- ResistanceSet ---
-		TagToAttribute.Add(TAG_Attr_Resist_Physical, UWeaponResistanceSet::GetResistPhysicalAttribute());
-		TagToAttribute.Add(TAG_Attr_Resist_Fire, UWeaponResistanceSet::GetResistFireAttribute());
-		TagToAttribute.Add(TAG_Attr_Resist_Cold, UWeaponResistanceSet::GetResistColdAttribute());
-		TagToAttribute.Add(TAG_Attr_Resist_Poison, UWeaponResistanceSet::GetResistPoisonAttribute());
-		TagToAttribute.Add(TAG_Attr_Resist_Explosion, UWeaponResistanceSet::GetResistExplosionAttribute());
-		TagToAttribute.Add(TAG_Attr_Resist_Electric, UWeaponResistanceSet::GetResistElectricAttribute());
+		M.Add(TAG_Attr_Resist_Physical, UWeaponResistanceSet::GetResistPhysicalAttribute());
+		M.Add(TAG_Attr_Resist_Fire, UWeaponResistanceSet::GetResistFireAttribute());
+		M.Add(TAG_Attr_Resist_Cold, UWeaponResistanceSet::GetResistColdAttribute());
+		M.Add(TAG_Attr_Resist_Poison, UWeaponResistanceSet::GetResistPoisonAttribute());
+		M.Add(TAG_Attr_Resist_Explosion, UWeaponResistanceSet::GetResistExplosionAttribute());
+		M.Add(TAG_Attr_Resist_Electric, UWeaponResistanceSet::GetResistElectricAttribute());
 
 		// --- ResourceSet ---
-		TagToAttribute.Add(TAG_Attr_Energy, UWeaponResourceSet::GetEnergyAttribute());
-		TagToAttribute.Add(TAG_Attr_MaxEnergy, UWeaponResourceSet::GetMaxEnergyAttribute());
-		TagToAttribute.Add(TAG_Attr_EnergyRegenRate, UWeaponResourceSet::GetEnergyRegenRateAttribute());
-		TagToAttribute.Add(TAG_Attr_Stamina, UWeaponResourceSet::GetStaminaAttribute());
-		TagToAttribute.Add(TAG_Attr_MaxStamina, UWeaponResourceSet::GetMaxStaminaAttribute());
-		TagToAttribute.Add(TAG_Attr_StaminaRegenRate, UWeaponResourceSet::GetStaminaRegenRateAttribute());
-		TagToAttribute.Add(TAG_Attr_Lucky, UWeaponResourceSet::GetLuckyAttribute());
-	}
+		M.Add(TAG_Attr_Energy, UWeaponResourceSet::GetEnergyAttribute());
+		M.Add(TAG_Attr_MaxEnergy, UWeaponResourceSet::GetMaxEnergyAttribute());
+		M.Add(TAG_Attr_EnergyRegenRate, UWeaponResourceSet::GetEnergyRegenRateAttribute());
+		M.Add(TAG_Attr_Stamina, UWeaponResourceSet::GetStaminaAttribute());
+		M.Add(TAG_Attr_MaxStamina, UWeaponResourceSet::GetMaxStaminaAttribute());
+		M.Add(TAG_Attr_StaminaRegenRate, UWeaponResourceSet::GetStaminaRegenRateAttribute());
+		M.Add(TAG_Attr_Lucky, UWeaponResourceSet::GetLuckyAttribute());
 
-	const FGameplayAttribute* Found = TagToAttribute.Find(Tag);
+		return M;
+	}();
+	return Map;
+}
+
+FGameplayAttribute UAttributeModifierManager::ResolveAttributeFromTag(const FGameplayTag& Tag)
+{
+	const FGameplayAttribute* Found = GetAttributeTagMap().Find(Tag);
 	return Found ? *Found : FGameplayAttribute();
 }

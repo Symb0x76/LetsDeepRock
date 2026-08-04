@@ -14,6 +14,51 @@ class UWeaponMovementSet;
 class UWeaponResistanceSet;
 class UWeaponResourceSet;
 
+USTRUCT(BlueprintType)
+struct FWeaponPlayerLobbyState
+{
+	GENERATED_BODY()
+	
+	UPROPERTY(BlueprintReadOnly, Category = "Player")
+	int32 SlotIndex = INDEX_NONE;
+	
+	UPROPERTY(BlueprintReadOnly, Category = "Player")
+	bool bIsReady = false;
+	
+	// 重载 == 和 !=
+	bool operator==(const FWeaponPlayerLobbyState& Other) const
+	{
+		return SlotIndex == Other.SlotIndex
+			&& bIsReady == Other.bIsReady;
+	}
+
+	bool operator!=(const FWeaponPlayerLobbyState& Other) const
+	{
+		return !(*this == Other);
+	}
+};
+
+USTRUCT(BlueprintType)
+struct FWeaponProfessionLoadoutState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName ProfessionId = NAME_None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName PrimaryWeaponId = NAME_None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName SecondaryWeaponId = NAME_None;
+};
+
+// 动态多播委托
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
+	FOnWeaponPlayerLobbyStateChanged,
+	FWeaponPlayerLobbyState, OldState,
+	FWeaponPlayerLobbyState, NewState);
+
 /**
  *  武器系统玩家状态
  *
@@ -59,7 +104,43 @@ public:
 	/** 类型化访问 ResourceSet */
 	UWeaponResourceSet* GetResourceSet() const { return ResourceSet; }
 
+	UFUNCTION(BlueprintPure, Category = "Player")
+	int32 GetPlayerSlotIndex() const { return LobbyState.SlotIndex; }
+	
+	UFUNCTION(BlueprintPure, Category = "Player")
+	bool GetIsPlayerReady() const { return LobbyState.bIsReady; }
+
+	FName GetProfessionId() const { return ProfessionLoadout.ProfessionId; }
+	FName GetPrimaryWeaponId() const { return ProfessionLoadout.PrimaryWeaponId; }
+	FName GetSecondaryWeaponId() const { return ProfessionLoadout.SecondaryWeaponId; }
+
+	/** 服务端校验并设置当前玩家独立的职业装备。 */
+	bool SetProfessionLoadout(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
+
+	const FWeaponPlayerLobbyState& GetLobbyState() const
+	{
+		return LobbyState;
+	}
+
+	/** 仅服务端调用；由 WeaponGameMode 在 PostLogin 时分配 */
+	void SetPlayerSlotIndex(int32 NewSlotIndex);
+
+	/** 仅服务端调用；用于写入已验证的 ready 状态。 */
+	void SetPlayerReady(bool bNewIsReady);
+
+	/** 本地玩家提交 ready 意图；远程客户端通过 Server RPC，Listen Host 直接执行。 */
+	UFUNCTION(BlueprintCallable, Category = "Player")
+	void RequestSetPlayerReady(bool bNewIsReady);
+
+	UPROPERTY(BlueprintAssignable, Category = "Player")
+	FOnWeaponPlayerLobbyStateChanged OnLobbyStateChanged;
+	
 protected:
+	UFUNCTION(Server, Reliable)
+	void ServerSetPlayerReady(bool bNewIsReady);
+
+	void ApplyPlayerReadyRequest(bool bNewIsReady);
+
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Vision")
 	int32 TeamId = 0;
 
@@ -86,4 +167,16 @@ protected:
 	/** 资源属性集 */
 	UPROPERTY()
 	TObjectPtr<UWeaponResourceSet> ResourceSet;
+	
+	UPROPERTY(ReplicatedUsing = OnRep_LobbyState, BlueprintReadOnly, Category = "Player")
+	FWeaponPlayerLobbyState LobbyState;
+
+	UPROPERTY(ReplicatedUsing = OnRep_ProfessionLoadout, BlueprintReadOnly, Category = "Profession")
+	FWeaponProfessionLoadoutState ProfessionLoadout;
+	
+	UFUNCTION()
+	void OnRep_LobbyState(FWeaponPlayerLobbyState OldState);
+
+	UFUNCTION()
+	void OnRep_ProfessionLoadout();
 };

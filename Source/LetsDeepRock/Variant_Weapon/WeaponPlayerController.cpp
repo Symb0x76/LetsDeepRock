@@ -9,6 +9,7 @@
 #include "UI/WeaponHUD.h"
 #include "UI/WeaponClassSelectWidget.h"
 #include "WeaponGameMode.h"
+#include "WeaponPlayerState.h"
 #include "Data/ProfessionSaveGame.h"
 #include "Blueprint/UserWidget.h"
 
@@ -127,8 +128,8 @@ void AWeaponPlayerController::RequestSelectProfession(FName ProfessionId, FName 
 
 void AWeaponPlayerController::ServerSelectProfessionAndRespawn_Implementation(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
-	// 存档为本地单机全局槽位写入，服务端权威执行以匹配单机/监听服务器场景
-	if (!UProfessionSaveGame::SelectProfession(this, ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
+	AWeaponPlayerState* WeaponPlayerState = GetPlayerState<AWeaponPlayerState>();
+	if (!WeaponPlayerState || !WeaponPlayerState->SetProfessionLoadout(ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
 	{
 		return;
 	}

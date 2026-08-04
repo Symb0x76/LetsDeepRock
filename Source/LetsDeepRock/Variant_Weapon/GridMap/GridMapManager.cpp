@@ -1,38 +1,76 @@
-// 网格地图系统 - 管理器实现
+// 网格地图系统 - 服务器权威管理器实现
 
 #include "GridMapManager.h"
 #include "GridMapData.h"
 #include "GridMapGenerator.h"
 #include "GridMapRenderer.h"
 #include "NavigationSystem.h"
+#include "Net/UnrealNetwork.h"
 #include "DrawDebugHelpers.h"
 #include "GameFramework/PlayerController.h"
 #include "UObject/UObjectIterator.h"
 #include "Variant_Weapon/Vision/VisionSourceComponent.h"
 #include "Variant_Weapon/WeaponPlayerState.h"
 
+void FGridTileDeltaArray::PostReplicatedAdd(const TArrayView<int32>& AddedIndices, int32 FinalSize)
+{
+	if (!Owner)
+	{
+		return;
+	}
+
+	for (const int32 Index : AddedIndices)
+	{
+		if (Items.IsValidIndex(Index))
+		{
+			Owner->HandleReplicatedTileDelta(Items[Index]);
+		}
+	}
+}
+
+void FGridTileDeltaArray::PostReplicatedChange(const TArrayView<int32>& ChangedIndices, int32 FinalSize)
+{
+	if (!Owner)
+	{
+		return;
+	}
+
+	for (const int32 Index : ChangedIndices)
+	{
+		if (Items.IsValidIndex(Index))
+		{
+			Owner->HandleReplicatedTileDelta(Items[Index]);
+		}
+	}
+}
+
 AGridMapManager::AGridMapManager()
 {
 	PrimaryActorTick.bCanEverTick = true;
+	bReplicates = true;
+	bAlwaysRelevant = true;
 
-	// 创建根组件
 	USceneComponent* Root = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
 	SetRootComponent(Root);
 
-	// 创建渲染器组件
 	MapRenderer = CreateDefaultSubobject<UGridMapRenderer>(TEXT("MapRenderer"));
-
-	// 默认使用 Simple 生成器
 	GeneratorClass = UGridMapGenerator_Simple::StaticClass();
+	TileDeltas.Owner = this;
 }
 
 void AGridMapManager::BeginPlay()
 {
 	Super::BeginPlay();
+	TileDeltas.Owner = this;
 
-	if (bAutoGenerateOnBeginPlay)
+	if (HasAuthority() && bAutoGenerateOnBeginPlay)
 	{
 		GenerateMap();
+	}
+	else if (!HasAuthority() && BaselineState.bGenerated)
+	{
+		BuildBaselineMap(BaselineState);
+		ApplyAllReplicatedDeltas();
 	}
 }
 
@@ -63,40 +101,215 @@ void AGridMapManager::Tick(float DeltaSeconds)
 
 void AGridMapManager::GenerateMap()
 {
-	// 1. 创建地图数据
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	FGridMapBaselineState NewState;
+	NewState.SchemaVersion = 1;
+	NewState.GenerationVersion = BaselineState.GenerationVersion + 1;
+	NewState.Config = MapConfig;
+	NewState.GeneratorClass = GeneratorClass;
+	NewState.bGenerated = true;
+
+	Generator = GeneratorClass ? NewObject<UGridMapGenerator>(this, GeneratorClass) : nullptr;
+	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
+	{
+		NewState.EffectiveSeed = SimpleGenerator->Seed != 0
+			? SimpleGenerator->Seed
+			: FMath::RandRange(1, MAX_int32);
+	}
+
+	BaselineState = NewState;
+	TileDeltas.Items.Reset();
+	TileDeltas.MarkArrayDirty();
+	NextTileRevision = 0;
+
+	BuildBaselineMap(BaselineState);
+	ForceNetUpdate();
+}
+
+bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FString& OutError) const
+{
+	OutState = FGridMapRecoveryState();
+	OutError.Reset();
+	if (!HasAuthority() || !BaselineState.bGenerated || !MapData)
+	{
+		OutError = TEXT("GridMap recovery state requires a generated Authority map");
+		return false;
+	}
+
+	OutState.BaselineSchemaVersion = BaselineState.SchemaVersion;
+	OutState.GenerationVersion = BaselineState.GenerationVersion;
+	OutState.Config = BaselineState.Config;
+	OutState.GeneratorClass = FSoftClassPath(BaselineState.GeneratorClass.Get());
+	OutState.EffectiveSeed = BaselineState.EffectiveSeed;
+	OutState.bGenerated = BaselineState.bGenerated;
+	OutState.NextTileRevision = NextTileRevision;
+	OutState.TileDeltas.Reserve(TileDeltas.Items.Num());
+
+	for (const FGridTileDeltaItem& Delta : TileDeltas.Items)
+	{
+		FGridTileRecoveryState& SavedDelta = OutState.TileDeltas.AddDefaulted_GetRef();
+		SavedDelta.GridX = Delta.GridX;
+		SavedDelta.GridY = Delta.GridY;
+		SavedDelta.TileType = Delta.TileType;
+		SavedDelta.Health = Delta.Health;
+		SavedDelta.MaxHealth = Delta.MaxHealth;
+		SavedDelta.GenerationVersion = Delta.GenerationVersion;
+		SavedDelta.Revision = Delta.Revision;
+	}
+
+	return ValidateRecoveryState(OutState, OutError);
+}
+
+bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
+{
+	OutError.Reset();
+	const FGridMapConfig& Config = State.Config;
+	const int64 TileCount = static_cast<int64>(Config.MapWidth) * Config.MapHeight;
+	if (State.SchemaVersion != GridMapRecoveryStateVersion ||
+		State.BaselineSchemaVersion != 1 || !State.bGenerated ||
+		State.GenerationVersion <= 0 || !State.GeneratorClass.IsValid() ||
+		Config.MapWidth <= 0 || Config.MapHeight <= 0 ||
+		!FMath::IsFinite(Config.TileSize) || Config.TileSize <= 0.0f ||
+		Config.TreeHealth <= 0 || Config.LargeTreeHealth <= 0 ||
+		TileCount <= 0 || TileCount > MAX_int32 || State.TileDeltas.Num() > TileCount)
+	{
+		OutError = TEXT("GridMap recovery baseline is invalid");
+		return false;
+	}
+
+	TSet<int64> Coordinates;
+	uint32 HighestRevision = 0;
+	for (const FGridTileRecoveryState& Delta : State.TileDeltas)
+	{
+		const bool bValidTileType = StaticEnum<EGridTileType>()->IsValidEnumValue(
+			static_cast<int64>(Delta.TileType));
+		if (Delta.GridX < 0 || Delta.GridX >= Config.MapWidth ||
+			Delta.GridY < 0 || Delta.GridY >= Config.MapHeight ||
+			!bValidTileType || Delta.Health < 0 || Delta.MaxHealth < 0 ||
+			Delta.Health > Delta.MaxHealth || Delta.GenerationVersion != State.GenerationVersion ||
+			Delta.Revision == 0)
+		{
+			OutError = TEXT("GridMap recovery Tile Delta is invalid");
+			return false;
+		}
+
+		const int64 Coordinate = static_cast<int64>(Delta.GridY) * Config.MapWidth + Delta.GridX;
+		if (Coordinates.Contains(Coordinate))
+		{
+			OutError = TEXT("GridMap recovery contains duplicate Tile Delta coordinates");
+			return false;
+		}
+		Coordinates.Add(Coordinate);
+		HighestRevision = FMath::Max(HighestRevision, Delta.Revision);
+	}
+
+	if (State.NextTileRevision < HighestRevision)
+	{
+		OutError = TEXT("GridMap recovery revision is older than one of its Tile Deltas");
+		return false;
+	}
+	return true;
+}
+
+bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
+{
+	if (!HasAuthority() || !ValidateRecoveryState(State, OutError))
+	{
+		if (!HasAuthority())
+		{
+			OutError = TEXT("GridMap recovery can only run on Authority");
+		}
+		return false;
+	}
+
+	UClass* LoadedGeneratorClass = State.GeneratorClass.TryLoadClass<UGridMapGenerator>();
+	if (!LoadedGeneratorClass)
+	{
+		OutError = FString::Printf(TEXT("GridMap generator class %s could not be loaded"),
+			*State.GeneratorClass.ToString());
+		return false;
+	}
+
+	FGridMapBaselineState RestoredBaseline;
+	RestoredBaseline.SchemaVersion = State.BaselineSchemaVersion;
+	RestoredBaseline.GenerationVersion = State.GenerationVersion;
+	RestoredBaseline.Config = State.Config;
+	RestoredBaseline.GeneratorClass = LoadedGeneratorClass;
+	RestoredBaseline.EffectiveSeed = State.EffectiveSeed;
+	RestoredBaseline.bGenerated = State.bGenerated;
+
+	BaselineState = RestoredBaseline;
+	MapConfig = State.Config;
+	GeneratorClass = LoadedGeneratorClass;
+	TileDeltas.Items.Reset(State.TileDeltas.Num());
+	for (const FGridTileRecoveryState& SavedDelta : State.TileDeltas)
+	{
+		FGridTileDeltaItem& Delta = TileDeltas.Items.AddDefaulted_GetRef();
+		Delta.GridX = SavedDelta.GridX;
+		Delta.GridY = SavedDelta.GridY;
+		Delta.TileType = SavedDelta.TileType;
+		Delta.Health = SavedDelta.Health;
+		Delta.MaxHealth = SavedDelta.MaxHealth;
+		Delta.GenerationVersion = SavedDelta.GenerationVersion;
+		Delta.Revision = SavedDelta.Revision;
+	}
+	TileDeltas.MarkArrayDirty();
+	NextTileRevision = State.NextTileRevision;
+
+	BuildBaselineMap(BaselineState);
+	ApplyAllReplicatedDeltas();
+	ForceNetUpdate();
+	return true;
+}
+
+void AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State)
+{
+	if (!State.bGenerated || State.SchemaVersion != 1)
+	{
+		return;
+	}
+
 	MapData = NewObject<UGridMapData>(this);
-	MapData->Initialize(MapConfig);
+	MapData->Initialize(State.Config);
+	Generator = State.GeneratorClass ? NewObject<UGridMapGenerator>(this, State.GeneratorClass) : nullptr;
 	VisibleTiles.Init(false, MapData->GetTotalTiles());
 	MarkVisionDirty();
 
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 地图数据初始化完成：%dx%d，格子尺寸=%.0f UU"),
-		MapConfig.MapWidth, MapConfig.MapHeight, MapConfig.TileSize);
-
-	// 2. 创建并执行生成器
-	if (GeneratorClass)
+	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
 	{
-		Generator = NewObject<UGridMapGenerator>(this, GeneratorClass);
+		SimpleGenerator->Seed = State.EffectiveSeed;
+	}
+
+	if (Generator)
+	{
 		Generator->Generate(MapData);
 	}
-	else
-	{
-		UE_LOG(LogTemp, Warning, TEXT("[GridMap] 未设置 GeneratorClass，地图为全空地。"));
-	}
 
-	// 3. 触发渲染
 	if (MapRenderer)
 	{
 		MapRenderer->BuildFromMapData(MapData);
 	}
 
-	// 4. NavMesh 会自动根据碰撞体更新（HISM 带碰撞）
-	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-	if (NavSys)
+	if (HasAuthority())
 	{
-		NavSys->Build();
+		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+		{
+			NavSys->Build();
+		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 地图生成流程完成。"));
+	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
+		State.GenerationVersion, State.EffectiveSeed);
+}
+
+void AGridMapManager::OnRep_BaselineState()
+{
+	BuildBaselineMap(BaselineState);
+	ApplyAllReplicatedDeltas();
 }
 
 bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGridTileData& OutTileData) const
@@ -106,13 +319,14 @@ bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGrid
 		return false;
 	}
 
-	int32 X, Y;
-	if (!MapData->WorldToGrid(WorldLocation, X, Y))
+	int32 GridX = 0;
+	int32 GridY = 0;
+	if (!MapData->WorldToGrid(WorldLocation, GridX, GridY))
 	{
 		return false;
 	}
 
-	const FGridTileData* Tile = MapData->GetTile(X, Y);
+	const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
 	if (!Tile)
 	{
 		return false;
@@ -124,110 +338,79 @@ bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGrid
 
 bool AGridMapManager::DamageTile(int32 GridX, int32 GridY, int32 DamageAmount)
 {
-	if (!MapData)
+	if (!HasAuthority() || !MapData || DamageAmount <= 0)
 	{
 		return false;
 	}
 
-	FGridTileData* Tile = MapData->GetTileMutable(GridX, GridY);
-	if (!Tile)
+	const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+	if (!Tile || !Tile->IsDestructible())
 	{
 		return false;
 	}
 
-	// 不可破坏的格子直接返回
-	if (!Tile->IsDestructible())
-	{
-		return false;
-	}
+	const int32 NewHealth = FMath::Max(0, Tile->Health - DamageAmount);
+	const bool bDestroyed = NewHealth == 0;
+	CommitTileState(GridX, GridY,
+		bDestroyed ? EGridTileType::Empty : Tile->TileType,
+		NewHealth,
+		bDestroyed ? 0 : Tile->MaxHealth);
 
-	// 扣血
-	Tile->Health = FMath::Max(0, Tile->Health - DamageAmount);
-
-	// 判断是否被破坏
-	if (Tile->Health <= 0)
-	{
-		// 破坏：变为空地
-		Tile->TileType = EGridTileType::Empty;
-		Tile->Health = 0;
-		Tile->MaxHealth = 0;
-
-		OnTileDestroyedInternal(GridX, GridY);
-		OnTileDestroyed.Broadcast(GridX, GridY);
-
-		UE_LOG(LogTemp, Log, TEXT("[GridMap] 格子 (%d, %d) 被破坏，变为空地。"), GridX, GridY);
-		return true;
-	}
-
-	return false;
+	return bDestroyed;
 }
 
 bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, int32 DamageAmount)
 {
-	if (!MapData)
+	if (!HasAuthority() || !MapData)
 	{
 		return false;
 	}
 
-	int32 X, Y;
-	if (!MapData->WorldToGrid(WorldLocation, X, Y))
-	{
-		return false;
-	}
-
-	return DamageTile(X, Y, DamageAmount);
+	int32 GridX = 0;
+	int32 GridY = 0;
+	return MapData->WorldToGrid(WorldLocation, GridX, GridY)
+		&& DamageTile(GridX, GridY, DamageAmount);
 }
 
 bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage)
 {
-	if (!MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
+	if (!HasAuthority() || !MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
 	{
 		return false;
 	}
 
 	const FGridMapConfig& Config = MapData->GetConfig();
-
-	// 将圆心和半径转换为网格坐标范围
-	int32 CenterX, CenterY;
+	int32 CenterX = 0;
+	int32 CenterY = 0;
 	MapData->WorldToGrid(Center, CenterX, CenterY);
-
-	// 根据半径计算网格坐标偏移量，构建遍历的矩形边界
 	const int32 GridRadius = FMath::CeilToInt(Radius / Config.TileSize) + 1;
-	const int32 MinX = FMath::Max(0, CenterX - GridRadius);
-	const int32 MaxX = FMath::Min(Config.MapWidth - 1, CenterX + GridRadius);
-	const int32 MinY = FMath::Max(0, CenterY - GridRadius);
-	const int32 MaxY = FMath::Min(Config.MapHeight - 1, CenterY + GridRadius);
-
+	const float RadiusSquared = FMath::Square(Radius);
 	bool bAnyDamage = false;
-	const float RadiusSq = Radius * Radius;
-	const float InvRadius = 1.0f / Radius;
 
-	for (int32 Y = MinY; Y <= MaxY; ++Y)
+	for (int32 GridY = FMath::Max(0, CenterY - GridRadius);
+		GridY <= FMath::Min(Config.MapHeight - 1, CenterY + GridRadius); ++GridY)
 	{
-		for (int32 X = MinX; X <= MaxX; ++X)
+		for (int32 GridX = FMath::Max(0, CenterX - GridRadius);
+			GridX <= FMath::Min(Config.MapWidth - 1, CenterX + GridRadius); ++GridX)
 		{
-			// 计算格子中心到爆炸中心的距离
-			const FVector TileCenter = MapData->GridToWorld(X, Y);
-			FVector Delta = TileCenter - Center;
-			Delta.Z = 0.0f; // 只考虑 2D 平面距离
-			const float DistSq = Delta.SizeSquared();
-
-			if (DistSq > RadiusSq)
+			const float DistanceSquared = FVector::DistSquared2D(MapData->GridToWorld(GridX, GridY), Center);
+			if (DistanceSquared > RadiusSquared)
 			{
-				continue; // 超出爆炸半径
+				continue;
 			}
 
-			// 线性距离衰减：MaxDamage at center → 0 at boundary
-			const float Distance = FMath::Sqrt(DistSq);
-			const float Attenuation = 1.0f - FMath::Clamp(Distance * InvRadius, 0.0f, 1.0f);
-			const int32 ScaledDamage = FMath::RoundToInt(MaxDamage * Attenuation);
-
-			if (ScaledDamage > 0)
+			const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+			if (!Tile || !Tile->IsDestructible())
 			{
-				if (DamageTile(X, Y, ScaledDamage))
-				{
-					bAnyDamage = true;
-				}
+				continue;
+			}
+
+			const float Attenuation = 1.0f - FMath::Sqrt(DistanceSquared) / Radius;
+			const int32 DamageAmount = FMath::RoundToInt(MaxDamage * FMath::Clamp(Attenuation, 0.0f, 1.0f));
+			if (DamageAmount > 0)
+			{
+				DamageTile(GridX, GridY, DamageAmount);
+				bAnyDamage = true;
 			}
 		}
 	}
@@ -235,55 +418,41 @@ bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, f
 	return bAnyDamage;
 }
 
-bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth, float HalfHeight, float MaxDamage)
+bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth,
+	float HalfHeight, float MaxDamage)
 {
-	if (!MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
+	if (!HasAuthority() || !MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
 	{
 		return false;
 	}
 
 	const FGridMapConfig& Config = MapData->GetConfig();
-
-	// 将矩形中心和半尺寸转换为网格坐标范围
-	int32 CenterX, CenterY;
+	int32 CenterX = 0;
+	int32 CenterY = 0;
 	MapData->WorldToGrid(Center, CenterX, CenterY);
-
 	const int32 GridHalfWidth = FMath::CeilToInt(HalfWidth / Config.TileSize);
 	const int32 GridHalfHeight = FMath::CeilToInt(HalfHeight / Config.TileSize);
-
-	const int32 MinX = FMath::Max(0, CenterX - GridHalfWidth);
-	const int32 MaxX = FMath::Min(Config.MapWidth - 1, CenterX + GridHalfWidth);
-	const int32 MinY = FMath::Max(0, CenterY - GridHalfHeight);
-	const int32 MaxY = FMath::Min(Config.MapHeight - 1, CenterY + GridHalfHeight);
-
-	// 矩形世界坐标边界（用于精确判断格子中心是否在矩形内）
-	const float RectMinX = Center.X - HalfWidth;
-	const float RectMaxX = Center.X + HalfWidth;
-	const float RectMinY = Center.Y - HalfHeight;
-	const float RectMaxY = Center.Y + HalfHeight;
-
+	const int32 DamageAmount = FMath::RoundToInt(MaxDamage);
 	bool bAnyDamage = false;
-	const int32 IntDamage = FMath::RoundToInt(MaxDamage);
 
-	for (int32 Y = MinY; Y <= MaxY; ++Y)
+	for (int32 GridY = FMath::Max(0, CenterY - GridHalfHeight);
+		GridY <= FMath::Min(Config.MapHeight - 1, CenterY + GridHalfHeight); ++GridY)
 	{
-		for (int32 X = MinX; X <= MaxX; ++X)
+		for (int32 GridX = FMath::Max(0, CenterX - GridHalfWidth);
+			GridX <= FMath::Min(Config.MapWidth - 1, CenterX + GridHalfWidth); ++GridX)
 		{
-			const FVector TileCenter = MapData->GridToWorld(X, Y);
-
-			// 检查格子中心是否在矩形内（仅 XY 平面）
-			if (TileCenter.X < RectMinX || TileCenter.X > RectMaxX ||
-				TileCenter.Y < RectMinY || TileCenter.Y > RectMaxY)
+			const FVector TileCenter = MapData->GridToWorld(GridX, GridY);
+			if (FMath::Abs(TileCenter.X - Center.X) > HalfWidth ||
+				FMath::Abs(TileCenter.Y - Center.Y) > HalfHeight)
 			{
 				continue;
 			}
 
-			if (IntDamage > 0)
+			const FGridTileData* Tile = MapData->GetTile(GridX, GridY);
+			if (Tile && Tile->IsDestructible() && DamageAmount > 0)
 			{
-				if (DamageTile(X, Y, IntDamage))
-				{
-					bAnyDamage = true;
-				}
+				DamageTile(GridX, GridY, DamageAmount);
+				bAnyDamage = true;
 			}
 		}
 	}
@@ -577,9 +746,10 @@ void AGridMapManager::DrawVisionDebug() const
 		}
 
 		const FVector Location = Source->GetVisionLocation() + FVector(0.0f, 0.0f, 20.0f);
+		const FGridMapConfig& Config = MapData->GetConfig();
 		const float DebugRange = Source->Range > 0.0f
 			? Source->Range
-			: FMath::Max(MapConfig.MapWidth, MapConfig.MapHeight) * MapConfig.TileSize;
+			: FMath::Max(Config.MapWidth, Config.MapHeight) * Config.TileSize;
 		if (Source->Shape == EVisionSourceShape::Circle)
 		{
 			DrawDebugCircle(GetWorld(), Location, DebugRange, 64, FColor::Cyan, false, Duration, 0, 2.0f, FVector(1, 0, 0), FVector(0, 1, 0), false);
@@ -608,15 +778,159 @@ void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
 	if (MapData)
 	{
 		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
-		if (NavSys)
+		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
 		{
-			// 标记局部区域脏，触发异步 NavMesh 重建
-			const FBox DirtyBounds(
-				WorldPos - FVector(MapData->GetConfig().TileSize),
-				WorldPos + FVector(MapData->GetConfig().TileSize)
-			);
-			NavSys->AddDirtyArea(DirtyBounds, ENavigationDirtyFlag::All);
+			const FVector Extent(MapData->GetConfig().TileSize);
+			NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
 		}
 	}
+}
+
+bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
+	const FVector& WorldLocation, EGridTileType BuildType)
+{
+	const bool bValidBuildType = BuildType == EGridTileType::Tree ||
+		BuildType == EGridTileType::Rock || BuildType == EGridTileType::LargeTree;
+	if (!HasAuthority() || !MapData || !RequestingActor || !bValidBuildType ||
+		FVector::DistSquared2D(RequestingActor->GetActorLocation(), WorldLocation) > FMath::Square(MaxBuildDistance))
+	{
+		return false;
+	}
+
+	int32 GridX = 0;
+	int32 GridY = 0;
+	if (!MapData->WorldToGrid(WorldLocation, GridX, GridY))
+	{
+		return false;
+	}
+
+	const FGridTileData* ExistingTile = MapData->GetTile(GridX, GridY);
+	if (!ExistingTile || ExistingTile->TileType != EGridTileType::Empty)
+	{
+		return false;
+	}
+
+	const int32 MaxHealth = GetDefaultHealthForType(BuildType);
+	CommitTileState(GridX, GridY, BuildType, MaxHealth, MaxHealth);
+	return true;
+}
+
+void AGridMapManager::CommitTileState(int32 GridX, int32 GridY, EGridTileType TileType,
+	int32 Health, int32 MaxHealth)
+{
+	if (!HasAuthority() || !MapData || !MapData->IsValidCoord(GridX, GridY))
+	{
+		return;
+	}
+
+	FGridTileDeltaItem* Delta = TileDeltas.Items.FindByPredicate(
+		[GridX, GridY](const FGridTileDeltaItem& Item)
+		{
+			return Item.GridX == GridX && Item.GridY == GridY;
+		});
+
+	if (!Delta)
+	{
+		Delta = &TileDeltas.Items.AddDefaulted_GetRef();
+		Delta->GridX = GridX;
+		Delta->GridY = GridY;
+	}
+
+	Delta->TileType = TileType;
+	Delta->Health = FMath::Clamp(Health, 0, FMath::Max(0, MaxHealth));
+	Delta->MaxHealth = FMath::Max(0, MaxHealth);
+	Delta->GenerationVersion = BaselineState.GenerationVersion;
+	Delta->Revision = ++NextTileRevision;
+	TileDeltas.MarkItemDirty(*Delta);
+
+	ApplyTileState(*Delta);
+	ForceNetUpdate();
+}
+
+void AGridMapManager::HandleReplicatedTileDelta(const FGridTileDeltaItem& Delta)
+{
+	if (!HasAuthority() && MapData && Delta.GenerationVersion == BaselineState.GenerationVersion)
+	{
+		ApplyTileState(Delta);
+	}
+}
+
+void AGridMapManager::ApplyAllReplicatedDeltas()
+{
+	if (!MapData)
+	{
+		return;
+	}
+
+	for (const FGridTileDeltaItem& Delta : TileDeltas.Items)
+	{
+		if (Delta.GenerationVersion == BaselineState.GenerationVersion)
+		{
+			ApplyTileState(Delta);
+		}
+	}
+}
+
+void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
+{
+	FGridTileData* Tile = MapData ? MapData->GetTileMutable(Delta.GridX, Delta.GridY) : nullptr;
+	if (!Tile)
+	{
+		return;
+	}
+
+	const EGridTileType PreviousType = Tile->TileType;
+	const bool bTypeChanged = PreviousType != Delta.TileType;
+	Tile->TileType = Delta.TileType;
+	Tile->Health = Delta.Health;
+	Tile->MaxHealth = Delta.MaxHealth;
+	MarkVisionDirty();
+
+	if (bTypeChanged && MapRenderer)
+	{
+		MapRenderer->RefreshTileInstance(MapData, Delta.GridX, Delta.GridY);
+		MarkTileNavigationDirty(Delta.GridX, Delta.GridY);
+	}
+
+	OnTileChanged.Broadcast(Delta.GridX, Delta.GridY, Delta.TileType);
+	if (PreviousType != EGridTileType::Empty && Delta.TileType == EGridTileType::Empty)
+	{
+		OnTileDestroyed.Broadcast(Delta.GridX, Delta.GridY);
+	}
+}
+
+void AGridMapManager::MarkTileNavigationDirty(int32 GridX, int32 GridY)
+{
+	if (!HasAuthority() || !MapData)
+	{
+		return;
+	}
+
+	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	{
+		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
+		const FVector Extent(MapData->GetConfig().TileSize);
+		NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
+	}
+}
+
+int32 AGridMapManager::GetDefaultHealthForType(EGridTileType TileType) const
+{
+	const FGridMapConfig& Config = BaselineState.Config;
+	switch (TileType)
+	{
+	case EGridTileType::Tree:
+		return Config.TreeHealth;
+	case EGridTileType::LargeTree:
+		return Config.LargeTreeHealth;
+	default:
+		return 0;
+	}
+}
+
+void AGridMapManager::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+	DOREPLIFETIME(AGridMapManager, BaselineState);
+	DOREPLIFETIME(AGridMapManager, TileDeltas);
 }
