@@ -877,10 +877,12 @@ bool UWeaponHostMigrationSubsystem::TickRecovery(const float DeltaSeconds)
 		return true;
 	}
 
-	if (MigrationState == EWeaponHostMigrationState::WaitingForReadyAcks)
+	if (MigrationState == EWeaponHostMigrationState::WaitingForReadyAcks ||
+		MigrationState == EWeaponHostMigrationState::JoiningCandidate)
 	{
 		UWorld* World = GetWorld();
-		if (World && World->GetNetMode() == NM_ListenServer)
+		if (World && World->GetNetMode() == NM_ListenServer &&
+			MigrationState == EWeaponHostMigrationState::WaitingForReadyAcks)
 		{
 			FString Error;
 			if (!RefreshRecoveryReadyFence(Error) || !TryReleaseRecoveryBarrier(Error))
@@ -888,9 +890,11 @@ bool UWeaponHostMigrationSubsystem::TickRecovery(const float DeltaSeconds)
 				RestartRecoveryCandidateAttempt(Error);
 			}
 		}
-		else if (World && World->GetNetMode() == NM_Client &&
-			bRecoveryReadyRequestReceived && bRecoveryTravelCompleted)
+		else if (World && World->GetNetMode() == NM_Client && bRecoveryTravelCompleted)
 		{
+			// 客户端完成连接的条件是"新主机恢复已完成"(屏障已释放),无论是否收到过
+			// RecoveryReady 请求:迟到的玩家可能在新主机已进入 Monitoring 后才加入,
+			// 此时不再有请求发出,直接进游戏。屏障未释放时继续等待请求。
 			const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
 			if (GameState && !GameState->IsGameplayRecoveryBlocked())
 			{
