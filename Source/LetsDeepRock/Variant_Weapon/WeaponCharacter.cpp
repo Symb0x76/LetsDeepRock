@@ -450,6 +450,11 @@ void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 	{
 		DeployProfessionTool();
 	}
+	else if (!IsCurrentWeaponHoldTrigger())
+	{
+		// Press 武器只响应按下瞬间，避免后续 Triggered 阶段连射。
+		FireWeapon();
+	}
 }
 
 void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
@@ -463,8 +468,9 @@ void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
 	#endif
 	if (IsDead()) return;
 
-	if (ActiveFireInputSlot <= 1)
+	if (ActiveFireInputSlot <= 1 && IsCurrentWeaponHoldTrigger())
 	{
+		// Hold 武器按住期间持续尝试激活，实际间隔仍由 GA_Fire 冷却控制。
 		FireWeapon();
 	}
 	else if (ActiveFireInputSlot == 2)
@@ -528,6 +534,24 @@ void AWeaponCharacter::LogFireTraceState(const TCHAR* EventName) const
 		EquipComp && EquipComp->IsReloading() ? TEXT("true") : TEXT("false"));
 }
 #endif
+
+bool AWeaponCharacter::IsCurrentWeaponHoldTrigger() const
+{
+	const UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	const UWeaponDataAsset* WeaponData = EquipComp ? EquipComp->GetCurrentWeaponData() : nullptr;
+	if (!WeaponData || WeaponData->WeaponConfigId.IsNone())
+	{
+		return false;
+	}
+
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FWeaponConfigRow* WeaponConfig = DataSubsystem ? DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId) : nullptr;
+	const FWeaponFireModeConfigRow* FireModeConfig = WeaponConfig
+		? DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId)
+		: nullptr;
+	return FireModeConfig && FireModeConfig->TriggerType == FName(TEXT("Hold"));
+}
 
 void AWeaponCharacter::FireWeapon()
 {
