@@ -158,6 +158,13 @@ void AGrenadeProjectile::SetGameplayRecoveryBlocked(const bool bBlocked)
 	Super::SetGameplayRecoveryBlocked(bBlocked);
 	if (!HasAuthority())
 	{
+		// 客户端不做本地模拟:位置/旋转完全由服务器 ReplicatedMovement 驱动,
+		// 避免 simulated 本地模拟与服务器修正之间的累积误差造成飞行抖动。
+		// 基类在恢复屏障解除时可能重新 Activate 移动组件,这里无条件保持 Deactivate。
+		if (ProjectileMovement)
+		{
+			ProjectileMovement->Deactivate();
+		}
 		return;
 	}
 	if (bBlocked)
