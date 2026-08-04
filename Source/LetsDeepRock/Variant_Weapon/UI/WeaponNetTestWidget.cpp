@@ -290,12 +290,41 @@ void UWeaponNetTestWidget::RefreshAll()
 
 void UWeaponNetTestWidget::RefreshSessionState()
 {
-	// Task 3 填充
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	SessionOpText->SetText(FText::Format(
+		FText::FromString(TEXT("操作: {0}")),
+		FText::FromString(LexSessionOperation(Session->GetCurrentOperation()))));
 }
 
 void UWeaponNetTestWidget::RefreshMatchState()
 {
-	// Task 3 填充
+	AWeaponGameState* GameState = GetWorld()->GetGameState<AWeaponGameState>();
+	if (!GameState)
+	{
+		MatchStateText->SetText(FText::FromString(TEXT("阶段: -")));
+		return;
+	}
+
+	FString ReadyInfo = TEXT("-");
+	FString SlotInfo = TEXT("-");
+	if (APlayerController* PC = GetOwningPlayer())
+	{
+		if (AWeaponPlayerState* PS = PC->GetPlayerState<AWeaponPlayerState>())
+		{
+			ReadyInfo = PS->GetIsPlayerReady() ? TEXT("是") : TEXT("否");
+			SlotInfo = FString::Printf(TEXT("%d"), PS->GetPlayerSlotIndex());
+		}
+	}
+
+	MatchStateText->SetText(FText::Format(
+		FText::FromString(TEXT("阶段: {0} 剩余: {1}s 玩家: {2}/{3} | Slot: {4} Ready: {5} | 恢复屏障: {6}")),
+		FText::FromString(LexMatchPhase(GameState->GetMatchPhase())),
+		FText::AsNumber(GameState->GetRemainingPhaseTime()),
+		FText::AsNumber(GameState->GetConnectedPlayerCount()),
+		FText::AsNumber(GameState->GetMaxPlayers()),
+		FText::FromString(SlotInfo),
+		FText::FromString(ReadyInfo),
+		FText::FromString(GameState->IsGameplayRecoveryBlocked() ? TEXT("开") : TEXT("关"))));
 }
 
 void UWeaponNetTestWidget::RefreshMigrationState()
@@ -305,7 +334,39 @@ void UWeaponNetTestWidget::RefreshMigrationState()
 
 void UWeaponNetTestWidget::RefreshResultList()
 {
-	// Task 3 填充
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	const TArray<FWeaponLanSessionResult>& Results = Session->GetCachedLanResults();
+	if (Results.Num() == CachedResultCount)
+	{
+		return;
+	}
+	CachedResultCount = Results.Num();
+
+	SessionResultBox->ClearChildren();
+	for (int32 Index = 0; Index < Results.Num() && Index < 10; ++Index)
+	{
+		const FWeaponLanSessionResult& Result = Results[Index];
+		UHorizontalBox* Row = NewObject<UHorizontalBox>(this);
+		SessionResultBox->AddChild(Row);
+
+		AddText(Row, FString::Printf(TEXT("[%d] %s %d/%d %dms"),
+			Index, *Result.ServerName, Result.CurrentPlayers, Result.MaxPlayers, Result.PingInMs));
+
+		UWeaponNetTestJoinButton* JoinButton = NewObject<UWeaponNetTestJoinButton>(this);
+		UTextBlock* LabelText = NewObject<UTextBlock>(this);
+		LabelText->SetText(FText::FromString(TEXT("Join")));
+		LabelText->SetFont(FAppStyle::GetFontStyle(TEXT("SmallFont")));
+		JoinButton->AddChild(LabelText);
+		JoinButton->ResultIndex = Index;
+		JoinButton->OnClicked.AddDynamic(JoinButton, &UWeaponNetTestJoinButton::HandleSelfClicked);
+		JoinButton->OnJoinIndexClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleJoinResultClicked);
+		Row->AddChild(JoinButton);
+	}
+}
+
+void UWeaponNetTestJoinButton::HandleSelfClicked()
+{
+	OnJoinIndexClicked.Broadcast(ResultIndex);
 }
 
 void UWeaponNetTestWidget::UpdateButtonEnablement()
@@ -313,14 +374,67 @@ void UWeaponNetTestWidget::UpdateButtonEnablement()
 	// Task 4 填充(含 BOSS 贡献点)
 }
 
-void UWeaponNetTestWidget::HandleHostClicked() {}
-void UWeaponNetTestWidget::HandleFindClicked() {}
-void UWeaponNetTestWidget::HandleDirectJoinClicked() {}
-void UWeaponNetTestWidget::HandleReconnectMigratedClicked() {}
-void UWeaponNetTestWidget::HandleDestroyClicked() {}
-void UWeaponNetTestWidget::HandleJoinResultClicked(int32 ResultIndex) {}
-void UWeaponNetTestWidget::HandleReadyClicked() {}
-void UWeaponNetTestWidget::HandleStartMatchClicked() {}
+void UWeaponNetTestWidget::HandleHostClicked()
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	FString ServerName = ServerNameBox->GetText().ToString();
+	if (ServerName.IsEmpty())
+	{
+		ServerName = TEXT("TestHost");
+	}
+	const int32 MaxPlayers = FMath::Clamp(FCString::Atoi(*MaxPlayersBox->GetText().ToString()), 1, 4);
+	Session->HostLanGame(MaxPlayers, ServerName);
+}
+
+void UWeaponNetTestWidget::HandleFindClicked()
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	Session->FindLanGames(50);
+}
+
+void UWeaponNetTestWidget::HandleDirectJoinClicked()
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	Session->JoinDirectAddress(AddressBox->GetText().ToString());
+}
+
+void UWeaponNetTestWidget::HandleReconnectMigratedClicked()
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	Session->ReconnectToMigratedHost(AddressBox->GetText().ToString());
+}
+
+void UWeaponNetTestWidget::HandleDestroyClicked()
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	Session->DestroySession();
+}
+
+void UWeaponNetTestWidget::HandleJoinResultClicked(int32 ResultIndex)
+{
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	Session->JoinLanGame(ResultIndex);
+}
+
+void UWeaponNetTestWidget::HandleReadyClicked()
+{
+	if (APlayerController* PC = GetOwningPlayer())
+	{
+		if (AWeaponPlayerState* PS = PC->GetPlayerState<AWeaponPlayerState>())
+		{
+			PS->RequestSetPlayerReady(!PS->GetIsPlayerReady());
+		}
+	}
+}
+
+void UWeaponNetTestWidget::HandleStartMatchClicked()
+{
+	if (AWeaponGameMode* GameMode = Cast<AWeaponGameMode>(GetWorld()->GetAuthGameMode()))
+	{
+		GameMode->TryStartWeaponMatch();
+	}
+}
+
 void UWeaponNetTestWidget::HandleDisconnectClicked() {}
 void UWeaponNetTestWidget::HandlePlannedHandoffClicked() {}
 void UWeaponNetTestWidget::HandleRestartLocalSaveClicked() {}

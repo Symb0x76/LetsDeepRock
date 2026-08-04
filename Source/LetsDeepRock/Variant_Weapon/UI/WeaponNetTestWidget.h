@@ -4,14 +4,33 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Components/Button.h"
 #include "WeaponNetTestWidget.generated.h"
 
-class UButton;
 class UEditableTextBox;
 class UHorizontalBox;
 class UPanelWidget;
 class UTextBlock;
 class UVerticalBox;
+
+/** 携带结果索引的 Join 按钮;动态委托不携带载荷,由本类转发点击事件。 */
+UCLASS()
+class UWeaponNetTestJoinButton : public UButton
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY()
+	int32 ResultIndex = INDEX_NONE;
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponJoinIndexClicked, int32, ResultIndex);
+
+	UPROPERTY()
+	FOnWeaponJoinIndexClicked OnJoinIndexClicked;
+
+	UFUNCTION()
+	void HandleSelfClicked();
+};
 
 /**
  * 网络测试调试面板(仅非 Shipping 构建)。
