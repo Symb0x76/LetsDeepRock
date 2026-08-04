@@ -98,9 +98,33 @@ namespace
 
 void UWeaponNetTestWidget::ToggleViaConsole()
 {
-	UWorld* World = GWorld;
+	UWorld* World = nullptr;
+
+#if WITH_EDITOR
+	// 编辑器控制台输入:只接受运行中的 PIE 世界;编辑器主界面无游戏世界,给出提示而不是静默失败。
+	if (GEngine)
+	{
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			if (Context.WorldType == EWorldType::PIE && Context.World() != nullptr)
+			{
+				World = Context.World();
+				break;
+			}
+		}
+	}
 	if (!World)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("[NetTestUI] 没有运行中的 Play 会话:请先打开地图并 Play,再输入 WeaponTestUI"));
+		return;
+	}
+#else
+	World = GWorld;
+#endif
+
+	if (!World)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[NetTestUI] 无可用世界,命令被忽略"));
 		return;
 	}
 
@@ -113,6 +137,7 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 	UWeaponNetTestWidget* Widget = CreateWidget<UWeaponNetTestWidget>(World, UWeaponNetTestWidget::StaticClass());
 	if (!Widget)
 	{
+		UE_LOG(LogTemp, Error, TEXT("[NetTestUI] Widget 创建失败"));
 		return;
 	}
 
@@ -120,6 +145,7 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 	Widget->SetAlignmentInViewport(FVector2D(1.0f, 0.0f));
 	Widget->SetPositionInViewport(FVector2D(-12.0f, 12.0f));
 	GNetTestWidget = Widget;
+	UE_LOG(LogTemp, Log, TEXT("[NetTestUI] 面板已创建(再输入 WeaponTestUI 或按 F2 关闭)"));
 }
 
 void UWeaponNetTestWidget::ToggleSelf()
