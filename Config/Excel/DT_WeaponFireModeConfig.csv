@@ -1,10 +1,10 @@
----,DisplayName,TriggerType,FireAbilityClass,ProjectileClass,DamageTypeTag,BaseDamage,ArmorPenetration,WeakpointMultiplier,FireInterval,ChargeDuration,ProjectileSpeed,ProjectileLifetime,ProjectileCount,AreaDamage,AreaRadius,AreaFalloff,MoveSpeedMultiplier,bCanFireWhileMoving,SpreadAngle,Recoil,DamageFalloffStart,DamageFalloffEnd,StatusEffectId,ProjectileGravityScale,MaxHitTargets
+﻿---,DisplayName,TriggerType,FireAbilityClass,ProjectileClass,DamageTypeTag,BaseDamage,ArmorPenetration,WeakpointMultiplier,FireInterval,ChargeDuration,ProjectileSpeed,ProjectileLifetime,ProjectileCount,AreaDamage,AreaRadius,AreaFalloff,MoveSpeedMultiplier,bCanFireWhileMoving,SpreadAngle,Recoil,DamageFalloffStart,DamageFalloffEnd,StatusEffectId,ProjectileGravityScale,MaxHitTargets
 Ranger_ArcaneCrossbow_RapidBolt,"高速弩箭",Hold,"","","(TagName=""Damage.Type.Physical"")",12,0.05,1,0.12,0,4500,3,1,0,0,0,1,True,0,0,0,0,Vulnerable,0,1
 Ranger_SawedOffShotgun_Default,"短管霰弹",Press,"","","(TagName=""Damage.Type.Physical"")",8,0,1,0.8,0,3200,1.2,8,0,0,0,1,True,12,1,300,900,,0,1
 Ranger_FullAutoPistol_Default,"全自动手枪",Hold,"","","(TagName=""Damage.Type.Physical"")",14,0,1,0.1,0,5200,3,1,0,0,0,1,True,1.5,0.25,1200,3200,,0,1
 Ranger_ThrowingKnife_Default,"飞刀",Press,"","","(TagName=""Damage.Type.Physical"")",55,0.15,1.5,0.55,0,2200,4,1,0,0,0,1,True,0,0,0,0,,0.65,1
-Driller_Flamethrower_Default,"火焰喷射",Hold,"","","(TagName=""Damage.Type.Fire"")",4,0,1,0.08,0,900,0.8,1,0,0,0,0.9,True,6,0,0,700,Burning,0,1
-Driller_Revolver_Default,"左轮射击",Press,"","","(TagName=""Damage.Type.Physical"")",60,0.25,1.5,0.75,0,6000,3,1,0,0,0,1,True,0.5,0.8,1800,5000,,0,1
-Driller_RocketLauncher_Default,"火箭射击",Press,"","","(TagName=""Damage.Type.Explosion"")",40,0.2,1,1.5,0,1800,5,1,90,300,0.5,0.85,True,0,1.2,0,0,,0,1
+Demolitionist_Flamethrower_Default,"火焰喷射",Hold,"","","(TagName=""Damage.Type.Fire"")",4,0,1,0.08,0,900,0.8,1,0,0,0,0.9,True,6,0,0,700,Burning,0,1
+Demolitionist_Revolver_Default,"左轮射击",Press,"","","(TagName=""Damage.Type.Physical"")",60,0.25,1.5,0.75,0,6000,3,1,0,0,0,1,True,0.5,0.8,1800,5000,,0,1
+Demolitionist_RocketLauncher_Default,"火箭射击",Press,"","","(TagName=""Damage.Type.Explosion"")",40,0.2,1,1.5,0,1800,5,1,90,300,0.5,0.85,True,0,1.2,0,0,,0,1
 Engineer_AssaultRifle_Default,"突击步枪",Hold,"","","(TagName=""Damage.Type.Physical"")",18,0.1,1,0.1,0,5000,3,1,0,0,0,1,True,2,0.35,1500,4000,,0,1
 Engineer_ChainsawLauncher_Default,"链锯发射",Press,"","","(TagName=""Damage.Type.Physical"")",35,0.3,1,0.9,0,2400,4,1,0,0,0,0.85,True,0,0.5,0,0,Bleeding,0,6

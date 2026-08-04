@@ -24,13 +24,21 @@
 #include "GameFramework/PlayerController.h"
 #include "Kismet/KismetMathLibrary.h"
 #include "Data/GameDataSubsystem.h"
+#include "Data/ProfessionSaveGame.h"
 #include "Abilities/GameplayAbility.h"
 #include "Abilities/GA_ThrowGrenade.h"
 #include "Vision/VisionSourceComponent.h"
+#include "Drone.h"
+#include "Engine/World.h"
+#include "InputCoreTypes.h"
+#include "UObject/ConstructorHelpers.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
 	PrimaryActorTick.bCanEverTick = true;
+
+	static ConstructorHelpers::FClassFinder<ADrone> ProfessionToolDroneClassAsset(TEXT("/Game/Variant_Weapon/BluePrints/BP_Ranger_ConstructSpriteDrone"));
+	ProfessionToolDroneClass = ProfessionToolDroneClassAsset.Class;
 
 	// 创建相机弹簧臂（俯视角）
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Spring Arm"));
@@ -76,14 +84,6 @@ void AWeaponCharacter::PossessedBy(AController* NewController)
 	// 服务端：Pawn 被 Possess、PlayerState 已就绪，初始化 ASC ActorInfo
 	InitAbilitySystem();
 
-	// 服务端：ASC 就绪后，将默认武器列表加入库存并装备第 0 个
-	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
-	{
-		for (UWeaponDataAsset* WeaponData : EquipComp->GetDefaultWeapons())
-		{
-			EquipComp->AddWeaponToInventory(WeaponData);
-		}
-	}
 }
 
 void AWeaponCharacter::OnRep_PlayerState()
@@ -94,18 +94,6 @@ void AWeaponCharacter::OnRep_PlayerState()
 	// 用于本地预测、输入绑定与 UI 属性监听。
 	InitAbilitySystem();
 
-	// 客户端：ASC 就绪后也设置装备数据（仅设 CurrentWeaponData，不 GiveAbility）
-	// 将默认武器列表加入库存，客户端本地装备第 0 个
-	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
-	{
-		if (EquipComp->GetWeaponInventory().Num() == 0)
-		{
-			for (UWeaponDataAsset* WeaponData : EquipComp->GetDefaultWeapons())
-			{
-				EquipComp->AddWeaponToInventory(WeaponData);
-			}
-		}
-	}
 }
 
 void AWeaponCharacter::InitAbilitySystem()
@@ -125,13 +113,38 @@ void AWeaponCharacter::InitAbilitySystem()
 
 	VisionSource->TeamId = PS->GetTeamId();
 
-	// 配置表查询在服务端和本地客户端都执行，保证本地视野参数一致。
+	// 服务端和客户端使用同一份职业存档选择属性与装备配置。
+	UProfessionSaveGame* Configuration = UProfessionSaveGame::LoadCurrentConfiguration();
+	const bool bHasSavedProfession = Configuration && !Configuration->SelectedProfession.IsNone();
+	FName ProfessionId = bHasSavedProfession
+		? Configuration->SelectedProfession
+		: FName(TEXT("Ranger"));
+	const UProfessionSaveGame* EffectiveConfiguration = bHasSavedProfession ? Configuration : nullptr;
+
 	const FCharacterAttributeRow* CharacterRow = nullptr;
+	const FProfessionConfigRow* ProfessionRow = nullptr;
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		if (UGameDataSubsystem* DataSys = GI->GetSubsystem<UGameDataSubsystem>())
 		{
-			CharacterRow = DataSys->GetCharacterAttributes(CharacterConfigRowName);
+			ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
+			if (!ProfessionRow)
+			{
+				ProfessionId = FName(TEXT("Ranger"));
+				ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
+				EffectiveConfiguration = nullptr;
+			}
+			if (ProfessionRow)
+			{
+				CharacterRow = DataSys->GetCharacterAttributes(ProfessionRow->CharacterAttributeRow);
+				if (!CharacterRow && ProfessionId != FName(TEXT("Ranger")))
+				{
+					ProfessionId = FName(TEXT("Ranger"));
+					ProfessionRow = DataSys->GetProfessionConfig(ProfessionId);
+					CharacterRow = ProfessionRow ? DataSys->GetCharacterAttributes(ProfessionRow->CharacterAttributeRow) : nullptr;
+					EffectiveConfiguration = nullptr;
+				}
+			}
 		}
 	}
 	if (CharacterRow)
@@ -161,6 +174,42 @@ void AWeaponCharacter::InitAbilitySystem()
 	{
 		FGameplayAbilitySpec GrenadeSpec(GrenadeAbilityClass, 1, INDEX_NONE, this);
 		GrenadeAbilityHandle = AbilitySystemComponent->GiveAbility(GrenadeSpec);
+	}
+
+	InitProfessionWeapons(ProfessionRow, EffectiveConfiguration);
+}
+
+void AWeaponCharacter::InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, const UProfessionSaveGame* Configuration)
+{
+	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	if (!EquipComp) return;
+
+	if (ProfessionRow)
+	{
+		bHasSkillItem = !(Configuration ? Configuration->SkillItemId : ProfessionRow->SkillItemId).IsNone();
+		bHasProfessionTool = !(Configuration ? Configuration->ClassEquipmentId : ProfessionRow->ClassEquipmentId).IsNone();
+		if (EquipComp->GetWeaponInventory().Num() > 0) return;
+
+		const FName PrimaryWeaponId = Configuration && !Configuration->PrimaryWeaponId.IsNone()
+			? Configuration->PrimaryWeaponId
+			: ProfessionRow->PrimaryWeaponId;
+		const FName SecondaryWeaponId = Configuration && !Configuration->SecondaryWeaponId.IsNone()
+			? Configuration->SecondaryWeaponId
+			: ProfessionRow->SecondaryWeaponId;
+		UWeaponDataAsset* PrimaryWeapon = EquipComp->ResolveWeaponData(PrimaryWeaponId);
+		UWeaponDataAsset* SecondaryWeapon = EquipComp->ResolveWeaponData(SecondaryWeaponId);
+		if (PrimaryWeapon && SecondaryWeapon)
+		{
+			EquipComp->AddWeaponToInventory(PrimaryWeapon);
+			EquipComp->AddWeaponToInventory(SecondaryWeapon);
+			return;
+		}
+	}
+
+	// 职业配置或显式资产解析失败时，保留蓝图默认武器作为最小兜底。
+	for (UWeaponDataAsset* WeaponData : EquipComp->GetDefaultWeapons())
+	{
+		EquipComp->AddWeaponToInventory(WeaponData);
 	}
 }
 
@@ -246,6 +295,13 @@ void AWeaponCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 	GrenadeAbilityHandle = FGameplayAbilitySpecHandle();
 
+	// 无人机是角色部署的独立工具，仅在角色结束生命周期时清理。
+	if (HasAuthority() && IsValid(ActiveDrone))
+	{
+		ActiveDrone->Destroy();
+	}
+	ActiveDrone = nullptr;
+
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -256,6 +312,23 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 	{
 		return;
 	}
+
+	const UWeaponHealthSet* HealthSet = GetPlayerState<AWeaponPlayerState>()
+		? GetPlayerState<AWeaponPlayerState>()->GetHealthSet()
+		: nullptr;
+	const UWeaponEquipmentComponent* DiagnosticEquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	UE_LOG(LogTemp, Error,
+		TEXT("[DeathTrace] HandleHealthDepleted: Character=%s CallbackOwner=%s Controller=%s Location=%s Health=%.2f Shield=%.2f DeadTagBefore=%d EquipmentSlot=%u WeaponIndex=%d Weapon=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(OwningActor),
+		*GetNameSafe(GetController()),
+		*GetActorLocation().ToCompactString(),
+		HealthSet ? HealthSet->GetHealth() : -1.0f,
+		HealthSet ? HealthSet->GetShield() : -1.0f,
+		AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Dead) ? 1 : 0,
+		CurrentEquipmentSlot,
+		DiagnosticEquipComp ? DiagnosticEquipComp->GetCurrentWeaponIndex() : INDEX_NONE,
+		*GetNameSafe(DiagnosticEquipComp ? DiagnosticEquipComp->GetCurrentWeaponData() : nullptr));
 
 	// 1. 添加 State.Dead Tag 到 ASC（阻断所有 Ability 激活）
 	AbilitySystemComponent->AddLooseGameplayTag(TAG_State_Dead);
@@ -274,9 +347,9 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 	SetActorHiddenInGame(true);
 
 	// 6. 卸载当前武器（清除 Ability + 销毁武器 Actor）
-	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
+	if (UWeaponEquipmentComponent* DeathEquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
 	{
-		EquipComp->UnequipWeapon();
+		DeathEquipComp->UnequipWeapon();
 	}
 
 	// 7. 通知 GameMode 启动重生流程
@@ -308,7 +381,10 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 
 		if (FireAction)
 		{
-			EnhancedInput->BindAction(FireAction, ETriggerEvent::Triggered, this, &AWeaponCharacter::Fire);
+			EnhancedInput->BindAction(FireAction, ETriggerEvent::Started, this, &AWeaponCharacter::FireStarted);
+			EnhancedInput->BindAction(FireAction, ETriggerEvent::Triggered, this, &AWeaponCharacter::FireTriggered);
+			EnhancedInput->BindAction(FireAction, ETriggerEvent::Completed, this, &AWeaponCharacter::FireCompleted);
+			EnhancedInput->BindAction(FireAction, ETriggerEvent::Canceled, this, &AWeaponCharacter::FireCanceled);
 		}
 
 		if (MeleeAction)
@@ -321,14 +397,13 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 			EnhancedInput->BindAction(SwitchWeaponAction, ETriggerEvent::Started, this, &AWeaponCharacter::SwitchWeapon);
 		}
 
-		if (ThrowGrenadeAction)
-		{
-			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Started, this, &AWeaponCharacter::ThrowGrenadeStarted);
-			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Triggered, this, &AWeaponCharacter::ThrowGrenadeTriggered);
-			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Completed, this, &AWeaponCharacter::ThrowGrenadeCompleted);
-			EnhancedInput->BindAction(ThrowGrenadeAction, ETriggerEvent::Canceled, this, &AWeaponCharacter::ThrowGrenadeCanceled);
-		}
 	}
+
+	// 四槽使用固定数字键，不依赖测试蓝图或额外 InputAction 资产。
+	PlayerInputComponent->BindKey(EKeys::One, IE_Pressed, this, &AWeaponCharacter::SelectPrimary);
+	PlayerInputComponent->BindKey(EKeys::Two, IE_Pressed, this, &AWeaponCharacter::SelectSecondary);
+	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AWeaponCharacter::SelectSkill);
+	PlayerInputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AWeaponCharacter::SelectTool);
 }
 
 void AWeaponCharacter::Move(const FInputActionValue& Value)
@@ -355,14 +430,55 @@ void AWeaponCharacter::Move(const FInputActionValue& Value)
 	}
 }
 
-void AWeaponCharacter::Fire(const FInputActionValue& Value)
+void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 {
-	// 死亡时禁止射击
-	if (IsDead())
-	{
-		return;
-	}
+	if (IsDead()) return;
+	ActiveFireInputSlot = CurrentEquipmentSlot;
 
+	if (ActiveFireInputSlot == 2)
+	{
+		ThrowGrenadeStarted(Value);
+	}
+	else if (ActiveFireInputSlot == 3)
+	{
+		DeployProfessionTool();
+	}
+}
+
+void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
+{
+	if (IsDead()) return;
+
+	if (ActiveFireInputSlot <= 1)
+	{
+		FireWeapon();
+	}
+	else if (ActiveFireInputSlot == 2)
+	{
+		ThrowGrenadeTriggered(Value);
+	}
+}
+
+void AWeaponCharacter::FireCompleted(const FInputActionValue& Value)
+{
+	if (!IsDead() && ActiveFireInputSlot == 2)
+	{
+		ThrowGrenadeCompleted(Value);
+	}
+	ActiveFireInputSlot = 255;
+}
+
+void AWeaponCharacter::FireCanceled(const FInputActionValue& Value)
+{
+	if (!IsDead() && ActiveFireInputSlot == 2)
+	{
+		ThrowGrenadeCanceled(Value);
+	}
+	ActiveFireInputSlot = 255;
+}
+
+void AWeaponCharacter::FireWeapon()
+{
 	// 通过 ASC 尝试激活射击 Ability（由 WeaponEquipmentComponent 授予）
 	if (!AbilitySystemComponent)
 	{
@@ -421,6 +537,126 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 	{
 		EquipComp->SwitchToPrevious();
 	}
+
+	// 从技能/工具槽返回同一武器索引时，组件会因索引未变而跳过，需恢复实际装备。
+	if (!EquipComp->GetCurrentWeaponData())
+	{
+		const int32 WeaponIndex = EquipComp->GetCurrentWeaponIndex();
+		const TArray<TObjectPtr<UWeaponDataAsset>>& Inventory = EquipComp->GetWeaponInventory();
+		if (Inventory.IsValidIndex(WeaponIndex))
+		{
+			EquipComp->EquipWeapon(Inventory[WeaponIndex]);
+		}
+	}
+
+	const int32 WeaponIndex = EquipComp->GetCurrentWeaponIndex();
+	if (WeaponIndex == 0 || WeaponIndex == 1)
+	{
+		CurrentEquipmentSlot = static_cast<uint8>(WeaponIndex);
+	}
+}
+
+void AWeaponCharacter::SelectPrimary()
+{
+	const AWeaponPlayerState* PS = GetPlayerState<AWeaponPlayerState>();
+	const UWeaponHealthSet* HealthSet = PS ? PS->GetHealthSet() : nullptr;
+	const UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	UE_LOG(LogTemp, Warning,
+		TEXT("[DeathTrace] Key1 pressed: Character=%s Health=%.2f Shield=%.2f Dead=%d Slot=%u WeaponIndex=%d Weapon=%s"),
+		*GetNameSafe(this),
+		HealthSet ? HealthSet->GetHealth() : -1.0f,
+		HealthSet ? HealthSet->GetShield() : -1.0f,
+		IsDead() ? 1 : 0,
+		CurrentEquipmentSlot,
+		EquipComp ? EquipComp->GetCurrentWeaponIndex() : INDEX_NONE,
+		*GetNameSafe(EquipComp ? EquipComp->GetCurrentWeaponData() : nullptr));
+
+	SelectEquipmentSlot(0);
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("[DeathTrace] Key1 completed: Character=%s Health=%.2f Shield=%.2f Dead=%d Hidden=%d Slot=%u WeaponIndex=%d Weapon=%s"),
+		*GetNameSafe(this),
+		HealthSet ? HealthSet->GetHealth() : -1.0f,
+		HealthSet ? HealthSet->GetShield() : -1.0f,
+		IsDead() ? 1 : 0,
+		IsHidden() ? 1 : 0,
+		CurrentEquipmentSlot,
+		EquipComp ? EquipComp->GetCurrentWeaponIndex() : INDEX_NONE,
+		*GetNameSafe(EquipComp ? EquipComp->GetCurrentWeaponData() : nullptr));
+}
+
+void AWeaponCharacter::SelectSecondary()
+{
+	SelectEquipmentSlot(1);
+}
+
+void AWeaponCharacter::SelectSkill()
+{
+	SelectEquipmentSlot(2);
+}
+
+void AWeaponCharacter::SelectTool()
+{
+	SelectEquipmentSlot(3);
+}
+
+void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
+{
+	if (IsDead()) return;
+	if (SlotIndex == 2 && !bHasSkillItem) return;
+	if (SlotIndex == 3 && !bHasProfessionTool) return;
+
+	// 按住手雷时切槽视为取消，避免松开左键后从其它槽意外投掷。
+	if (ActiveFireInputSlot == 2)
+	{
+		bIsPreviewingGrenade = false;
+		PreviewGrenadeTarget = FVector::ZeroVector;
+		bHasPreviewGrenadeTarget = false;
+		HideGrenadePreview();
+		ActiveFireInputSlot = 255;
+	}
+
+	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	if (!EquipComp) return;
+
+	CurrentEquipmentSlot = SlotIndex;
+	if (SlotIndex <= 1)
+	{
+		EquipComp->SwitchWeapon(SlotIndex);
+		// 从非武器槽返回原武器时 CurrentWeaponIndex 未变，显式恢复该武器。
+		if (!EquipComp->GetCurrentWeaponData() && EquipComp->GetWeaponInventory().IsValidIndex(SlotIndex))
+		{
+			EquipComp->EquipWeapon(EquipComp->GetWeaponInventory()[SlotIndex]);
+		}
+	}
+	else
+	{
+		EquipComp->UnequipWeapon();
+	}
+}
+
+void AWeaponCharacter::DeployProfessionTool()
+{
+	if (IsDead() || !bHasProfessionTool || !ProfessionToolDroneClass || IsValid(ActiveDrone)) return;
+
+	if (!HasAuthority())
+	{
+		ServerDeployProfessionTool();
+		return;
+	}
+
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = this;
+	ActiveDrone = GetWorld()->SpawnActor<ADrone>(ProfessionToolDroneClass, GetActorLocation(), GetActorRotation(), SpawnParams);
+	if (ActiveDrone)
+	{
+		ActiveDrone->SetOrbitTarget(this);
+	}
+}
+
+void AWeaponCharacter::ServerDeployProfessionTool_Implementation()
+{
+	DeployProfessionTool();
 }
 
 // ============================================================================
@@ -699,7 +935,7 @@ void AWeaponCharacter::HideGrenadePreview()
 void AWeaponCharacter::ServerThrowGrenade_Implementation(FVector_NetQuantize TargetPoint, bool bHasValidTarget)
 {
 	// 死亡时拒绝
-	if (IsDead())
+	if (IsDead() || !bHasSkillItem)
 	{
 		return;
 	}

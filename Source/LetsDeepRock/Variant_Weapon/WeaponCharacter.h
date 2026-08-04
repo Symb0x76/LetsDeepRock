@@ -19,7 +19,10 @@ class UGameplayAbility;
 class UGrenadeTrajectoryPreviewComponent;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
+class UProfessionSaveGame;
+class ADrone;
 struct FGrenadeBallisticsOutput;
+struct FProfessionConfigRow;
 
 /**
  *  俯视角武器系统角色（Variant_Weapon 骨架）
@@ -83,6 +86,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
 	bool bEnableGrenadePreview = false;
 
+	/** 职业工具无人机类；未配置时不部署 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Profession Tool")
+	TSubclassOf<ADrone> ProfessionToolDroneClass;
+
 public:
 
 	/** 构造函数 */
@@ -122,12 +129,11 @@ protected:
 	/** 统一的 ASC ActorInfo 初始化：获取 PlayerState 上的 ASC，设置 Owner=PS / Avatar=this */
 	void InitAbilitySystem();
 
+	/** 按职业配置和存档初始化主副武器 */
+	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, const UProfessionSaveGame* Configuration);
+
 	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
-
-	/** 角色配置表行名（策划在蓝图中指定） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attributes")
-	FName CharacterConfigRowName = FName("Default");
 
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;
@@ -138,14 +144,33 @@ protected:
 	/** 处理移动输入 */
 	void Move(const FInputActionValue& Value);
 
-	/** 处理射击输入：尝试激活 GA_Fire */
-	void Fire(const FInputActionValue& Value);
+	/** 左键按不同装备槽分发输入 */
+	void FireStarted(const FInputActionValue& Value);
+	void FireTriggered(const FInputActionValue& Value);
+	void FireCompleted(const FInputActionValue& Value);
+	void FireCanceled(const FInputActionValue& Value);
+
+	/** 主副武器连续射击 */
+	void FireWeapon();
 
 	/** 处理近战输入：尝试激活 GA_Melee */
 	void Melee(const FInputActionValue& Value);
 
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
+
+	/** 选择四个数字装备槽 */
+	void SelectPrimary();
+	void SelectSecondary();
+	void SelectSkill();
+	void SelectTool();
+	void SelectEquipmentSlot(uint8 SlotIndex);
+
+	/** 在服务端部署职业工具无人机 */
+	void DeployProfessionTool();
+
+	UFUNCTION(Server, Reliable)
+	void ServerDeployProfessionTool();
 
 	/** 处理手雷投掷输入：Started（预览）/ Triggered（更新）/ Completed（投掷）/ Canceled（取消） */
 	void ThrowGrenadeStarted(const FInputActionValue& Value);
@@ -198,4 +223,18 @@ protected:
 
 	/** PendingGrenadeTarget 是否有效 */
 	mutable bool bHasPendingGrenadeTarget = false;
+
+	/** 当前装备槽：0 主武器、1 副武器、2 技能道具、3 职业工具 */
+	uint8 CurrentEquipmentSlot = 0;
+
+	/** 本次左键按下时使用的槽；255 表示当前没有持续中的左键输入 */
+	uint8 ActiveFireInputSlot = 255;
+
+	/** 当前职业是否配置了技能道具和职业工具 */
+	bool bHasSkillItem = false;
+	bool bHasProfessionTool = false;
+
+	/** 当前已部署的独立职业工具无人机 */
+	UPROPERTY()
+	TObjectPtr<ADrone> ActiveDrone;
 };

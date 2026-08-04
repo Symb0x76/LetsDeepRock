@@ -128,6 +128,27 @@ FName UGameDataSubsystem::GetDefaultProfessionWeaponId(FName ProfessionId, FName
 	return NAME_None;
 }
 
+TArray<FName> UGameDataSubsystem::GetProfessionArmorPerkIds(FName ProfessionId) const
+{
+	TArray<FName> Result;
+	const FProfessionConfigRow* Row = GetProfessionConfig(ProfessionId);
+	if (!Row) return Result;
+
+	TArray<FString> PerkIdStrings;
+	Row->ArmorPerkIds.ParseIntoArray(PerkIdStrings, TEXT(","), true);
+	for (FString& PerkIdString : PerkIdStrings)
+	{
+		PerkIdString.TrimStartAndEndInline();
+		const FName PerkId(*PerkIdString);
+		if (!PerkId.IsNone())
+		{
+			Result.AddUnique(PerkId);
+			if (Result.Num() == 5) break;
+		}
+	}
+	return Result;
+}
+
 const FWeaponConfigRow* UGameDataSubsystem::GetWeaponConfig(FName RowName) const
 {
 	if (!WeaponConfigTable) return nullptr;

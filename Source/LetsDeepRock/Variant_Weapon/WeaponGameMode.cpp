@@ -42,6 +42,19 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 	);
 }
 
+void AWeaponGameMode::RespawnPlayerImmediately(AController* PlayerController)
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	// 若当前存在挂起的死亡重生计时器，先清除，避免稍后重复触发一次 RespawnPlayer
+	GetWorldTimerManager().ClearTimer(RespawnTimerHandle);
+
+	RespawnPlayer(PlayerController);
+}
+
 void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 {
 	if (!PlayerController)

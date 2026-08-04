@@ -53,6 +53,10 @@ public:
 	/** 获取默认武器列表（供 WeaponCharacter 初始化库存用） */
 	const TArray<UWeaponDataAsset*>& GetDefaultWeapons() const { return DefaultWeapons; }
 
+	/** 将当前职业配置使用的武器 ID 显式解析为数据资产 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon")
+	UWeaponDataAsset* ResolveWeaponData(FName WeaponId) const;
+
 	// ---- 多武器库存与切换 ----
 
 	/** 切换到指定索引的武器（0-based） */

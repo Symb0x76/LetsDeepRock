@@ -52,6 +52,7 @@ public:
 	const FProfessionWeaponPoolRow* GetProfessionWeaponPool(FName RowName) const;
 	TArray<FName> GetProfessionWeaponIds(FName ProfessionId, FName SlotType) const;
 	FName GetDefaultProfessionWeaponId(FName ProfessionId, FName SlotType) const;
+	TArray<FName> GetProfessionArmorPerkIds(FName ProfessionId) const;
 	const FWeaponConfigRow* GetWeaponConfig(FName RowName) const;
 	const FWeaponFireModeConfigRow* GetWeaponFireModeConfig(FName RowName) const;
 	const FGrenadeConfigRow* GetGrenadeConfig(FName RowName) const;

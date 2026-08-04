@@ -1,2 +1,4 @@
-﻿---,DisplayName,CharacterAttributeRow,PrimaryWeaponId,SecondarySlotType,SecondaryItemId,GrenadeIds,GrenadeVariantSetId,DefaultGrenadeId
-Ranger,"游侠",Ranger,Ranger_ArcaneCrossbow,Tool,Ranger_ConstructSpriteDrone,"Ranger_ElementGrenade_Fire,Ranger_ElementGrenade_Frost,Ranger_ElementGrenade_Electric,Ranger_ElementGrenade_Acid",Ranger_ElementGrenade,Ranger_ElementGrenade_Fire
+﻿---,DisplayName,CharacterAttributeRow,PrimaryWeaponId,SecondaryWeaponId,SkillItemId,ClassEquipmentId,GrenadeIds,GrenadeVariantSetId,DefaultGrenadeId,ArmorPerkIds
+Ranger,"Ranger",Ranger,Ranger_ArcaneCrossbow,Ranger_SawedOffShotgun,Ranger_ElementGrenade_Fire,Ranger_ConstructSpriteDrone,"Ranger_ElementGrenade_Fire,Ranger_ElementGrenade_Frost,Ranger_ElementGrenade_Electric,Ranger_ElementGrenade_Acid",Ranger_ElementGrenade,Ranger_ElementGrenade_Fire,""
+Demolitionist,"Demolitionist",Demolitionist,Demolitionist_Flamethrower,Demolitionist_Revolver,,,"",,,""
+Engineer,"Engineer",Engineer,Engineer_AssaultRifle,Engineer_ChainsawLauncher,,,"",,,""

@@ -22,6 +22,37 @@ void UWeaponEquipmentComponent::BeginPlay()
 	// 改由 WeaponCharacter::PossessedBy() 完成 InitAbilitySystem() 后显式调用 EquipWeapon。
 }
 
+UWeaponDataAsset* UWeaponEquipmentComponent::ResolveWeaponData(FName WeaponId) const
+{
+	const TCHAR* ObjectPath = nullptr;
+	if (WeaponId == FName(TEXT("Ranger_ArcaneCrossbow")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_ArcaneCrossbow.DA_Ranger_ArcaneCrossbow");
+	}
+	else if (WeaponId == FName(TEXT("Ranger_SawedOffShotgun")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_SawedOffShotgun.DA_Ranger_SawedOffShotgun");
+	}
+	else if (WeaponId == FName(TEXT("Demolitionist_Flamethrower")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Demolitionist_Flamethrower.DA_Demolitionist_Flamethrower");
+	}
+	else if (WeaponId == FName(TEXT("Demolitionist_Revolver")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Demolitionist_Revolver.DA_Demolitionist_Revolver");
+	}
+	else if (WeaponId == FName(TEXT("Engineer_AssaultRifle")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Engineer_AssaultRifle.DA_Engineer_AssaultRifle");
+	}
+	else if (WeaponId == FName(TEXT("Engineer_ChainsawLauncher")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Engineer_ChainsawLauncher.DA_Engineer_ChainsawLauncher");
+	}
+
+	return ObjectPath ? LoadObject<UWeaponDataAsset>(nullptr, ObjectPath) : nullptr;
+}
+
 void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 {
 	if (!InWeaponData)

@@ -11,5 +11,6 @@ public class LetsDeepRockEditorTarget : TargetRules
 		DefaultBuildSettings = BuildSettingsVersion.V7;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
 		ExtraModuleNames.Add("LetsDeepRock");
+		ExtraModuleNames.Add("LetsDeepRockEditor");
 	}
 }

@@ -136,6 +136,22 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 		ConsumePendingWeaponDamageDebug(AppliedShieldDamage, AppliedHealthDamage);
 		if (bJustDied)
 		{
+			const FGameplayEffectContextHandle& EffectContext = Data.EffectSpec.GetContext();
+			const UAbilitySystemComponent* OwningASC = GetOwningAbilitySystemComponent();
+			UE_LOG(LogTemp, Error,
+				TEXT("[DeathTrace] Health depleted: AttributeOwner=%s Avatar=%s Instigator=%s EffectCauser=%s Effect=%s RawDamage=%.2f ShieldDamage=%.2f HealthDamage=%.2f Health %.2f->%.2f Shield %.2f->%.2f"),
+				*GetNameSafe(GetOwningActor()),
+				*GetNameSafe(OwningASC ? OwningASC->GetAvatarActor() : nullptr),
+				*GetNameSafe(EffectContext.GetOriginalInstigator()),
+				*GetNameSafe(EffectContext.GetEffectCauser()),
+				*GetNameSafe(Data.EffectSpec.Def),
+				LocalDamage,
+				AppliedShieldDamage,
+				AppliedHealthDamage,
+				GetHealth() + AppliedHealthDamage,
+				GetHealth(),
+				GetShield() + AppliedShieldDamage,
+				GetShield());
 			OnHealthDepleted.Broadcast(GetOwningActor());
 		}
 	}
