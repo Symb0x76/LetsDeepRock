@@ -5,6 +5,7 @@
 #include "Variant_Weapon/UI/WeaponNetTestWidget.h"
 
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
 #include "Components/Button.h"
 #include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
@@ -13,6 +14,7 @@
 #include "Components/VerticalBox.h"
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
@@ -134,7 +136,16 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 		return;
 	}
 
-	UWeaponNetTestWidget* Widget = CreateWidget<UWeaponNetTestWidget>(World, UWeaponNetTestWidget::StaticClass());
+	// 优先用 PlayerController 创建:AddToViewport 依赖 OwningPlayer 的 viewport client。
+	UWeaponNetTestWidget* Widget = nullptr;
+	if (APlayerController* PC = World->GetFirstPlayerController())
+	{
+		Widget = CreateWidget<UWeaponNetTestWidget>(PC, UWeaponNetTestWidget::StaticClass());
+	}
+	if (!Widget)
+	{
+		Widget = CreateWidget<UWeaponNetTestWidget>(World, UWeaponNetTestWidget::StaticClass());
+	}
 	if (!Widget)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[NetTestUI] Widget 创建失败"));
@@ -142,8 +153,6 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 	}
 
 	Widget->AddToViewport(100);
-	Widget->SetAlignmentInViewport(FVector2D(1.0f, 0.0f));
-	Widget->SetPositionInViewport(FVector2D(-12.0f, 12.0f));
 	GNetTestWidget = Widget;
 	UE_LOG(LogTemp, Log, TEXT("[NetTestUI] 面板已创建(再输入 WeaponTestUI 或按 F2 关闭)"));
 }
@@ -184,11 +193,17 @@ void UWeaponNetTestWidget::NativeTick(const FGeometry& MyGeometry, float InDelta
 
 void UWeaponNetTestWidget::BuildLayout()
 {
+	// 根:SizeBox(定宽)→ Border(半透明背景,便于确认面板是否在渲染)→ VerticalBox
 	USizeBox* SizeBox = NewObject<USizeBox>(this);
 	SizeBox->SetWidthOverride(620.0f);
 
+	UBorder* Background = NewObject<UBorder>(this);
+	Background->SetBrushColor(FLinearColor(0.05f, 0.05f, 0.08f, 0.9f));
+	Background->SetPadding(FMargin(8.0f));
+	SizeBox->AddChild(Background);
+
 	RootBox = NewObject<UVerticalBox>(this);
-	SizeBox->AddChild(RootBox);
+	Background->AddChild(RootBox);
 	WidgetTree->RootWidget = SizeBox;
 
 	AddText(RootBox, TEXT("Net Test (F2)"), FLinearColor(1.0f, 0.85f, 0.3f));
