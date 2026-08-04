@@ -10,7 +10,15 @@ import sys
 from mcp.server.fastmcp import FastMCP
 
 from .connection import PythonRemoteExec, RemoteControlAPI
-from .tools import asset_tools, blueprint_tools, gameplay_tools, input_tools, level_tools, utility_tools
+from .tools import (
+    asset_tools,
+    blueprint_graph_tools,
+    blueprint_tools,
+    gameplay_tools,
+    input_tools,
+    level_tools,
+    utility_tools,
+)
 
 # 日志输出到 stderr（stdout 被 MCP 协议占用）
 logger = logging.getLogger("unreal_mcp")
@@ -18,6 +26,7 @@ logger = logging.getLogger("unreal_mcp")
 # 所有需要注册的工具模块
 TOOL_MODULES = [
     asset_tools,
+    blueprint_graph_tools,
     blueprint_tools,
     gameplay_tools,
     input_tools,

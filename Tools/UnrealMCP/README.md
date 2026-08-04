@@ -11,7 +11,7 @@ AI Agent (OpenCode) → stdio → MCP Server (Python) → UE Editor
                                     └── Remote Control API (HTTP)    ← 补充通道
 ```
 
-## 工具清单 (19 个)
+## 工具清单
 
 ### Tier 1 — 资产与蓝图核心操作
 | 工具 | 功能 |
@@ -24,6 +24,12 @@ AI Agent (OpenCode) → stdio → MCP Server (Python) → UE Editor
 | `set_blueprint_defaults` | 设置 Blueprint 的 Class Defaults |
 | `add_component_to_blueprint` | 给 Blueprint 添加组件 |
 | `compile_blueprint` | 编译 Blueprint |
+| `inspect_blueprint_graph` | 只读检查 Blueprint 图表、节点及可选 Pin 信息 |
+| `search_blueprint_nodes` | 只读搜索指定 Content 路径中的 Blueprint 节点 |
+
+`inspect_blueprint_graph` 和 `search_blueprint_nodes` 仅调用 C++ Editor 模块暴露的
+`LetsDeepRockBlueprintGraphLibrary`，不会编译、保存或修改资产。使用前必须确保对应
+Editor 模块已编译并加载；若刚添加或更新该模块，需要重新编译并重启编辑器。
 
 ### Tier 2 — GAS 与输入系统
 | 工具 | 功能 |
@@ -190,6 +196,7 @@ Tools/UnrealMCP/
             ├── __init__.py
             ├── asset_tools.py     # 资产操作
             ├── blueprint_tools.py # 蓝图操作
+            ├── blueprint_graph_tools.py # 蓝图图表只读检查与搜索
             ├── gameplay_tools.py  # GAS 操作
             ├── input_tools.py     # 输入系统
             ├── level_tools.py     # 关卡操作
