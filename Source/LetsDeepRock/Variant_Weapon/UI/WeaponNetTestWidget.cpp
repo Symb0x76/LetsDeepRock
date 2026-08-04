@@ -329,7 +329,66 @@ void UWeaponNetTestWidget::RefreshMatchState()
 
 void UWeaponNetTestWidget::RefreshMigrationState()
 {
-	// Task 4 填充
+	UWeaponHostMigrationSubsystem* Migration = GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>();
+
+	EWeaponMigrationRole LocalRole = EWeaponMigrationRole::None;
+	if (APlayerController* PC = GetOwningPlayer())
+	{
+		if (APlayerState* PS = PC->PlayerState)
+		{
+			LocalRole = Migration->GetRoleForPlayer(PS->GetUniqueId());
+		}
+	}
+
+	MigrationStateText->SetText(FText::Format(
+		FText::FromString(TEXT("状态: {0} | 本机角色: {1}")),
+		FText::FromString(LexMigrationState(Migration->GetMigrationState())),
+		FText::FromString(LexMigrationRole(LocalRole))));
+
+	FString AssignmentLine = TEXT("角色分配: -");
+	if (const FWeaponMigrationRoleAssignment* Assignment = Migration->GetCurrentRoleAssignment())
+	{
+		AssignmentLine = FString::Printf(TEXT("Epoch:%llu RosterRev:%llu | 主机:%s(S%d) A:%s(S%d) B:%s(S%d)"),
+			(unsigned long long)Assignment->AuthorityEpoch,
+			(unsigned long long)Assignment->RosterRevision,
+			*Assignment->ActiveHost.PlayerId.ToDebugString(), Assignment->ActiveHost.OriginalSlot,
+			*Assignment->BackupA.PlayerId.ToDebugString(), Assignment->BackupA.OriginalSlot,
+			*Assignment->BackupB.PlayerId.ToDebugString(), Assignment->BackupB.OriginalSlot);
+	}
+	RolesText->SetText(FText::FromString(AssignmentLine));
+
+	const int64 CommonRevision = Migration->GetCommonCommittedRevision();
+	const int64 LocalSaveRevision = Migration->GetLastLocalSaveRevision();
+	FWeaponMigrationPayloadAck CommittedAck;
+	const bool bHasCommitted = Migration->GetCommittedAck(CommittedAck);
+	const FString CommittedStr = bHasCommitted
+		? FString::Printf(TEXT("rev %lld"), (long long)CommittedAck.SnapshotRevision)
+		: TEXT("无");
+
+	SnapshotText->SetText(FText::Format(
+		FText::FromString(TEXT("快照: 共同提交 rev {0} | 本机提交 {1} | 本地存档 rev {2}")),
+		FText::AsNumber(CommonRevision),
+		FText::FromString(CommittedStr),
+		FText::AsNumber(LocalSaveRevision)));
+
+	int32 ReceivedChunks = 0;
+	int32 TotalChunks = 0;
+	Migration->GetPendingPayloadProgress(ReceivedChunks, TotalChunks);
+	const FString PendingStr = (TotalChunks > 0)
+		? FString::Printf(TEXT("%d/%d 块"), ReceivedChunks, TotalChunks)
+		: TEXT("无");
+
+	PendingText->SetText(FText::Format(
+		FText::FromString(TEXT("Pending: {0} | 完整: {1} | Committed: {2}")),
+		FText::FromString(PendingStr),
+		FText::FromString(Migration->IsPendingPayloadComplete() ? TEXT("是") : TEXT("否")),
+		FText::FromString(Migration->HasCommittedPayload() ? TEXT("是") : TEXT("否"))));
+
+	OverlayText->SetText(FText::Format(
+		FText::FromString(TEXT("覆盖层: {0} 进度: {1} | {2}")),
+		FText::FromString(Migration->IsMigrationOverlayVisible() ? TEXT("显示") : TEXT("隐藏")),
+		FText::AsNumber(Migration->GetMigrationProgress()),
+		Migration->GetMigrationOverlayMessage()));
 }
 
 void UWeaponNetTestWidget::RefreshResultList()
@@ -371,7 +430,37 @@ void UWeaponNetTestJoinButton::HandleSelfClicked()
 
 void UWeaponNetTestWidget::UpdateButtonEnablement()
 {
-	// Task 4 填充(含 BOSS 贡献点)
+	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+	UWeaponHostMigrationSubsystem* Migration = GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>();
+
+	const bool bSessionIdle = Session->GetCurrentOperation() == EWeaponSessionOperation::Idle;
+	const bool bHasAuthority = GetWorld()->GetAuthGameMode() != nullptr;
+
+	EWeaponMigrationRole LocalRole = EWeaponMigrationRole::None;
+	if (APlayerController* PC = GetOwningPlayer())
+	{
+		if (APlayerState* PS = PC->PlayerState)
+		{
+			LocalRole = Migration->GetRoleForPlayer(PS->GetUniqueId());
+		}
+	}
+
+	const EWeaponHostMigrationState MigrationState = Migration->GetMigrationState();
+	const bool bIsActiveHost = LocalRole == EWeaponMigrationRole::ActiveHost;
+	const bool bCanHandoff = bIsActiveHost
+		&& (MigrationState == EWeaponHostMigrationState::Monitoring || MigrationState == EWeaponHostMigrationState::Idle);
+
+	HostButton->SetIsEnabled(bSessionIdle);
+	FindButton->SetIsEnabled(bSessionIdle);
+	DirectJoinButton->SetIsEnabled(bSessionIdle && !AddressBox->GetText().IsEmpty());
+	ReconnectButton->SetIsEnabled(bSessionIdle && !AddressBox->GetText().IsEmpty());
+	DestroyButton->SetIsEnabled(bSessionIdle);
+	ReadyButton->SetIsEnabled(true);
+	StartMatchButton->SetIsEnabled(bHasAuthority);
+	DisconnectButton->SetIsEnabled(true);
+	PlannedHandoffButton->SetIsEnabled(bCanHandoff);
+	RestartLocalSaveButton->SetIsEnabled(bIsActiveHost);
+	CaptureNowButton->SetIsEnabled(bIsActiveHost);
 }
 
 void UWeaponNetTestWidget::HandleHostClicked()
@@ -435,9 +524,30 @@ void UWeaponNetTestWidget::HandleStartMatchClicked()
 	}
 }
 
-void UWeaponNetTestWidget::HandleDisconnectClicked() {}
-void UWeaponNetTestWidget::HandlePlannedHandoffClicked() {}
-void UWeaponNetTestWidget::HandleRestartLocalSaveClicked() {}
-void UWeaponNetTestWidget::HandleCaptureNowClicked() {}
+void UWeaponNetTestWidget::HandleDisconnectClicked()
+{
+	GEngine->Exec(GetWorld(), TEXT("Disconnect"));
+}
+
+void UWeaponNetTestWidget::HandlePlannedHandoffClicked()
+{
+	UWeaponHostMigrationSubsystem* Migration = GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>();
+	Migration->RequestPlannedHostHandoff();
+}
+
+void UWeaponNetTestWidget::HandleRestartLocalSaveClicked()
+{
+	UWeaponHostMigrationSubsystem* Migration = GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>();
+	Migration->RestartLatestLocalSaveAsNewMatch(ServerNameBox->GetText().ToString());
+}
+
+void UWeaponNetTestWidget::HandleCaptureNowClicked()
+{
+	UWeaponHostMigrationSubsystem* Migration = GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>();
+	FString Error;
+	const bool bOk = Migration->CaptureAndDistributeSnapshot(Error);
+	UE_LOG(LogTemp, Warning, TEXT("[NetTestUI] CaptureAndDistributeSnapshot: %s %s"),
+		bOk ? TEXT("OK") : TEXT("FAIL"), *Error);
+}
 
 #endif // !UE_BUILD_SHIPPING
