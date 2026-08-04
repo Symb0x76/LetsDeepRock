@@ -35,10 +35,53 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerEventData)
 {
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire ActivateAbility entered Weapon=%s"), *GetNameSafe(GetWeaponData(ActorInfo)));
+	#endif
 	// 获取武器数据
 	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
 	if (!WeaponData)
 	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: no weapon"));
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+
+	UWeaponEquipmentComponent* EquipComp = nullptr;
+	if (const FGameplayAbilitySpec* Spec = GetCurrentAbilitySpec())
+	{
+		EquipComp = Cast<UWeaponEquipmentComponent>(Spec->SourceObject.Get());
+	}
+	if (!EquipComp && ActorInfo && ActorInfo->AvatarActor.IsValid())
+	{
+		EquipComp = ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>();
+	}
+	if (!EquipComp)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: no equipment component Weapon=%s"), *GetNameSafe(WeaponData));
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+	if (EquipComp->IsReloading())
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: reloading Weapon=%s Magazine=%d Reserve=%d"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+	if (EquipComp->GetCurrentMagazineAmmo() <= 0)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: empty magazine Weapon=%s Magazine=%d Reserve=%d"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+		#endif
+		EquipComp->StartReload();
 		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
 		return;
 	}
@@ -46,6 +89,21 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	// CommitAbility：检查 + 触发 Cooldown（本期无 Cost）
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire CommitAbility failed Weapon=%s"), *GetNameSafe(WeaponData));
+		#endif
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	// 一次成功射击固定消耗一发；多弹丸只影响后续 Spawn 循环。
+	if (!EquipComp->ConsumeAmmoForShot())
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire ConsumeAmmo failed Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo(),
+			EquipComp->IsReloading() ? TEXT("true") : TEXT("false"));
+		#endif
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
@@ -55,6 +113,10 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	{
 		ServerSpawnProjectile(ActorInfo, WeaponData);
 	}
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire shot succeeded Weapon=%s Magazine=%d Reserve=%d"),
+		*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+	#endif
 
 	// 单发射击：立即结束 Ability（Cooldown GE 已独立运行，不需要等待）
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
@@ -80,6 +142,51 @@ UGameplayEffect* UGA_Fire::GetCooldownGameplayEffect() const
 	}
 	// 后备：调用父类（通常返回 nullptr）
 	return Super::GetCooldownGameplayEffect();
+}
+
+void UGA_Fire::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo) const
+{
+	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
+	float FireInterval = WeaponData ? WeaponData->FireInterval : 0.01f;
+	if (WeaponData && !WeaponData->WeaponConfigId.IsNone())
+	{
+		if (UGameInstance* GameInstance = ActorInfo && ActorInfo->AvatarActor.IsValid()
+			? ActorInfo->AvatarActor->GetGameInstance()
+			: nullptr)
+		{
+			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (const FWeaponConfigRow* WeaponConfig = DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId))
+				{
+					if (const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId))
+					{
+						FireInterval = FireModeConfig->FireInterval;
+					}
+				}
+			}
+		}
+	}
+	const float FinalFireInterval = FMath::Max(FireInterval, 0.01f);
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire ApplyCooldown WeaponConfigId=%s FireInterval=%.4f"),
+		WeaponData ? *WeaponData->WeaponConfigId.ToString() : TEXT("None"), FinalFireInterval);
+	#endif
+
+	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+	if (!CooldownGE)
+	{
+		return;
+	}
+
+	FGameplayEffectSpecHandle CooldownSpec = MakeOutgoingGameplayEffectSpec(
+		Handle, ActorInfo, ActivationInfo, CooldownGE->GetClass(), GetAbilityLevel(Handle, ActorInfo));
+	if (CooldownSpec.IsValid())
+	{
+		CooldownSpec.Data->SetDuration(FinalFireInterval, true);
+		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, CooldownSpec);
+	}
 }
 
 const UWeaponDataAsset* UGA_Fire::GetWeaponData(const FGameplayAbilityActorInfo* ActorInfo) const
@@ -181,38 +288,54 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	SpawnParams.Instigator = Cast<APawn>(Avatar);
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
-		WeaponData->ProjectileClass, SpawnLocation, SpawnRotation, SpawnParams);
-
-	if (Projectile)
+	FGameplayTagContainer DamageTags = WeaponData->DamageTags;
+	if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
 	{
-		FGameplayTagContainer DamageTags = WeaponData->DamageTags;
-		if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
+		const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
+		if (DamageTypeRootTag.IsValid())
 		{
-			const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
-			if (DamageTypeRootTag.IsValid())
-			{
-				DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
-			}
-			DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+			DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
+		}
+		DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+	}
+
+	const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
+	const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+	const int32 ProjectileCount = FMath::Max(FireModeConfig ? FireModeConfig->ProjectileCount : 1, 1);
+	const float HalfSpreadAngle = FMath::Max(FireModeConfig ? FireModeConfig->SpreadAngle : 0.0f, 0.0f) * 0.5f;
+	const float AreaDamage = FireModeConfig ? FireModeConfig->AreaDamage : 0.0f;
+	const float AreaRadius = FireModeConfig ? FireModeConfig->AreaRadius : 0.0f;
+	const float AreaFalloff = FireModeConfig ? FireModeConfig->AreaFalloff : 0.0f;
+
+	for (int32 ProjectileIndex = 0; ProjectileIndex < ProjectileCount; ++ProjectileIndex)
+	{
+		FRotator ProjectileRotation = SpawnRotation;
+		if (HalfSpreadAngle > 0.0f)
+		{
+			ProjectileRotation.Yaw += FMath::FRandRange(-HalfSpreadAngle, HalfSpreadAngle);
 		}
 
-		const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
-		const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+		AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActor<AWeaponProjectile>(
+			WeaponData->ProjectileClass, SpawnLocation, ProjectileRotation, SpawnParams);
 
-		Projectile->InitDamageParams(
-			WeaponData->DamageEffectClass,
-			BaseDamage,
-			Avatar,
-			DamageTags,
-			WeaponData->bProjectilePenetratesTerrain);
-		Projectile->SetProjectileSpeed(ProjectileSpeed);
-		if (FireModeConfig)
+		if (Projectile)
 		{
-			Projectile->InitFlightParams(
-				FireModeConfig->ProjectileLifetime,
-				FireModeConfig->ProjectileGravityScale,
-				FireModeConfig->MaxHitTargets);
+			Projectile->SetActorRotation(ProjectileRotation);
+			Projectile->InitDamageParams(
+				WeaponData->DamageEffectClass,
+				BaseDamage,
+				Avatar,
+				DamageTags,
+				WeaponData->bProjectilePenetratesTerrain);
+			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
+			Projectile->SetProjectileSpeed(ProjectileSpeed);
+			if (FireModeConfig)
+			{
+				Projectile->InitFlightParams(
+					FireModeConfig->ProjectileLifetime,
+					FireModeConfig->ProjectileGravityScale,
+					FireModeConfig->MaxHitTargets);
+			}
 		}
 	}
 }

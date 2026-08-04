@@ -28,10 +28,13 @@ struct FProfessionConfigRow : public FTableRowBase
 	FName PrimaryWeaponId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
-	FName SecondarySlotType = TEXT("Weapon");
+	FName SecondaryWeaponId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
-	FName SecondaryItemId;
+	FName SkillItemId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName ClassEquipmentId;
 
 	/** 可供玩家选择的手雷配置行，英文逗号分隔 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
@@ -42,6 +45,10 @@ struct FProfessionConfigRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
 	FName DefaultGrenadeId;
+
+	/** 可供玩家选择的护甲词条，英文逗号分隔，当前允许为空 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Armor")
+	FString ArmorPerkIds;
 };
 
 /**

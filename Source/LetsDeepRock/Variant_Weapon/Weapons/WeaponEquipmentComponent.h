@@ -11,6 +11,18 @@
 class AWeaponBase;
 class UAbilitySystemComponent;
 
+USTRUCT(BlueprintType)
+struct FWeaponAmmoState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	int32 MagazineAmmo = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	int32 ReserveAmmo = 0;
+};
+
 /**
  *  武器装备管理组件
  *
@@ -53,6 +65,10 @@ public:
 	/** 获取默认武器列表（供 WeaponCharacter 初始化库存用） */
 	const TArray<UWeaponDataAsset*>& GetDefaultWeapons() const { return DefaultWeapons; }
 
+	/** 将当前职业配置使用的武器 ID 显式解析为数据资产 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon")
+	UWeaponDataAsset* ResolveWeaponData(FName WeaponId) const;
+
 	// ---- 多武器库存与切换 ----
 
 	/** 切换到指定索引的武器（0-based） */
@@ -72,6 +88,33 @@ public:
 
 	/** 获取当前武器索引 */
 	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
+
+	/** 当前弹匣内弹药数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentMagazineAmmo() const;
+
+	/** 当前武器备弹数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentReserveAmmo() const;
+
+	/** 当前武器弹匣容量。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentMagazineSize() const;
+
+	/** 当前武器是否正在换弹。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	bool IsReloading() const { return bIsReloading; }
+
+	/** 当前换弹计时剩余秒数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	float GetReloadTimeRemaining() const;
+
+	/** 手动开始当前武器换弹；条件不满足时无操作。 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	void StartReload();
+
+	/** GA_Fire 在 Commit 成功后调用；每次射击只消耗一发。 */
+	bool ConsumeAmmoForShot();
 
 	/** 向库存添加一把武器（如果已存在则不重复添加） */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
@@ -98,6 +141,15 @@ private:
 	/** 获取 Owner 的 ASC */
 	UAbilitySystemComponent* GetOwnerASC() const;
 
+	/** 从 DT_WeaponConfig 读取当前武器弹药参数。 */
+	bool GetCurrentAmmoConfig(int32& OutMagazineSize, int32& OutReserveAmmo, float& OutReloadDuration) const;
+
+	/** 完成当前武器换弹。 */
+	void FinishReload();
+
+	/** 切换/卸载时取消旧武器换弹。 */
+	void CancelReload();
+
 	/** 当前武器数据引用 */
 	UPROPERTY()
 	UWeaponDataAsset* CurrentWeaponData;
@@ -116,6 +168,13 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
 
+	/** 与 WeaponInventory 同索引的独立弹药状态。 */
+	UPROPERTY()
+	TArray<FWeaponAmmoState> WeaponAmmoStates;
+
 	/** 当前装备的武器在库存中的索引 */
 	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	bool bIsReloading = false;
+	FTimerHandle ReloadTimerHandle;
 };
