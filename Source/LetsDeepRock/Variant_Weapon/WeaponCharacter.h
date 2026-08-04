@@ -183,7 +183,10 @@ protected:
 	void LogFireTraceState(const TCHAR* EventName) const;
 #endif
 
-	/** 主副武器连续射击 */
+	/** 当前武器是否配置为按住射击。 */
+	bool IsCurrentWeaponHoldTrigger() const;
+
+	/** 主副武器尝试射击 */
 	void FireWeapon();
 
 	/** 处理近战输入：尝试激活 GA_Melee */
