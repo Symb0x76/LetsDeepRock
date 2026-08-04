@@ -7,7 +7,15 @@
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 5;
+inline constexpr int32 WeaponSnapshotVersion = 7;
+
+USTRUCT()
+struct FWeaponAmmoSnapshot
+{
+	GENERATED_BODY()
+	UPROPERTY(SaveGame) int32 MagazineAmmo = 0;
+	UPROPERTY(SaveGame) int32 ReserveAmmo = 0;
+};
 
 USTRUCT()
 struct FWeaponAttributeState
@@ -58,9 +66,31 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 	
 	UPROPERTY(SaveGame)
 	FName CharacterConfigRowName = NAME_None;
+
+	UPROPERTY(SaveGame)
+	FName ProfessionId = NAME_None;
+
+	UPROPERTY(SaveGame)
+	FName PrimaryWeaponId = NAME_None;
+
+	UPROPERTY(SaveGame)
+	FName SecondaryWeaponId = NAME_None;
+
+	UPROPERTY(SaveGame)
+	TArray<FSoftObjectPath> WeaponInventory;
+
+	UPROPERTY(SaveGame)
+	TArray<FWeaponAmmoSnapshot> WeaponAmmoStates;
 	
 	UPROPERTY(SaveGame)
 	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY(SaveGame)
+	uint8 CurrentEquipmentSlot = 0;
+
+	/** 仅记录诊断；恢复时统一取消换弹，因为没有可靠保存计时器剩余时间。 */
+	UPROPERTY(SaveGame)
+	bool bWasReloading = false;
 
 	UPROPERTY(SaveGame)
 	FWeaponAttributeState AttributeState;
@@ -123,6 +153,12 @@ struct LETSDEEPROCK_API FWeaponProjectileSnapshot
 
 	UPROPERTY(SaveGame)
 	float ProjectileSpeed = 0.0f;
+
+	UPROPERTY(SaveGame) float AreaDamage = 0.0f;
+	UPROPERTY(SaveGame) float AreaRadius = 0.0f;
+	UPROPERTY(SaveGame) float AreaFalloff = 0.0f;
+	UPROPERTY(SaveGame) float ProjectileGravityScale = 0.0f;
+	UPROPERTY(SaveGame) int32 MaxHitTargets = 1;
 
 	UPROPERTY(SaveGame)
 	float RemainingLifeSeconds = 0.0f;

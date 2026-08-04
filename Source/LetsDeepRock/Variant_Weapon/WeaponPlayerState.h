@@ -38,6 +38,21 @@ struct FWeaponPlayerLobbyState
 	}
 };
 
+USTRUCT(BlueprintType)
+struct FWeaponProfessionLoadoutState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName ProfessionId = NAME_None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName PrimaryWeaponId = NAME_None;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Profession")
+	FName SecondaryWeaponId = NAME_None;
+};
+
 // 动态多播委托
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
 	FOnWeaponPlayerLobbyStateChanged,
@@ -95,6 +110,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Player")
 	bool GetIsPlayerReady() const { return LobbyState.bIsReady; }
 
+	FName GetProfessionId() const { return ProfessionLoadout.ProfessionId; }
+	FName GetPrimaryWeaponId() const { return ProfessionLoadout.PrimaryWeaponId; }
+	FName GetSecondaryWeaponId() const { return ProfessionLoadout.SecondaryWeaponId; }
+
+	/** 服务端校验并设置当前玩家独立的职业装备。 */
+	bool SetProfessionLoadout(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
+
 	const FWeaponPlayerLobbyState& GetLobbyState() const
 	{
 		return LobbyState;
@@ -148,7 +170,13 @@ protected:
 	
 	UPROPERTY(ReplicatedUsing = OnRep_LobbyState, BlueprintReadOnly, Category = "Player")
 	FWeaponPlayerLobbyState LobbyState;
+
+	UPROPERTY(ReplicatedUsing = OnRep_ProfessionLoadout, BlueprintReadOnly, Category = "Profession")
+	FWeaponProfessionLoadoutState ProfessionLoadout;
 	
 	UFUNCTION()
 	void OnRep_LobbyState(FWeaponPlayerLobbyState OldState);
+
+	UFUNCTION()
+	void OnRep_ProfessionLoadout();
 };

@@ -5,6 +5,7 @@
 #include "AbilitySystemComponent.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
+#include "WeaponCharacter.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/WeaponCombatSet.h"
 #include "Attributes/WeaponMovementSet.h"
@@ -12,6 +13,7 @@
 #include "Attributes/WeaponResourceSet.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
+#include "Data/ProfessionSaveGame.h"
 
 AWeaponPlayerState::AWeaponPlayerState()
 {
@@ -56,6 +58,29 @@ void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	// 注册子类复制规则
 	DOREPLIFETIME(AWeaponPlayerState, LobbyState);
 	DOREPLIFETIME(AWeaponPlayerState, TeamId);
+	DOREPLIFETIME(AWeaponPlayerState, ProfessionLoadout);
+}
+
+bool AWeaponPlayerState::SetProfessionLoadout(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
+{
+	if (!HasAuthority() || !UProfessionSaveGame::IsProfessionSelectionValid(this, ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
+	{
+		return false;
+	}
+
+	ProfessionLoadout.ProfessionId = ProfessionId;
+	ProfessionLoadout.PrimaryWeaponId = PrimaryWeaponId;
+	ProfessionLoadout.SecondaryWeaponId = SecondaryWeaponId;
+	ForceNetUpdate();
+	return true;
+}
+
+void AWeaponPlayerState::OnRep_ProfessionLoadout()
+{
+	if (AWeaponCharacter* Character = GetPawn<AWeaponCharacter>())
+	{
+		Character->RefreshProfessionLoadout();
+	}
 }
 
 void AWeaponPlayerState::SetTeamId(int32 InTeamId)

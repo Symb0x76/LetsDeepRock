@@ -24,6 +24,7 @@
 #include "UObject/Package.h"
 #include "Weapons/GrenadeProjectile.h"
 #include "Weapons/WeaponEquipmentComponent.h"
+#include "Weapons/WeaponDataAsset.h"
 #include "Weapons/WeaponGrenadeDataAsset.h"
 #include "Weapons/WeaponProjectile.h"
 
@@ -213,6 +214,15 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
+		const bool bHasProfessionLoadout = !Player.ProfessionId.IsNone() || !Player.PrimaryWeaponId.IsNone() || !Player.SecondaryWeaponId.IsNone();
+		if ((Player.bHasPawn || bHasProfessionLoadout) &&
+			(!DataSubsystem->GetProfessionConfig(Player.ProfessionId) ||
+			!DataSubsystem->GetProfessionWeaponIds(Player.ProfessionId, TEXT("Primary")).Contains(Player.PrimaryWeaponId) ||
+			!DataSubsystem->GetProfessionWeaponIds(Player.ProfessionId, TEXT("Secondary")).Contains(Player.SecondaryWeaponId)))
+		{
+			OutError = FString::Printf(TEXT("Profession loadout for player %s is invalid"), *Player.PlayerId);
+			return false;
+		}
 		if (!Player.bHasPawn)
 		{
 			continue;
@@ -390,6 +400,9 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		Player.SlotIndex = PlayerState->GetPlayerSlotIndex();
 		Player.bIsReady = PlayerState->GetIsPlayerReady();
 		Player.TeamId = PlayerState->GetTeamId();
+		Player.ProfessionId = PlayerState->GetProfessionId();
+		Player.PrimaryWeaponId = PlayerState->GetPrimaryWeaponId();
+		Player.SecondaryWeaponId = PlayerState->GetSecondaryWeaponId();
 		Player.AttributeState.Values = CaptureAttributeValues(PlayerState->GetAbilitySystemComponent());
 
 		const AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerState->GetPawn());
@@ -400,6 +413,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 
 		Player.bHasPawn = true;
 		Player.CharacterConfigRowName = Character->GetCharacterConfigRowName();
+		Player.CurrentEquipmentSlot = Character->GetCurrentEquipmentSlot();
 		Player.Location = Character->GetActorLocation();
 		Player.Rotation = FRotator(0.0f, Character->GetActorRotation().Yaw, 0.0f);
 		Player.Velocity = Character->GetVelocity();
@@ -411,7 +425,20 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 				*Player.PlayerName);
 			return false;
 		}
-		Player.CurrentWeaponIndex = Equipment->GetCurrentWeaponIndex();
+		FWeaponEquipmentSnapshotState EquipmentSnapshot;
+		Equipment->CaptureSnapshotState(EquipmentSnapshot);
+		Player.CurrentWeaponIndex = EquipmentSnapshot.CurrentWeaponIndex;
+		Player.bWasReloading = EquipmentSnapshot.bWasReloading;
+		for (UWeaponDataAsset* Weapon : EquipmentSnapshot.WeaponInventory)
+		{
+			Player.WeaponInventory.Add(FSoftObjectPath(Weapon));
+		}
+		for (const FWeaponAmmoState& Ammo : EquipmentSnapshot.WeaponAmmoStates)
+		{
+			FWeaponAmmoSnapshot& SavedAmmo = Player.WeaponAmmoStates.AddDefaulted_GetRef();
+			SavedAmmo.MagazineAmmo = Ammo.MagazineAmmo;
+			SavedAmmo.ReserveAmmo = Ammo.ReserveAmmo;
+		}
 	}
 
 	return true;
@@ -434,9 +461,16 @@ bool UWeaponSnapshotCoordinator::ValidatePlayers(const FWeaponSnapshot& Snapshot
 			return false;
 		}
 
+		const bool bHasAnyProfessionLoadout = !Player.ProfessionId.IsNone() || !Player.PrimaryWeaponId.IsNone() || !Player.SecondaryWeaponId.IsNone();
+		if ((Player.bHasPawn || bHasAnyProfessionLoadout) &&
+			(Player.ProfessionId.IsNone() || Player.PrimaryWeaponId.IsNone() || Player.SecondaryWeaponId.IsNone()))
+		{
+			OutError = TEXT("Snapshot player has invalid profession loadout");
+			return false;
+		}
 		if (Player.bHasPawn)
 		{
-			if (Player.CharacterConfigRowName.IsNone() || !IsFiniteVector(Player.Location) ||
+			if (Player.CurrentEquipmentSlot > 3 || Player.CharacterConfigRowName.IsNone() || !IsFiniteVector(Player.Location) ||
 				!IsFiniteRotator(Player.Rotation) || !IsFiniteVector(Player.Velocity))
 			{
 				OutError = TEXT("Snapshot has invalid player Pawn state");
@@ -447,6 +481,20 @@ bool UWeaponSnapshotCoordinator::ValidatePlayers(const FWeaponSnapshot& Snapshot
 			{
 				OutError = TEXT("Snapshot has invalid current weapon index");
 				return false;
+			}
+			if (Player.WeaponInventory.Num() != Player.WeaponAmmoStates.Num() ||
+				(Player.CurrentWeaponIndex != INDEX_NONE && !Player.WeaponInventory.IsValidIndex(Player.CurrentWeaponIndex)))
+			{
+				OutError = TEXT("Snapshot has inconsistent weapon inventory state");
+				return false;
+			}
+			for (int32 Index = 0; Index < Player.WeaponInventory.Num(); ++Index)
+			{
+				if (!Player.WeaponInventory[Index].IsValid() || Player.WeaponAmmoStates[Index].MagazineAmmo < 0 || Player.WeaponAmmoStates[Index].ReserveAmmo < 0)
+				{
+					OutError = TEXT("Snapshot has invalid weapon identity or ammo state");
+					return false;
+				}
 			}
 		}
 		else if (Player.CurrentWeaponIndex != INDEX_NONE)
@@ -600,6 +648,11 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		SavedProjectile.DamageTags = Initialization.DamageTags;
 		SavedProjectile.DamageValue = Initialization.DamageValue;
 		SavedProjectile.ProjectileSpeed = Initialization.ProjectileSpeed;
+		SavedProjectile.AreaDamage = Initialization.AreaDamage;
+		SavedProjectile.AreaRadius = Initialization.AreaRadius;
+		SavedProjectile.AreaFalloff = Initialization.AreaFalloff;
+		SavedProjectile.ProjectileGravityScale = Initialization.ProjectileGravityScale;
+		SavedProjectile.MaxHitTargets = Initialization.MaxHitTargets;
 		SavedProjectile.RemainingLifeSeconds = Projectile->GetLifeSpan();
 		SavedProjectile.bPenetratesTerrain = Initialization.bPenetratesTerrain;
 	}
@@ -627,7 +680,10 @@ bool UWeaponSnapshotCoordinator::ValidateProjectiles(
 			!IsFiniteVector(Projectile.Velocity) || !FMath::IsFinite(Projectile.DamageValue) ||
 			Projectile.DamageValue < 0.0f || !FMath::IsFinite(Projectile.ProjectileSpeed) ||
 			Projectile.ProjectileSpeed <= 0.0f || !FMath::IsFinite(Projectile.RemainingLifeSeconds) ||
-			Projectile.RemainingLifeSeconds <= 0.0f)
+			Projectile.RemainingLifeSeconds <= 0.0f || !FMath::IsFinite(Projectile.AreaDamage) || Projectile.AreaDamage < 0.0f ||
+			!FMath::IsFinite(Projectile.AreaRadius) || Projectile.AreaRadius < 0.0f ||
+			!FMath::IsFinite(Projectile.AreaFalloff) || Projectile.AreaFalloff < 0.0f || Projectile.AreaFalloff > 1.0f ||
+			!FMath::IsFinite(Projectile.ProjectileGravityScale) || Projectile.MaxHitTargets < 1)
 		{
 			OutError = TEXT("Snapshot has invalid active projectile state");
 			return false;
@@ -763,16 +819,22 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 		}
 	}
 
-	for (const auto& [PlayerId, PlayerName, SlotIndex, bIsReady, bHasPawn, TeamId, Location, Rotation, Velocity, CharacterConfigRowName, CurrentWeaponIndex, AttributeState] : Snapshot.Players)
+	for (const FWeaponPlayerSnapshot& Snap : Snapshot.Players)
 	{
-		AWeaponPlayerState* PlayerState = PlayersById.FindChecked(PlayerId);
-		PlayerState->SetPlayerName(PlayerName);
-		PlayerState->SetPlayerSlotIndex(SlotIndex);
-		PlayerState->SetPlayerReady(bIsReady);
-		PlayerState->SetTeamId(TeamId);
+		AWeaponPlayerState* PlayerState = PlayersById.FindChecked(Snap.PlayerId);
+		PlayerState->SetPlayerName(Snap.PlayerName);
+		PlayerState->SetPlayerSlotIndex(Snap.SlotIndex);
+		PlayerState->SetPlayerReady(Snap.bIsReady);
+		PlayerState->SetTeamId(Snap.TeamId);
+		const bool bHasProfessionLoadout = !Snap.ProfessionId.IsNone() || !Snap.PrimaryWeaponId.IsNone() || !Snap.SecondaryWeaponId.IsNone();
+		if (bHasProfessionLoadout && !PlayerState->SetProfessionLoadout(Snap.ProfessionId, Snap.PrimaryWeaponId, Snap.SecondaryWeaponId))
+		{
+			OutError = FString::Printf(TEXT("Failed to restore profession loadout for player %s"), *Snap.PlayerId);
+			return false;
+		}
 
 		APlayerController* PlayerController = PlayerState->GetPlayerController();
-		if (!bHasPawn)
+		if (!Snap.bHasPawn)
 		{
 			if (PlayerController && PlayerController->GetPawn())
 			{
@@ -791,9 +853,9 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 				// PlayerState remains the GAS owner, but a no-Pawn Snapshot must not retain a destroyed Avatar.
 				ASC->InitAbilityActorInfo(PlayerState, nullptr);
 			}
-			if (!RestoreAttributeValues(ASC, AttributeState.Values))
+			if (!RestoreAttributeValues(ASC, Snap.AttributeState.Values))
 			{
-				OutError = FString::Printf(TEXT("Failed to restore attributes for player %s"), *PlayerId);
+				OutError = FString::Printf(TEXT("Failed to restore attributes for player %s"), *Snap.PlayerId);
 				return false;
 			}
 			continue;
@@ -801,7 +863,7 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 
 		if (!PlayerController)
 		{
-			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *PlayerId);
+			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *Snap.PlayerId);
 			return false;
 		}
 
@@ -814,21 +876,45 @@ bool UWeaponSnapshotCoordinator::RestorePlayers(
 				Character = Cast<AWeaponCharacter>(NewPawn);
 			}
 		}
-		if (!Character || !Character->SetCharacterConfigRowNameAuthoritative(CharacterConfigRowName))
+		if (Character)
 		{
-			OutError = FString::Printf(TEXT("Failed to prepare Character for player %s"), *PlayerId);
+			Character->RefreshProfessionLoadout();
+		}
+		if (!Character || !Character->SetCharacterConfigRowNameAuthoritative(Snap.CharacterConfigRowName))
+		{
+			OutError = FString::Printf(TEXT("Failed to prepare Character for player %s"), *Snap.PlayerId);
 			return false;
 		}
 
-		Character->SetActorLocation(Location, false, nullptr, ETeleportType::TeleportPhysics);
-		Character->SetAimDirectionAuthoritative(Rotation.Vector());
-		Character->GetCharacterMovement()->Velocity = Velocity;
+		Character->SetActorLocation(Snap.Location, false, nullptr, ETeleportType::TeleportPhysics);
+		Character->SetAimDirectionAuthoritative(Snap.Rotation.Vector());
+		Character->GetCharacterMovement()->Velocity = Snap.Velocity;
 
 		UWeaponEquipmentComponent* Equipment = Character->FindComponentByClass<UWeaponEquipmentComponent>();
-		if (!Equipment || !Equipment->RestoreWeaponSelection(CurrentWeaponIndex) ||
-			!RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), AttributeState.Values))
+		FWeaponEquipmentSnapshotState EquipmentSnapshot;
+		for (const FSoftObjectPath& WeaponPath : Snap.WeaponInventory)
 		{
-			OutError = FString::Printf(TEXT("Failed to restore equipment or attributes for player %s"), *PlayerId);
+			UWeaponDataAsset* Weapon = Cast<UWeaponDataAsset>(WeaponPath.TryLoad());
+			if (!Weapon)
+			{
+				OutError = FString::Printf(TEXT("Failed to load equipment for player %s"), *Snap.PlayerId);
+				return false;
+			}
+			EquipmentSnapshot.WeaponInventory.Add(Weapon);
+		}
+		for (const FWeaponAmmoSnapshot& SavedAmmo : Snap.WeaponAmmoStates)
+		{
+			FWeaponAmmoState& Ammo = EquipmentSnapshot.WeaponAmmoStates.AddDefaulted_GetRef();
+			Ammo.MagazineAmmo = SavedAmmo.MagazineAmmo;
+			Ammo.ReserveAmmo = SavedAmmo.ReserveAmmo;
+		}
+		EquipmentSnapshot.CurrentWeaponIndex = Snap.CurrentWeaponIndex;
+		EquipmentSnapshot.bWasReloading = Snap.bWasReloading;
+		if (!Equipment || !Equipment->RestoreSnapshotState(EquipmentSnapshot) ||
+			!Character->RestoreEquipmentSlot(Snap.CurrentEquipmentSlot) ||
+			!RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), Snap.AttributeState.Values))
+		{
+			OutError = FString::Printf(TEXT("Failed to restore equipment or attributes for player %s"), *Snap.PlayerId);
 			return false;
 		}
 	}
@@ -973,6 +1059,14 @@ bool UWeaponSnapshotCoordinator::RestoreProjectiles(
 			SavedProjectile.DamageTags,
 			SavedProjectile.bPenetratesTerrain,
 			SavedProjectile.ProjectileSpeed);
+		Projectile->InitFlightParams(
+			SavedProjectile.RemainingLifeSeconds,
+			SavedProjectile.ProjectileGravityScale,
+			SavedProjectile.MaxHitTargets);
+		Projectile->InitAreaDamageParams(
+			SavedProjectile.AreaDamage,
+			SavedProjectile.AreaRadius,
+			SavedProjectile.AreaFalloff);
 		Projectile->FinishSpawning(SpawnTransform);
 		Projectile->SetActorEnableCollision(false);
 		Projectile->RestoreSnapshotMotion(

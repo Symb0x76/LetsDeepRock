@@ -17,7 +17,7 @@ class UGameplayEffect;
  *  投射物携带伤害 GE 类 + BaseDamage，命中时自行对目标 Apply。
  *
  *  Cooldown：通过 GetCooldownGameplayEffect() 返回 WeaponData 中配置的 CooldownGE，
- *  Duration 由 GE 蓝图配置（对应 WeaponData.FireInterval）。
+ *  ApplyCooldown() 将 Spec Duration 覆盖为配置表中的 FireInterval。
  *
  *  本 Ability 通过 WeaponEquipmentComponent 授予给玩家 ASC，
  *  SourceObject 设为 WeaponEquipmentComponent，可从中获取当前武器数据。
@@ -44,6 +44,11 @@ public:
 
 	/** 覆写 Cooldown GE，从 WeaponData 动态读取 CooldownEffectClass */
 	virtual UGameplayEffect* GetCooldownGameplayEffect() const override;
+
+	/** 保留 Cooldown GE 的标签配置，仅在 outgoing spec 上覆盖射击间隔 */
+	virtual void ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
+		const FGameplayAbilityActorInfo* ActorInfo,
+		const FGameplayAbilityActivationInfo ActivationInfo) const override;
 
 protected:
 

@@ -1,2 +1,10 @@
 ﻿---,DisplayName,FireModeIds,DefaultFireModeId,AmmoType,MagazineSize,ReserveAmmo,ReloadDuration,WeaponMesh,MuzzleSocketName
-Ranger_ArcaneCrossbow,"奥术连弩","Ranger_ArcaneCrossbow_RapidBolt,Ranger_ArcaneCrossbow_ChargedMissile",Ranger_ArcaneCrossbow_RapidBolt,None,0,0,0,"",Muzzle
+Ranger_ArcaneCrossbow,"奥术连弩","Ranger_ArcaneCrossbow_RapidBolt",Ranger_ArcaneCrossbow_RapidBolt,Bolt,36,288,1.6,"",Muzzle
+Ranger_SawedOffShotgun,"单手短管霰弹","Ranger_SawedOffShotgun_Default",Ranger_SawedOffShotgun_Default,Shell,2,24,2.2,"",Muzzle
+Ranger_FullAutoPistol,"全自动手枪","Ranger_FullAutoPistol_Default",Ranger_FullAutoPistol_Default,LightAmmo,18,90,1.8,"",Muzzle
+Ranger_ThrowingKnife,"飞刀","Ranger_ThrowingKnife_Default",Ranger_ThrowingKnife_Default,Knife,4,16,1.2,"",Muzzle
+Demolitionist_Flamethrower,"火焰喷射器","Demolitionist_Flamethrower_Default",Demolitionist_Flamethrower_Default,Fuel,100,400,2.5,"",Muzzle
+Demolitionist_Revolver,"左轮手枪","Demolitionist_Revolver_Default",Demolitionist_Revolver_Default,HeavyAmmo,6,36,2,"",Muzzle
+Demolitionist_RocketLauncher,"火箭筒","Demolitionist_RocketLauncher_Default",Demolitionist_RocketLauncher_Default,Rocket,1,8,2.8,"",Muzzle
+Engineer_AssaultRifle,"突击步枪","Engineer_AssaultRifle_Default",Engineer_AssaultRifle_Default,RifleAmmo,30,180,2,"",Muzzle
+Engineer_ChainsawLauncher,"链锯发射器","Engineer_ChainsawLauncher_Default",Engineer_ChainsawLauncher_Default,Chainsaw,4,20,2.4,"",Muzzle

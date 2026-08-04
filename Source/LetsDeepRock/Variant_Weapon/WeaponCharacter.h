@@ -21,7 +21,9 @@ class UGrenadeTrajectoryPreviewComponent;
 struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
+class ADrone;
 struct FGrenadeBallisticsOutput;
+struct FProfessionConfigRow;
 
 /**
  *  俯视角武器系统角色（Variant_Weapon 骨架）
@@ -85,6 +87,10 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Grenade")
 	bool bEnableGrenadePreview = false;
 
+	/** 职业工具无人机类；未配置时不部署 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Profession Tool")
+	TSubclassOf<ADrone> ProfessionToolDroneClass;
+
 public:
 
 	/** 构造函数 */
@@ -115,9 +121,16 @@ public:
 	/** 服务器写入瞄准方向，并同步角色的水平 Rotation。 */
 	void SetAimDirectionAuthoritative(const FVector& NewAimDirection);
 
-	FName GetCharacterConfigRowName() const { return CharacterConfigRowName; }
+	/** 快照兼容接口：返回职业配置派生出的属性行，不维护独立复制配置源。 */
+	FName GetCharacterConfigRowName() const { return ActiveCharacterAttributeRow; }
 	bool SetCharacterConfigRowNameAuthoritative(FName NewRowName);
-	
+
+	/** PlayerState 职业状态复制到达后刷新派生属性表现；客户端不会建立库存。 */
+	void RefreshProfessionLoadout();
+
+	uint8 GetCurrentEquipmentSlot() const { return CurrentEquipmentSlot; }
+	bool RestoreEquipmentSlot(uint8 SlotIndex);
+
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	void RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType);
@@ -137,21 +150,17 @@ protected:
 	/** 统一的 ASC ActorInfo 初始化：获取 PlayerState 上的 ASC，设置 Owner=PS / Avatar=this */
 	void InitAbilitySystem();
 
+	/** 按职业配置和存档初始化主副武器 */
+	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, FName PrimaryWeaponId, FName SecondaryWeaponId);
+
 	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
 
-	/** 角色配置表行名（策划在蓝图中指定） */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, ReplicatedUsing = OnRep_CharacterConfigRowName, Category = "Attributes")
-	FName CharacterConfigRowName = FName("Default");
-
-	const FCharacterAttributeRow* ResolveCharacterConfigRow() const;
-	void RefreshCharacterConfigPresentation();
-
-	UFUNCTION()
-	void OnRep_CharacterConfigRowName();
-
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;
+
+	/** 当前职业配置派生出的属性行，仅供快照一致性校验。 */
+	FName ActiveCharacterAttributeRow = NAME_None;
 
 	/** 检查玩家是否处于死亡状态（ASC 是否持有 State.Dead Tag） */
 	bool IsDead() const;
@@ -159,14 +168,54 @@ protected:
 	/** 处理移动输入 */
 	void Move(const FInputActionValue& Value);
 
-	/** 处理射击输入：尝试激活 GA_Fire */
-	void Fire(const FInputActionValue& Value);
+	/** 左键按不同装备槽分发输入 */
+	void FireStarted(const FInputActionValue& Value);
+	void FireTriggered(const FInputActionValue& Value);
+	void FireCompleted(const FInputActionValue& Value);
+	void FireCanceled(const FInputActionValue& Value);
+
+	/** 原始鼠标左键诊断监听，仅确认物理按键事件是否到达。 */
+	void RawFirePressed();
+	void RawFireReleased();
+
+#if !UE_BUILD_SHIPPING
+	/** 输出当前射击输入、装备和弹药状态。 */
+	void LogFireTraceState(const TCHAR* EventName) const;
+#endif
+
+	/** 主副武器连续射击 */
+	void FireWeapon();
 
 	/** 处理近战输入：尝试激活 GA_Melee */
 	void Melee(const FInputActionValue& Value);
 
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
+
+	/** R 键手动换弹。 */
+	void ReloadWeapon();
+
+	UFUNCTION(Server, Reliable)
+	void ServerReloadWeapon();
+
+	/** 选择四个数字装备槽 */
+	void SelectPrimary();
+	void SelectSecondary();
+	void SelectSkill();
+	void SelectTool();
+	void SelectEquipmentSlot(uint8 SlotIndex);
+
+	UFUNCTION(Server, Reliable)
+	void ServerSelectEquipmentSlot(uint8 SlotIndex);
+
+	UFUNCTION()
+	void OnRep_CurrentEquipmentSlot();
+
+	/** 在服务端部署职业工具无人机 */
+	void DeployProfessionTool();
+
+	UFUNCTION(Server, Reliable)
+	void ServerDeployProfessionTool();
 
 	/** 处理手雷投掷输入：Started（预览）/ Triggered（更新）/ Completed（投掷）/ Canceled（取消） */
 	void ThrowGrenadeStarted(const FInputActionValue& Value);
@@ -233,4 +282,22 @@ protected:
 
 	/** PendingGrenadeTarget 是否有效 */
 	mutable bool bHasPendingGrenadeTarget = false;
+
+	/** 当前装备槽：由服务端权威选择并复制。 */
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentEquipmentSlot)
+	uint8 CurrentEquipmentSlot = 0;
+
+	/** 本次左键按下时使用的槽；255 表示当前没有持续中的左键输入 */
+	uint8 ActiveFireInputSlot = 255;
+
+	/** 每次按压只记录一次 Enhanced Input Triggered，避免按住时逐帧刷屏。 */
+	bool bFireTriggeredLoggedThisPress = false;
+
+	/** 当前职业是否配置了技能道具和职业工具 */
+	bool bHasSkillItem = false;
+	bool bHasProfessionTool = false;
+
+	/** 当前已部署的独立职业工具无人机 */
+	UPROPERTY()
+	TObjectPtr<ADrone> ActiveDrone;
 };

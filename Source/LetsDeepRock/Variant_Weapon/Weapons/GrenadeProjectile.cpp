@@ -53,6 +53,7 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 		false,
 		GrenadeData->ThrowSpeed
 	);
+	InitFlightParams(0.0f, GrenadeData->GravityScale, 1);
 
 	// 手雷专属弹道配置
 	FuseSeconds = GrenadeData->FuseSeconds;

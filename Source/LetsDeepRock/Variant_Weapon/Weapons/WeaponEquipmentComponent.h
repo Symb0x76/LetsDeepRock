@@ -13,6 +13,54 @@ class UAbilitySystemComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWeaponEquipmentChanged, int32, NewWeaponIndex);
 
+USTRUCT(BlueprintType)
+struct FWeaponAmmoState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	int32 MagazineAmmo = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weapon|Ammo")
+	int32 ReserveAmmo = 0;
+};
+
+USTRUCT()
+struct FWeaponEquipmentReplicatedState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY()
+	TArray<FWeaponAmmoState> WeaponAmmoStates;
+
+	UPROPERTY()
+	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY()
+	bool bIsReloading = false;
+};
+
+USTRUCT()
+struct FWeaponEquipmentSnapshotState
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<TObjectPtr<UWeaponDataAsset>> WeaponInventory;
+
+	UPROPERTY()
+	TArray<FWeaponAmmoState> WeaponAmmoStates;
+
+	UPROPERTY()
+	int32 CurrentWeaponIndex = INDEX_NONE;
+
+	UPROPERTY()
+	bool bWasReloading = false;
+};
+
 /**
  *  武器装备管理组件
  *
@@ -32,18 +80,19 @@ public:
 
 	UWeaponEquipmentComponent();
 
-	virtual void BeginPlay() override;
-
-	/** 服务端装备指定武器；客户端由复制结果更新状态。 */
+	/** 装备指定武器（可在 BeginPlay 或运行时切枪调用） */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void EquipWeapon(UWeaponDataAsset* InWeaponData);
+
+	/** 客户端仅设置武器数据引用（不 GiveAbility，不 Spawn Actor） */
+	void EquipWeaponLocal(UWeaponDataAsset* InWeaponData);
 
 	/** 卸载当前武器 */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void UnequipWeapon();
 
 	/** 获取当前武器数据（GA_Fire 读取伤害/投射物配置用） */
-	UWeaponDataAsset* GetCurrentWeaponData() const;
+	UWeaponDataAsset* GetCurrentWeaponData() const { return CurrentWeaponData; }
 
 	/** 获取当前武器 Actor（GA_Fire 读取枪口位置用） */
 	AWeaponBase* GetCurrentWeaponActor() const { return CurrentWeaponActor; }
@@ -51,7 +100,14 @@ public:
 	/** 获取默认武器配置（供 WeaponCharacter::PossessedBy 调用） */
 	UWeaponDataAsset* GetDefaultWeaponData() const { return DefaultWeapons.Num() > 0 ? DefaultWeapons[0] : nullptr; }
 
-	// ---- 固定武器表与选择 ----
+	/** 获取默认武器列表（供 WeaponCharacter 初始化库存用） */
+	const TArray<UWeaponDataAsset*>& GetDefaultWeapons() const { return DefaultWeapons; }
+
+	/** 将当前职业配置使用的武器 ID 显式解析为数据资产 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon")
+	UWeaponDataAsset* ResolveWeaponData(FName WeaponId) const;
+
+	// ---- 多武器库存与切换 ----
 
 	/** 切换到指定索引的武器（0-based） */
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
@@ -65,19 +121,62 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Weapon")
 	void SwitchToPrevious();
 
-	/** 获取当前武器索引 */
-	int32 GetCurrentWeaponIndex() const { return CurrentWeaponIndex; }
+	/** 获取武器库存 */
+	const TArray<TObjectPtr<UWeaponDataAsset>>& GetWeaponInventory() const { return EquipmentState.WeaponInventory; }
 
-	/** 服务端根据静态 DefaultWeapons 恢复选择；INDEX_NONE 表示不装备。 */
+	/** 获取当前武器索引 */
+	int32 GetCurrentWeaponIndex() const { return EquipmentState.CurrentWeaponIndex; }
+
+	/** 服务端根据动态库存恢复选择；INDEX_NONE 表示不装备。 */
 	bool RestoreWeaponSelection(int32 SavedWeaponIndex);
+	void CaptureSnapshotState(FWeaponEquipmentSnapshotState& OutState) const;
+	bool RestoreSnapshotState(const FWeaponEquipmentSnapshotState& InState);
+
+	/** 当前弹匣内弹药数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentMagazineAmmo() const;
+
+	/** 当前武器备弹数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentReserveAmmo() const;
+
+	/** 当前武器弹匣容量。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	int32 GetCurrentMagazineSize() const;
+
+	/** 当前武器是否正在换弹。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	bool IsReloading() const { return EquipmentState.bIsReloading; }
+
+	/** 当前换弹计时剩余秒数。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
+	float GetReloadTimeRemaining() const;
+
+	/** 手动开始当前武器换弹；条件不满足时无操作。 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|Ammo")
+	void StartReload();
+
+	/** GA_Fire 在 Commit 成功后调用；每次射击只消耗一发。 */
+	bool ConsumeAmmoForShot();
+
+	/** 向库存添加一把武器（如果已存在则不重复添加） */
+	UFUNCTION(BlueprintCallable, Category = "Weapon")
+	void AddWeaponToInventory(UWeaponDataAsset* WeaponData);
+
+	/** 从库存移除一把武器（如果是当前装备则自动切换） */
+	UFUNCTION(BlueprintCallable, Category = "Weapon")
+	void RemoveWeaponFromInventory(UWeaponDataAsset* WeaponData);
+
+	void SelectNonWeaponSlot();
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
-	/** 客户端收到服务端装备状态后通知 UI/表现层。 */
 	UPROPERTY(BlueprintAssignable, Category = "Weapon")
 	FOnWeaponEquipmentChanged OnEquipmentChanged;
 
 protected:
+
+	virtual void BeginPlay() override;
 
 	/** 默认武器列表（编辑器中配置，PossessedBy 时加入库存并装备第 0 个） */
 	UPROPERTY(EditAnywhere, Category = "Weapon")
@@ -88,22 +187,31 @@ protected:
 	FName AttachSocketName = TEXT("hand_r");
 
 private:
-	/** 客户端的切枪意图；服务器会再次校验索引和库存。 */
 	UFUNCTION(Server, Reliable)
 	void ServerSwitchWeapon(int32 NewIndex);
 
-	/** 只在服务器执行真正的卸载、Ability 更新和 Actor Spawn。 */
 	void SwitchWeaponAuthority(int32 NewIndex);
 
-	/** 当前复制状态到达客户端时调用。 */
 	UFUNCTION()
-	void OnRep_CurrentWeaponIndex();
+	void OnRep_EquipmentState();
 
-	/** 服务端不会触发 OnRep，因此状态改变后主动通知本地 UI。 */
 	void NotifyEquipmentChanged();
 
 	/** 获取 Owner 的 ASC */
 	UAbilitySystemComponent* GetOwnerASC() const;
+
+	/** 从 DT_WeaponConfig 读取当前武器弹药参数。 */
+	bool GetCurrentAmmoConfig(int32& OutMagazineSize, int32& OutReserveAmmo, float& OutReloadDuration) const;
+
+	/** 完成当前武器换弹。 */
+	void FinishReload();
+
+	/** 切换/卸载时取消旧武器换弹。 */
+	void CancelReload();
+
+	/** 当前武器数据引用 */
+	UPROPERTY()
+	UWeaponDataAsset* CurrentWeaponData;
 
 	/** 当前武器世界 Actor */
 	UPROPERTY()
@@ -115,7 +223,8 @@ private:
 	/** 已授予的近战 Ability Handle */
 	FGameplayAbilitySpecHandle MeleeAbilityHandle;
 
-	/** DefaultWeapons 是静态配置；只有选择索引属于运行时复制状态。 */
-	UPROPERTY(ReplicatedUsing = OnRep_CurrentWeaponIndex)
-	int32 CurrentWeaponIndex = INDEX_NONE;
+	UPROPERTY(ReplicatedUsing = OnRep_EquipmentState)
+	FWeaponEquipmentReplicatedState EquipmentState;
+
+	FTimerHandle ReloadTimerHandle;
 };

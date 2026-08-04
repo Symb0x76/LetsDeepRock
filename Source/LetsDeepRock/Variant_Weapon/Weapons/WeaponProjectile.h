@@ -34,6 +34,21 @@ struct FWeaponProjectileInitializationState
 	float ProjectileSpeed = 3000.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaDamage = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaRadius = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaFalloff = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float ProjectileGravityScale = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	int32 MaxHitTargets = 1;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	bool bPenetratesTerrain = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
@@ -72,6 +87,12 @@ public:
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
+	/** 设置表驱动的生命期、重力和最大不同 Pawn 命中数 */
+	void InitFlightParams(float InLifetime, float InGravityScale, int32 InMaxHitTargets);
+
+	/** 设置范围伤害参数（由 GA_Fire 从开火模式配置传入） */
+	void InitAreaDamageParams(float InAreaDamage, float InAreaRadius, float InAreaFalloff);
+
 protected:
 
 	virtual void BeginPlay() override;
@@ -91,6 +112,14 @@ protected:
 	/** 初始化参数作为单个复制快照发送，避免客户端观察到字段组合不一致。 */
 	UPROPERTY(ReplicatedUsing = OnRep_InitializationState, BlueprintReadOnly, Category = "Projectile")
 	FWeaponProjectileInitializationState InitializationState;
+
+	int32 MaxHitTargets = 1;
+	TSet<TWeakObjectPtr<APawn>> HitPawns;
+	TOptional<FHitResult> PendingHitResult;
+	float AreaDamage = 0.0f;
+	float AreaRadius = 0.0f;
+	float AreaFalloff = 0.0f;
+	bool bHasExploded = false;
 
 	/** SetByCaller 伤害 Tag */
 	FGameplayTag DamageTag;
@@ -112,5 +141,9 @@ protected:
 	virtual void OnProjectileStop(const FHitResult& ImpactResult);
 
 	/** 对目标施加伤害 GE（可用于手雷等子类的爆炸伤害） */
+	bool ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> DamageOverride = TOptional<float>());
 	virtual void ApplyDamageToTarget(AActor* TargetActor);
+
+	/** 在指定命中点对范围内 Pawn 施加一次 GAS 伤害 */
+	void Explode(const FVector& ExplosionCenter, const FHitResult* SourceHitResult = nullptr, APawn* DirectHitPawn = nullptr);
 };
