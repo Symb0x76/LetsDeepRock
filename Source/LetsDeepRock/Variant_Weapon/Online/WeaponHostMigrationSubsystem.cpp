@@ -2478,6 +2478,20 @@ bool UWeaponHostMigrationSubsystem::IsPendingPayloadComplete() const
 		PendingPayload.ReceivedByteCount == PendingPayload.Envelope.PayloadByteCount;
 }
 
+void UWeaponHostMigrationSubsystem::GetPendingPayloadProgress(
+	int32& OutReceivedChunks,
+	int32& OutTotalChunks) const
+{
+	if (!PendingPayload.bActive)
+	{
+		OutReceivedChunks = 0;
+		OutTotalChunks = 0;
+		return;
+	}
+	OutReceivedChunks = PendingPayload.ReceivedChunkCount;
+	OutTotalChunks = PendingPayload.Chunks.Num();
+}
+
 const FWeaponMigrationPayloadEnvelope* UWeaponHostMigrationSubsystem::GetCommittedEnvelope() const
 {
 	return CommittedPayload.bValid ? &CommittedPayload.Envelope : nullptr;

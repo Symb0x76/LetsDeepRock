@@ -168,6 +168,9 @@ public:
 	bool IsPendingPayloadComplete() const;
 	bool HasCommittedPayload() const { return CommittedPayload.bValid; }
 
+	/** Debug/UI: 当前 Pending payload 分块接收进度;无 Pending 时返回 (0, 0)。 */
+	void GetPendingPayloadProgress(int32& OutReceivedChunks, int32& OutTotalChunks) const;
+
 	const FWeaponMigrationPayloadEnvelope* GetCommittedEnvelope() const;
 	bool CopyCommittedPayload(TArray<uint8>& OutBytes) const;
 	bool GetCommittedAck(FWeaponMigrationPayloadAck& OutAck) const;
