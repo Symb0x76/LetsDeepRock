@@ -12,9 +12,9 @@ class LETSDEEPROCK_API UProfessionSaveGame : public USaveGame
 	GENERATED_BODY()
 
 public:
-	/** 选择职业并将该职业的默认配置保存到固定槽位 */
+	/** 选择职业与主副武器，并将配置保存到固定槽位 */
 	UFUNCTION(BlueprintCallable, Category = "Profession|Save", meta = (WorldContext = "WorldContextObject"))
-	static bool SelectProfession(const UObject* WorldContextObject, FName ProfessionId);
+	static bool SelectProfession(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
 	UPROPERTY(BlueprintReadWrite, SaveGame, Category = "Profession")
 	FName SelectedProfession;

@@ -6,6 +6,10 @@
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
 #include "GameFramework/Character.h"
+#include "Data/GameDataSubsystem.h"
+#include "Engine/GameInstance.h"
+#include "Engine/World.h"
+#include "TimerManager.h"
 
 UWeaponEquipmentComponent::UWeaponEquipmentComponent()
 {
@@ -33,6 +37,14 @@ UWeaponDataAsset* UWeaponEquipmentComponent::ResolveWeaponData(FName WeaponId) c
 	{
 		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_SawedOffShotgun.DA_Ranger_SawedOffShotgun");
 	}
+	else if (WeaponId == FName(TEXT("Ranger_FullAutoPistol")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_FullAutoPistol.DA_Ranger_FullAutoPistol");
+	}
+	else if (WeaponId == FName(TEXT("Ranger_ThrowingKnife")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_ThrowingKnife.DA_Ranger_ThrowingKnife");
+	}
 	else if (WeaponId == FName(TEXT("Demolitionist_Flamethrower")))
 	{
 		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Demolitionist_Flamethrower.DA_Demolitionist_Flamethrower");
@@ -40,6 +52,10 @@ UWeaponDataAsset* UWeaponEquipmentComponent::ResolveWeaponData(FName WeaponId) c
 	else if (WeaponId == FName(TEXT("Demolitionist_Revolver")))
 	{
 		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Demolitionist_Revolver.DA_Demolitionist_Revolver");
+	}
+	else if (WeaponId == FName(TEXT("Demolitionist_RocketLauncher")))
+	{
+		ObjectPath = TEXT("/Game/Variant_Weapon/Weapons/DA_Demolitionist_RocketLauncher.DA_Demolitionist_RocketLauncher");
 	}
 	else if (WeaponId == FName(TEXT("Engineer_AssaultRifle")))
 	{
@@ -126,6 +142,8 @@ void UWeaponEquipmentComponent::EquipWeaponLocal(UWeaponDataAsset* InWeaponData)
 
 void UWeaponEquipmentComponent::UnequipWeapon()
 {
+	CancelReload();
+
 	// 非服务端只清理本地数据引用
 	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
@@ -209,6 +227,190 @@ void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 	}
 }
 
+bool UWeaponEquipmentComponent::GetCurrentAmmoConfig(int32& OutMagazineSize, int32& OutReserveAmmo, float& OutReloadDuration) const
+{
+	OutMagazineSize = 0;
+	OutReserveAmmo = 0;
+	OutReloadDuration = 0.0f;
+	if (!CurrentWeaponData || CurrentWeaponData->WeaponConfigId.IsNone())
+	{
+		return false;
+	}
+
+	UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FWeaponConfigRow* Config = DataSubsystem ? DataSubsystem->GetWeaponConfig(CurrentWeaponData->WeaponConfigId) : nullptr;
+	if (!Config)
+	{
+		return false;
+	}
+
+	OutMagazineSize = FMath::Max(Config->MagazineSize, 0);
+	OutReserveAmmo = FMath::Max(Config->ReserveAmmo, 0);
+	OutReloadDuration = FMath::Max(Config->ReloadDuration, 0.0f);
+	return true;
+}
+
+int32 UWeaponEquipmentComponent::GetCurrentMagazineAmmo() const
+{
+	return WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex) ? WeaponAmmoStates[CurrentWeaponIndex].MagazineAmmo : 0;
+}
+
+int32 UWeaponEquipmentComponent::GetCurrentReserveAmmo() const
+{
+	return WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex) ? WeaponAmmoStates[CurrentWeaponIndex].ReserveAmmo : 0;
+}
+
+int32 UWeaponEquipmentComponent::GetCurrentMagazineSize() const
+{
+	int32 MagazineSize = 0;
+	int32 InitialReserve = 0;
+	float ReloadDuration = 0.0f;
+	GetCurrentAmmoConfig(MagazineSize, InitialReserve, ReloadDuration);
+	return MagazineSize;
+}
+
+float UWeaponEquipmentComponent::GetReloadTimeRemaining() const
+{
+	return bIsReloading && GetWorld() ? GetWorld()->GetTimerManager().GetTimerRemaining(ReloadTimerHandle) : 0.0f;
+}
+
+void UWeaponEquipmentComponent::StartReload()
+{
+	if (bIsReloading)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: already reloading Weapon=%s"), *GetNameSafe(CurrentWeaponData));
+		#endif
+		return;
+	}
+	if (!WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: invalid weapon index Index=%d Weapon=%s"), CurrentWeaponIndex, *GetNameSafe(CurrentWeaponData));
+		#endif
+		return;
+	}
+
+	int32 MagazineSize = 0;
+	int32 InitialReserve = 0;
+	float ReloadDuration = 0.0f;
+	if (!GetCurrentAmmoConfig(MagazineSize, InitialReserve, ReloadDuration))
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: ammo config missing Weapon=%s WeaponConfigId=%s"),
+			*GetNameSafe(CurrentWeaponData), CurrentWeaponData ? *CurrentWeaponData->WeaponConfigId.ToString() : TEXT("None"));
+		#endif
+		return;
+	}
+
+	const FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+	if (AmmoState.MagazineAmmo >= MagazineSize)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: magazine full Weapon=%s Magazine=%d/%d Reserve=%d"),
+			*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, MagazineSize, AmmoState.ReserveAmmo);
+		#endif
+		return;
+	}
+	if (AmmoState.ReserveAmmo <= 0)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] StartReload rejected: no reserve ammo Weapon=%s Magazine=%d/%d Reserve=%d"),
+			*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, MagazineSize, AmmoState.ReserveAmmo);
+		#endif
+		return;
+	}
+
+	bIsReloading = true;
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload started Weapon=%s Magazine=%d/%d Reserve=%d Duration=%.3f"),
+		*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, MagazineSize, AmmoState.ReserveAmmo, ReloadDuration);
+	#endif
+	if (ReloadDuration <= 0.0f)
+	{
+		FinishReload();
+		return;
+	}
+
+	GetWorld()->GetTimerManager().SetTimer(ReloadTimerHandle, this, &UWeaponEquipmentComponent::FinishReload, ReloadDuration, false);
+}
+
+void UWeaponEquipmentComponent::FinishReload()
+{
+	if (!bIsReloading || !WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	{
+		return;
+	}
+
+	int32 MagazineSize = 0;
+	int32 InitialReserve = 0;
+	float ReloadDuration = 0.0f;
+	if (GetCurrentAmmoConfig(MagazineSize, InitialReserve, ReloadDuration))
+	{
+		FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+		const int32 AmmoToLoad = FMath::Min(MagazineSize - AmmoState.MagazineAmmo, AmmoState.ReserveAmmo);
+		AmmoState.MagazineAmmo += AmmoToLoad;
+		AmmoState.ReserveAmmo -= AmmoToLoad;
+	}
+	bIsReloading = false;
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload completed Weapon=%s Magazine=%d Reserve=%d"),
+		*GetNameSafe(CurrentWeaponData), GetCurrentMagazineAmmo(), GetCurrentReserveAmmo());
+	#endif
+}
+
+void UWeaponEquipmentComponent::CancelReload()
+{
+	const bool bWasReloading = bIsReloading;
+	if (GetWorld())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(ReloadTimerHandle);
+	}
+	bIsReloading = false;
+	#if !UE_BUILD_SHIPPING
+	if (bWasReloading)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload canceled Weapon=%s Magazine=%d Reserve=%d"),
+			*GetNameSafe(CurrentWeaponData), GetCurrentMagazineAmmo(), GetCurrentReserveAmmo());
+	}
+	#endif
+}
+
+bool UWeaponEquipmentComponent::ConsumeAmmoForShot()
+{
+	if (bIsReloading || !WeaponAmmoStates.IsValidIndex(CurrentWeaponIndex))
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] ConsumeAmmo failed Weapon=%s Reloading=%s Index=%d"),
+			*GetNameSafe(CurrentWeaponData), bIsReloading ? TEXT("true") : TEXT("false"), CurrentWeaponIndex);
+		#endif
+		return false;
+	}
+
+	FWeaponAmmoState& AmmoState = WeaponAmmoStates[CurrentWeaponIndex];
+	if (AmmoState.MagazineAmmo <= 0)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] ConsumeAmmo failed: empty magazine Weapon=%s Reserve=%d"),
+			*GetNameSafe(CurrentWeaponData), AmmoState.ReserveAmmo);
+		#endif
+		StartReload();
+		return false;
+	}
+
+	--AmmoState.MagazineAmmo;
+	if (AmmoState.MagazineAmmo == 0)
+	{
+		StartReload();
+	}
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] ConsumeAmmo succeeded Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
+		*GetNameSafe(CurrentWeaponData), AmmoState.MagazineAmmo, AmmoState.ReserveAmmo, bIsReloading ? TEXT("true") : TEXT("false"));
+	#endif
+	return true;
+}
+
 void UWeaponEquipmentComponent::SwitchToNext()
 {
 	if (WeaponInventory.Num() <= 1)
@@ -246,6 +448,19 @@ void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponDat
 
 	WeaponInventory.Add(WeaponData);
 
+	FWeaponAmmoState& AmmoState = WeaponAmmoStates.AddDefaulted_GetRef();
+	const int32 AddedIndex = WeaponInventory.Num() - 1;
+	const int32 PreviousIndex = CurrentWeaponIndex;
+	UWeaponDataAsset* PreviousWeapon = CurrentWeaponData;
+	CurrentWeaponIndex = AddedIndex;
+	CurrentWeaponData = WeaponData;
+	int32 MagazineSize = 0;
+	float ReloadDuration = 0.0f;
+	GetCurrentAmmoConfig(MagazineSize, AmmoState.ReserveAmmo, ReloadDuration);
+	AmmoState.MagazineAmmo = MagazineSize;
+	CurrentWeaponIndex = PreviousIndex;
+	CurrentWeaponData = PreviousWeapon;
+
 	// 如果是第一把武器，自动装备
 	if (CurrentWeaponIndex == INDEX_NONE)
 	{
@@ -271,6 +486,8 @@ void UWeaponEquipmentComponent::RemoveWeaponFromInventory(UWeaponDataAsset* Weap
 	{
 		UnequipWeapon();
 		WeaponInventory.RemoveAt(RemoveIndex);
+		WeaponAmmoStates.RemoveAt(RemoveIndex);
+		CurrentWeaponIndex = INDEX_NONE;
 
 		// 库存还有武器则切到第 0 个，否则没有武器
 		if (WeaponInventory.Num() > 0)
@@ -286,6 +503,7 @@ void UWeaponEquipmentComponent::RemoveWeaponFromInventory(UWeaponDataAsset* Weap
 	{
 		// 移除的不是当前装备的武器，只从数组移除
 		WeaponInventory.RemoveAt(RemoveIndex);
+		WeaponAmmoStates.RemoveAt(RemoveIndex);
 
 		// 如果移除的武器索引在当前武器之前，需要前移索引
 		if (RemoveIndex < CurrentWeaponIndex)

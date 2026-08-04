@@ -404,6 +404,9 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	PlayerInputComponent->BindKey(EKeys::Two, IE_Pressed, this, &AWeaponCharacter::SelectSecondary);
 	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AWeaponCharacter::SelectSkill);
 	PlayerInputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AWeaponCharacter::SelectTool);
+	PlayerInputComponent->BindKey(EKeys::R, IE_Pressed, this, &AWeaponCharacter::ReloadWeapon);
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AWeaponCharacter::RawFirePressed);
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AWeaponCharacter::RawFireReleased);
 }
 
 void AWeaponCharacter::Move(const FInputActionValue& Value)
@@ -432,6 +435,10 @@ void AWeaponCharacter::Move(const FInputActionValue& Value)
 
 void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 {
+	bFireTriggeredLoggedThisPress = false;
+	#if !UE_BUILD_SHIPPING
+	LogFireTraceState(TEXT("Enhanced Started"));
+	#endif
 	if (IsDead()) return;
 	ActiveFireInputSlot = CurrentEquipmentSlot;
 
@@ -447,6 +454,13 @@ void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 
 void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
 {
+	#if !UE_BUILD_SHIPPING
+	if (!bFireTriggeredLoggedThisPress)
+	{
+		bFireTriggeredLoggedThisPress = true;
+		LogFireTraceState(TEXT("Enhanced first Triggered"));
+	}
+	#endif
 	if (IsDead()) return;
 
 	if (ActiveFireInputSlot <= 1)
@@ -461,35 +475,98 @@ void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
 
 void AWeaponCharacter::FireCompleted(const FInputActionValue& Value)
 {
+	#if !UE_BUILD_SHIPPING
+	LogFireTraceState(TEXT("Enhanced Completed"));
+	#endif
 	if (!IsDead() && ActiveFireInputSlot == 2)
 	{
 		ThrowGrenadeCompleted(Value);
 	}
 	ActiveFireInputSlot = 255;
+	bFireTriggeredLoggedThisPress = false;
 }
 
 void AWeaponCharacter::FireCanceled(const FInputActionValue& Value)
 {
+	#if !UE_BUILD_SHIPPING
+	LogFireTraceState(TEXT("Enhanced Canceled"));
+	#endif
 	if (!IsDead() && ActiveFireInputSlot == 2)
 	{
 		ThrowGrenadeCanceled(Value);
 	}
 	ActiveFireInputSlot = 255;
+	bFireTriggeredLoggedThisPress = false;
 }
+
+void AWeaponCharacter::RawFirePressed()
+{
+#if !UE_BUILD_SHIPPING
+	LogFireTraceState(TEXT("Raw LeftMouse IE_Pressed"));
+#endif
+}
+
+void AWeaponCharacter::RawFireReleased()
+{
+#if !UE_BUILD_SHIPPING
+	LogFireTraceState(TEXT("Raw LeftMouse IE_Released"));
+#endif
+}
+
+#if !UE_BUILD_SHIPPING
+void AWeaponCharacter::LogFireTraceState(const TCHAR* EventName) const
+{
+	const UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	const UWeaponDataAsset* WeaponData = EquipComp ? EquipComp->GetCurrentWeaponData() : nullptr;
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Input=%s ActiveFireInputSlot=%u CurrentEquipmentSlot=%u Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
+		EventName,
+		ActiveFireInputSlot,
+		CurrentEquipmentSlot,
+		*GetNameSafe(WeaponData),
+		EquipComp ? EquipComp->GetCurrentMagazineAmmo() : -1,
+		EquipComp ? EquipComp->GetCurrentReserveAmmo() : -1,
+		EquipComp && EquipComp->IsReloading() ? TEXT("true") : TEXT("false"));
+}
+#endif
 
 void AWeaponCharacter::FireWeapon()
 {
 	// 通过 ASC 尝试激活射击 Ability（由 WeaponEquipmentComponent 授予）
 	if (!AbilitySystemComponent)
 	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] FireWeapon input arrived but ASC is null"));
+		#endif
 		return;
 	}
 
 	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
 	if (EquipComp && EquipComp->GetCurrentWeaponData() && EquipComp->GetCurrentWeaponData()->FireAbilityClass)
 	{
-		AbilitySystemComponent->TryActivateAbilityByClass(EquipComp->GetCurrentWeaponData()->FireAbilityClass);
+		const UWeaponDataAsset* WeaponData = EquipComp->GetCurrentWeaponData();
+		const bool bActivated = AbilitySystemComponent->TryActivateAbilityByClass(WeaponData->FireAbilityClass);
+		#if !UE_BUILD_SHIPPING
+		if (bActivated)
+		{
+			UE_LOG(LogTemp, Log, TEXT("[FireTrace] FireWeapon input arrived GAS=accepted Cooldown.Weapon.Fire=%s Weapon=%s"),
+				AbilitySystemComponent->HasMatchingGameplayTag(TAG_Cooldown_Weapon_Fire) ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(WeaponData));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[FireTrace] FireWeapon input arrived GAS=rejected Cooldown.Weapon.Fire=%s Weapon=%s"),
+				AbilitySystemComponent->HasMatchingGameplayTag(TAG_Cooldown_Weapon_Fire) ? TEXT("true") : TEXT("false"),
+				*GetNameSafe(WeaponData));
+		}
+		#endif
 	}
+	#if !UE_BUILD_SHIPPING
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] FireWeapon input arrived but weapon/equipment/FireAbilityClass is missing Weapon=%s"),
+			*GetNameSafe(EquipComp ? EquipComp->GetCurrentWeaponData() : nullptr));
+	}
+	#endif
 }
 
 void AWeaponCharacter::Melee(const FInputActionValue& Value)
@@ -510,6 +587,42 @@ void AWeaponCharacter::Melee(const FInputActionValue& Value)
 	if (EquipComp && EquipComp->GetCurrentWeaponData() && EquipComp->GetCurrentWeaponData()->MeleeAbilityClass)
 	{
 		AbilitySystemComponent->TryActivateAbilityByClass(EquipComp->GetCurrentWeaponData()->MeleeAbilityClass);
+	}
+}
+
+void AWeaponCharacter::ReloadWeapon()
+{
+	if (IsDead())
+	{
+		return;
+	}
+
+	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
+	{
+		if (EquipComp->GetCurrentWeaponData())
+		{
+			EquipComp->StartReload();
+		}
+	}
+	if (!HasAuthority())
+	{
+		ServerReloadWeapon();
+	}
+}
+
+void AWeaponCharacter::ServerReloadWeapon_Implementation()
+{
+	if (IsDead())
+	{
+		return;
+	}
+
+	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
+	{
+		if (EquipComp->GetCurrentWeaponData())
+		{
+			EquipComp->StartReload();
+		}
 	}
 }
 

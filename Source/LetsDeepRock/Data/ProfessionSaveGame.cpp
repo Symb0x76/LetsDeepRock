@@ -6,19 +6,24 @@
 
 const FString UProfessionSaveGame::SaveSlotName = TEXT("ProfessionConfiguration");
 
-bool UProfessionSaveGame::SelectProfession(const UObject* WorldContextObject, FName ProfessionId)
+bool UProfessionSaveGame::SelectProfession(const UObject* WorldContextObject, FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
 	UGameInstance* GameInstance = UGameplayStatics::GetGameInstance(WorldContextObject);
 	UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
 	const FProfessionConfigRow* ProfessionRow = DataSubsystem ? DataSubsystem->GetProfessionConfig(ProfessionId) : nullptr;
 	if (!ProfessionRow) return false;
+	if (!DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Primary")).Contains(PrimaryWeaponId)
+		|| !DataSubsystem->GetProfessionWeaponIds(ProfessionId, TEXT("Secondary")).Contains(SecondaryWeaponId))
+	{
+		return false;
+	}
 
 	UProfessionSaveGame* Configuration = LoadCurrentConfiguration();
 	if (!Configuration) return false;
 
 	Configuration->SelectedProfession = ProfessionId;
-	Configuration->PrimaryWeaponId = ProfessionRow->PrimaryWeaponId;
-	Configuration->SecondaryWeaponId = ProfessionRow->SecondaryWeaponId;
+	Configuration->PrimaryWeaponId = PrimaryWeaponId;
+	Configuration->SecondaryWeaponId = SecondaryWeaponId;
 	Configuration->SkillItemId = ProfessionRow->SkillItemId;
 	Configuration->ClassEquipmentId = ProfessionRow->ClassEquipmentId;
 	Configuration->SelectedArmorPerkIds.Reset();

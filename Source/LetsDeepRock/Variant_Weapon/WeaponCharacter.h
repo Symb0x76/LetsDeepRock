@@ -150,6 +150,15 @@ protected:
 	void FireCompleted(const FInputActionValue& Value);
 	void FireCanceled(const FInputActionValue& Value);
 
+	/** 原始鼠标左键诊断监听，仅确认物理按键事件是否到达。 */
+	void RawFirePressed();
+	void RawFireReleased();
+
+#if !UE_BUILD_SHIPPING
+	/** 输出当前射击输入、装备和弹药状态。 */
+	void LogFireTraceState(const TCHAR* EventName) const;
+#endif
+
 	/** 主副武器连续射击 */
 	void FireWeapon();
 
@@ -158,6 +167,12 @@ protected:
 
 	/** 处理切换武器输入：滚轮上/下切换武器 */
 	void SwitchWeapon(const FInputActionValue& Value);
+
+	/** R 键手动换弹。 */
+	void ReloadWeapon();
+
+	UFUNCTION(Server, Reliable)
+	void ServerReloadWeapon();
 
 	/** 选择四个数字装备槽 */
 	void SelectPrimary();
@@ -229,6 +244,9 @@ protected:
 
 	/** 本次左键按下时使用的槽；255 表示当前没有持续中的左键输入 */
 	uint8 ActiveFireInputSlot = 255;
+
+	/** 每次按压只记录一次 Enhanced Input Triggered，避免按住时逐帧刷屏。 */
+	bool bFireTriggeredLoggedThisPress = false;
 
 	/** 当前职业是否配置了技能道具和职业工具 */
 	bool bHasSkillItem = false;

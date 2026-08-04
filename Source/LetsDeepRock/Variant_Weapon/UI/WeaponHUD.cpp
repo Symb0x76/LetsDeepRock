@@ -45,6 +45,7 @@ void AWeaponHUD::DrawHUD()
 	DrawNPCDebugInfo();
 	DrawDamageEvents();
 	DrawLastDamageDetails();
+	DrawAmmoPanel();
 }
 
 void AWeaponHUD::AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event)
@@ -258,5 +259,81 @@ void AWeaponHUD::DrawLastDamageDetails()
 	{
 		WeaponHUDPrivate::DrawLine(Canvas, Font, Lines[Index], X, Y + Index * 22.0f,
 			Index == 0 ? FLinearColor(1.0f, 0.8f, 0.2f) : FLinearColor::White);
+	}
+}
+
+void AWeaponHUD::DrawAmmoPanel()
+{
+	UWeaponEquipmentComponent* EquipComp = nullptr;
+	if (APawn* OwningPawn = GetOwningPawn())
+	{
+		EquipComp = OwningPawn->FindComponentByClass<UWeaponEquipmentComponent>();
+	}
+	if (!EquipComp || !EquipComp->GetCurrentWeaponData())
+	{
+		return;
+	}
+
+	const int32 MagazineAmmo = EquipComp->GetCurrentMagazineAmmo();
+	const int32 MagazineSize = EquipComp->GetCurrentMagazineSize();
+	const int32 ReserveAmmo = EquipComp->GetCurrentReserveAmmo();
+	const bool bReloading = EquipComp->IsReloading();
+	const float ReloadRemaining = EquipComp->GetReloadTimeRemaining();
+
+	// 面板尺寸与右下角锚定：随分辨率自适应，与右上角伤害面板互不影响（后者贴顶部）。
+	const float PanelWidth = 220.0f;
+	const float PanelHeight = bReloading ? 122.0f : 100.0f;
+	const float Margin = 20.0f;
+	const float PanelX = Canvas->ClipX - PanelWidth - Margin;
+	const float PanelY = Canvas->ClipY - PanelHeight - Margin;
+
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.62f), PanelX, PanelY, PanelWidth, PanelHeight);
+	DrawRect(FLinearColor(1.0f, 0.8f, 0.2f, 0.9f), PanelX, PanelY, PanelWidth, 3.0f);
+
+	UFont* SmallFont = GEngine->GetSmallFont();
+	UFont* MediumFont = GEngine->GetMediumFont();
+	const float InnerX = PanelX + 14.0f;
+	float CursorY = PanelY + 10.0f;
+
+	// 标题行
+	WeaponHUDPrivate::DrawLine(Canvas, SmallFont, TEXT("弹药测试"), InnerX, CursorY, FLinearColor(1.0f, 0.8f, 0.2f));
+	CursorY += 20.0f;
+
+	// 弹匣 / 容量：大号数字，空弹匣时警示为红色
+	const bool bMagazineEmpty = MagazineAmmo <= 0 && MagazineSize > 0;
+	const FLinearColor MagazineColor = bReloading ? FLinearColor(0.6f, 0.6f, 0.6f)
+		: (bMagazineEmpty ? FLinearColor(1.0f, 0.25f, 0.2f) : FLinearColor::White);
+	const FString MagazineText = FString::Printf(TEXT("%d / %d"), MagazineAmmo, MagazineSize);
+	WeaponHUDPrivate::DrawLine(Canvas, MediumFont, MagazineText, InnerX, CursorY, MagazineColor);
+	CursorY += 26.0f;
+
+	// 备弹行
+	WeaponHUDPrivate::DrawLine(Canvas, SmallFont, FString::Printf(TEXT("备弹: %d"), ReserveAmmo), InnerX, CursorY, FLinearColor(0.85f, 0.85f, 0.85f));
+	CursorY += 20.0f;
+
+	if (bReloading)
+	{
+		// 换弹中：黄色提示文案 + 剩余秒数
+		WeaponHUDPrivate::DrawLine(Canvas, SmallFont, FString::Printf(TEXT("换弹中... 剩余 %.1f 秒"), ReloadRemaining),
+			InnerX, CursorY, FLinearColor(1.0f, 0.75f, 0.1f));
+		CursorY += 22.0f;
+
+		// 底部做一条低调的扫描动画条，仅作"进行中"视觉提示，不代表精确进度
+		// （GetReloadTimeRemaining 只提供剩余秒数，UI 层不引入总时长查询接口）。
+		const float BarWidth = PanelWidth - 28.0f;
+		const float BarX = InnerX;
+		const float BarY = CursorY;
+		DrawRect(FLinearColor(0.05f, 0.05f, 0.05f, 0.85f), BarX, BarY, BarWidth, 6.0f);
+		if (GetWorld())
+		{
+			const float ScanWidth = BarWidth * 0.28f;
+			const float Phase = FMath::Fmod(GetWorld()->GetTimeSeconds() * 1.6f, 1.0f);
+			const float ScanX = BarX + (BarWidth - ScanWidth) * Phase;
+			DrawRect(FLinearColor(1.0f, 0.75f, 0.1f, 0.95f), ScanX, BarY, ScanWidth, 6.0f);
+		}
+	}
+	else
+	{
+		WeaponHUDPrivate::DrawLine(Canvas, SmallFont, TEXT("就绪"), InnerX, CursorY, FLinearColor(0.3f, 0.9f, 0.35f));
 	}
 }

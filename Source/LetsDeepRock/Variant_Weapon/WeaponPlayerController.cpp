@@ -33,6 +33,7 @@ void AWeaponPlayerController::BeginPlay()
 	// 关卡内自动显示职业选择 UI：仅本地控制的 PlayerController 需要 UI
 	if (IsLocalController())
 	{
+		ApplyGameplayInputMode();
 		ShowClassSelectUI();
 	}
 }
@@ -52,6 +53,15 @@ void AWeaponPlayerController::ShowClassSelectUI()
 		SetInputMode(FInputModeUIOnly().SetWidgetToFocus(ClassSelectWidget->TakeWidget()));
 		bShowMouseCursor = true;
 	}
+}
+
+void AWeaponPlayerController::ApplyGameplayInputMode()
+{
+	FInputModeGameAndUI InputMode;
+	InputMode.SetHideCursorDuringCapture(false);
+	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::LockAlways);
+	SetInputMode(InputMode);
+	bShowMouseCursor = true;
 }
 
 void AWeaponPlayerController::SetupInputComponent()
@@ -94,10 +104,10 @@ void AWeaponPlayerController::ClientReceiveWeaponDamageDebugEvent_Implementation
 #endif
 }
 
-void AWeaponPlayerController::RequestSelectProfession(FName ProfessionId)
+void AWeaponPlayerController::RequestSelectProfession(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
 	// 本地先完成同一份配置校验与保存；失败时保留界面，允许玩家重新选择。
-	if (!UProfessionSaveGame::SelectProfession(this, ProfessionId))
+	if (!UProfessionSaveGame::SelectProfession(this, ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
 	{
 		return;
 	}
@@ -109,18 +119,16 @@ void AWeaponPlayerController::RequestSelectProfession(FName ProfessionId)
 		ClassSelectWidget->RemoveFromParent();
 		ClassSelectWidget = nullptr;
 
-		// 恢复纯游戏输入模式（隐藏 UI 交互，WASD/数字键继续可用）
-		SetInputMode(FInputModeGameOnly());
-		bShowMouseCursor = true; // 俯视角依然需要鼠标瞄准
+		ApplyGameplayInputMode();
 	}
 
-	ServerSelectProfessionAndRespawn(ProfessionId);
+	ServerSelectProfessionAndRespawn(ProfessionId, PrimaryWeaponId, SecondaryWeaponId);
 }
 
-void AWeaponPlayerController::ServerSelectProfessionAndRespawn_Implementation(FName ProfessionId)
+void AWeaponPlayerController::ServerSelectProfessionAndRespawn_Implementation(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
 	// 存档为本地单机全局槽位写入，服务端权威执行以匹配单机/监听服务器场景
-	if (!UProfessionSaveGame::SelectProfession(this, ProfessionId))
+	if (!UProfessionSaveGame::SelectProfession(this, ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
 	{
 		return;
 	}

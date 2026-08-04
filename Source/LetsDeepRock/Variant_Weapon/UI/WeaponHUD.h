@@ -36,6 +36,8 @@ protected:
 	void DrawNPCDebugInfo();
 	void DrawDamageEvents();
 	void DrawLastDamageDetails();
+	/** 绘制右下角弹药测试面板（弹匣/容量、备弹、换弹状态）。 */
+	void DrawAmmoPanel();
 
 private:
 	struct FActiveDamageNumber

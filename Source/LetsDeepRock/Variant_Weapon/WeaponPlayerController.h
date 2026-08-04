@@ -40,7 +40,7 @@ public:
 	 *  本地额外立即隐藏 UI，避免等待网络往返造成的操作滞后感。
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Profession")
-	void RequestSelectProfession(FName ProfessionId);
+	void RequestSelectProfession(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
 protected:
 
@@ -70,7 +70,10 @@ protected:
 	/** 关卡内自动创建并显示职业选择 UI（仅本地控制器执行） */
 	void ShowClassSelectUI();
 
+	/** 恢复俯视角玩法输入：保留可见光标，同时让未被 UI 处理的输入进入游戏。 */
+	void ApplyGameplayInputMode();
+
 	/** 服务端：写入职业存档并立即重生当前 Pawn */
 	UFUNCTION(Server, Reliable)
-	void ServerSelectProfessionAndRespawn(FName ProfessionId);
+	void ServerSelectProfessionAndRespawn(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);
 };

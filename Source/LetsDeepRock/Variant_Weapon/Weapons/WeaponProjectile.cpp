@@ -10,6 +10,7 @@
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
 #include "GridMap/GridDamageHelper.h"
+#include "Engine/OverlapResult.h"
 
 AWeaponProjectile::AWeaponProjectile()
 {
@@ -109,6 +110,13 @@ void AWeaponProjectile::InitFlightParams(float InLifetime, float InGravityScale,
 	MaxHitTargets = FMath::Max(1, InMaxHitTargets);
 }
 
+void AWeaponProjectile::InitAreaDamageParams(float InAreaDamage, float InAreaRadius, float InAreaFalloff)
+{
+	AreaDamage = InAreaDamage;
+	AreaRadius = InAreaRadius;
+	AreaFalloff = InAreaFalloff;
+}
+
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
 	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
 	bool bFromSweep, const FHitResult& SweepResult)
@@ -137,6 +145,17 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 	}
 	const bool bDamageApplied = ApplyDamageToTarget(HitPawn);
 	PendingHitResult.Reset();
+
+	if (AreaDamage > 0.0f && AreaRadius > 0.0f)
+	{
+		const FVector ExplosionCenter = bFromSweep && !SweepResult.ImpactPoint.IsZero()
+			? FVector(SweepResult.ImpactPoint)
+			: GetActorLocation();
+		Explode(ExplosionCenter, bFromSweep ? &SweepResult : nullptr, HitPawn);
+		Destroy();
+		return;
+	}
+
 	if (bDamageApplied)
 	{
 		HitPawns.Add(HitPawn);
@@ -152,6 +171,16 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	// 只在服务端处理
 	if (!HasAuthority())
 	{
+		return;
+	}
+
+	const bool bIsWorldStatic = ImpactResult.GetComponent()
+		&& ImpactResult.GetComponent()->GetCollisionObjectType() == ECC_WorldStatic;
+	if (AreaDamage > 0.0f && AreaRadius > 0.0f && bIsWorldStatic)
+	{
+		const FVector ExplosionCenter = ImpactResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(ImpactResult.ImpactPoint);
+		Explode(ExplosionCenter, &ImpactResult);
+		Destroy();
 		return;
 	}
 
@@ -178,9 +207,10 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	}
 }
 
-bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn)
+bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> DamageOverride)
 {
-	if (!DamageEffectClass || DamageValue <= 0.0f)
+	const float AppliedDamage = DamageOverride.IsSet() ? DamageOverride.GetValue() : DamageValue;
+	if (!DamageEffectClass || AppliedDamage <= 0.0f)
 	{
 		return false;
 	}
@@ -228,7 +258,7 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn)
 	}
 
 	// 注入 SetByCaller 伤害值
-	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, DamageValue);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, AppliedDamage);
 	SpecHandle.Data->AppendDynamicAssetTags(DamageTags);
 
 	// 对目标应用伤害（从 Source 施加到 Target）
@@ -238,4 +268,70 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn)
 void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 {
 	ApplyDamageToTarget(Cast<APawn>(TargetActor));
+}
+
+void AWeaponProjectile::Explode(const FVector& ExplosionCenter, const FHitResult* SourceHitResult, APawn* DirectHitPawn)
+{
+	if (!HasAuthority() || bHasExploded || AreaDamage <= 0.0f || AreaRadius <= 0.0f)
+	{
+		return;
+	}
+	bHasExploded = true;
+
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(WeaponProjectileExplosion), false, this);
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(GetOwner());
+	QueryParams.AddIgnoredActor(GetInstigator());
+	if (InstigatorActor.IsValid())
+	{
+		QueryParams.AddIgnoredActor(InstigatorActor.Get());
+	}
+
+	TArray<FOverlapResult> Overlaps;
+	GetWorld()->OverlapMultiByObjectType(
+		Overlaps,
+		ExplosionCenter,
+		FQuat::Identity,
+		ObjectQueryParams,
+		FCollisionShape::MakeSphere(AreaRadius),
+		QueryParams);
+
+	FHitResult ExplosionHit = SourceHitResult ? *SourceHitResult : FHitResult();
+	ExplosionHit.Location = ExplosionCenter;
+	ExplosionHit.ImpactPoint = ExplosionCenter;
+	PendingHitResult = ExplosionHit;
+
+	TSet<TWeakObjectPtr<APawn>> DamagedPawns;
+	const float EdgeMultiplier = FMath::Clamp(AreaFalloff, 0.0f, 1.0f);
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		APawn* TargetPawn = Cast<APawn>(Overlap.GetActor());
+		if (!TargetPawn || DamagedPawns.Contains(TargetPawn))
+		{
+			continue;
+		}
+		DamagedPawns.Add(TargetPawn);
+
+		const float DistanceAlpha = FMath::Clamp(FVector::Distance(ExplosionCenter, TargetPawn->GetActorLocation()) / AreaRadius, 0.0f, 1.0f);
+		const float DamageMultiplier = FMath::Lerp(1.0f, EdgeMultiplier, DistanceAlpha);
+		ApplyDamageToTarget(TargetPawn, AreaDamage * DamageMultiplier);
+	}
+
+	AActor* DirectHitActor = DirectHitPawn;
+	if (DirectHitPawn
+		&& DirectHitActor != this
+		&& DirectHitActor != GetOwner()
+		&& DirectHitActor != GetInstigator()
+		&& DirectHitActor != InstigatorActor.Get()
+		&& !DamagedPawns.Contains(DirectHitPawn))
+	{
+		DamagedPawns.Add(DirectHitPawn);
+		const float DistanceAlpha = FMath::Clamp(FVector::Distance(ExplosionCenter, DirectHitPawn->GetActorLocation()) / AreaRadius, 0.0f, 1.0f);
+		const float DamageMultiplier = FMath::Lerp(1.0f, EdgeMultiplier, DistanceAlpha);
+		ApplyDamageToTarget(DirectHitPawn, AreaDamage * DamageMultiplier);
+	}
+
+	PendingHitResult.Reset();
 }
