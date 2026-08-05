@@ -86,7 +86,7 @@ AGENTS.md
 # --- codex 本地配置 ---
 .codex/
 
-# --- 本地文档 / Coding Tutor（现有已跟踪文档不受影响）---
+# --- 本地文档 ---
 docs/
 
 # --- claude 本地配置 ---
@@ -98,6 +98,9 @@ opencode.json
 !.opencode/.gitignore
 !.opencode/skills/
 !.opencode/skills/**
+
+# codegraph 本地配置
+.codegraph/
 
 # --- 构建脚本本地配置（每个成员各自的引擎路径）---
 ue_root.cfg
