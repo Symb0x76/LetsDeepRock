@@ -11,6 +11,7 @@
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Net/UnrealNetwork.h"
+#include "WeaponGameState.h"
 
 UWeaponEquipmentComponent::UWeaponEquipmentComponent()
 {
@@ -164,12 +165,17 @@ void UWeaponEquipmentComponent::GetLifetimeReplicatedProps(TArray<FLifetimePrope
 
 void UWeaponEquipmentComponent::ServerSwitchWeapon_Implementation(const int32 NewIndex)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	SwitchWeaponAuthority(NewIndex);
 }
 
 void UWeaponEquipmentComponent::SwitchWeaponAuthority(const int32 NewIndex)
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -290,7 +296,9 @@ void UWeaponEquipmentComponent::CycleFireMode()
 
 void UWeaponEquipmentComponent::SwitchWeapon(int32 NewIndex)
 {
-	if (!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) || NewIndex == EquipmentState.CurrentWeaponIndex || !GetOwner())
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!EquipmentState.WeaponInventory.IsValidIndex(NewIndex) ||
+		NewIndex == EquipmentState.CurrentWeaponIndex || !GetOwner())
 	{
 		return;
 	}
@@ -359,7 +367,8 @@ float UWeaponEquipmentComponent::GetReloadTimeRemaining() const
 
 void UWeaponEquipmentComponent::StartReload()
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -472,7 +481,8 @@ void UWeaponEquipmentComponent::CancelReload()
 
 bool UWeaponEquipmentComponent::ConsumeAmmoForShot()
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	if (!GetOwner() || !GetOwner()->HasAuthority() ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return false;
 	}
@@ -642,7 +652,6 @@ bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIn
 	{
 		return false;
 	}
-
 	UnequipWeapon();
 	EquipmentState.CurrentWeaponIndex = INDEX_NONE;
 	CurrentWeaponData = nullptr;
@@ -656,7 +665,6 @@ bool UWeaponEquipmentComponent::RestoreWeaponSelection(const int32 SavedWeaponIn
 		GetOwner()->ForceNetUpdate();
 		NotifyEquipmentChanged();
 	}
-
 	return true;
 }
 

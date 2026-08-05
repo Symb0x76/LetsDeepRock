@@ -13,6 +13,7 @@ Unreal Engine 5.8 C++ 项目 — 受 Deep Rock Galactic 启发的多人合作射
 - [Git 工作流](#git-工作流)
 - [Perforce (P4) 工作流](#perforce-p4-工作流)
 - [项目结构简介](#项目结构简介)
+- [架构契约](#架构契约)
 - [AI 编辑器自动化 (Unreal MCP)](#ai-编辑器自动化-unreal-mcp)
 - [常见问题](#常见问题)
 
@@ -239,6 +240,7 @@ LetsDeepRock/
 │   ├── DefaultGame.ini
 │   ├── DefaultInput.ini
 │   └── ...
+├── Docs/                       # 版本化的架构与运行时契约
 ├── Content/                   # 素材资源（P4 管理，Git 忽略）
 ├── Tools/                     # 开发工具（Git 管理）
 │   └── UnrealMCP/             #   AI 编辑器自动化 MCP Server
@@ -259,6 +261,12 @@ LetsDeepRock/
 | StateTree + GameplayStateTree | AI 行为树 |
 | ModelingToolsEditorMode | 建模工具（仅编辑器） |
 | Python Editor Script Plugin | Python 脚本支持（MCP Server 需要） |
+
+---
+
+## 架构契约
+
+- [Host Migration Recovery Contract](Docs/HostMigrationRecoveryContract.md)：固定 `Active Host -> Backup A -> Backup B` 的恢复拓扑、Snapshot commit 规则、Roster/Pawn 生命周期、失败语义与验收边界。
 
 ---
 

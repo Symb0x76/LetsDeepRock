@@ -13,6 +13,7 @@
 #include "GridMap/GridMapGenerator.h"
 #include "GridMap/GridMapManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "Serialization/MemoryReader.h"
 #include "WeaponCharacter.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
@@ -27,6 +28,61 @@
 #include "Weapons/WeaponDataAsset.h"
 #include "Weapons/WeaponGrenadeDataAsset.h"
 #include "Weapons/WeaponProjectile.h"
+
+namespace WeaponSnapshotSerialization
+{
+	/** UE 5.8's modern SaveGame header tag ("SAVG"). Legacy untagged saves are not migration payloads. */
+	constexpr int32 SaveGameFileTypeTag = 0x53415647;
+}
+
+struct UWeaponSnapshotCoordinator::FRestoreContext
+{
+	struct FPlayerTarget
+	{
+		const FWeaponPlayerSnapshot* Snapshot = nullptr;
+		AWeaponPlayerState* PlayerState = nullptr;
+		APlayerController* PlayerController = nullptr;
+		APawn* ExistingPawn = nullptr;
+		AWeaponCharacter* Character = nullptr;
+		UClass* PawnClass = nullptr;
+		UWeaponEquipmentComponent* Equipment = nullptr;
+		FWeaponEquipmentSnapshotState EquipmentSnapshot;
+		UAbilitySystemComponent* ASC = nullptr;
+		bool bCharacterStaged = false;
+		bool bPlayerStateStaged = false;
+		bool bAttributionTombstone = false;
+	};
+
+	UWorld* World = nullptr;
+	AWeaponGameState* GameState = nullptr;
+	AWeaponGameMode* GameMode = nullptr;
+	AGridMapManager* GridMap = nullptr;
+	UClass* GridGeneratorClass = nullptr;
+	UClass* PlayerStateClass = nullptr;
+
+	TArray<FPlayerTarget> Players;
+	TMap<FUniqueNetIdRepl, APawn*> FinalPawnsByPlayerId;
+	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> ConnectedPlayersById;
+
+	TArray<UClass*> EnemyClasses;
+	TArray<AEnemyCharacter*> ExistingEnemies;
+	TArray<AEnemyCharacter*> StagedEnemies;
+
+	TArray<UClass*> ProjectileClasses;
+	TArray<TSubclassOf<UGameplayEffect>> ProjectileDamageEffects;
+	TArray<const UWeaponGrenadeDataAsset*> GrenadeDataAssets;
+	TArray<AWeaponProjectile*> ExistingProjectiles;
+	TArray<AWeaponProjectile*> StagedProjectiles;
+};
+
+FGuid UWeaponSnapshotCoordinator::GetOrCreateActiveMatchId()
+{
+	if (!ActiveMatchId.IsValid())
+	{
+		ActiveMatchId = FGuid::NewGuid();
+	}
+	return ActiveMatchId;
+}
 
 bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 	const UWorld* World,
@@ -46,6 +102,11 @@ bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 	if (!GameState)
 	{
 		OutError = TEXT("Current World does not have AWeaponGameState");
+		return false;
+	}
+	if (GameState->IsGameplayRecoveryBlocked())
+	{
+		OutError = TEXT("A new SaveGame cannot be captured while gameplay recovery is blocked");
 		return false;
 	}
 
@@ -93,19 +154,29 @@ bool UWeaponSnapshotCoordinator::RestoreSaveGame(
 	const UWeaponMatchSaveGame* SaveGame,
 	FString& OutError)
 {
-	if (!ValidateRestore(SaveGame, OutError))
+	FRestoreContext Context;
+	if (!ValidateRestore(SaveGame, Context, OutError))
 	{
 		return false;
 	}
 
-	const UWorld* World = GetWorld();
-	if (AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>(); !GameState || !GameState->SetMaxPlayersAuthority(SaveGame->MaxPlayers))
+	if (!StageRestoreActors(SaveGame->Snapshot, Context, OutError))
 	{
-		OutError = TEXT("Failed to apply SaveGame player capacity to AWeaponGameState");
+		CleanupStagedActors(Context);
 		return false;
 	}
 
-	return RestoreSnapshot(SaveGame->Snapshot, OutError);
+	// GridMap Restore can still reject authority or a missing loaded generator, but it mutates only after
+	// those checks. Keep it immediately after Actor staging so failure can clean staged actors while every
+	// pre-existing gameplay actor remains untouched.
+	if (!Context.GridMap->RestoreRecoveryState(SaveGame->Snapshot.GridMap, OutError))
+	{
+		CleanupStagedActors(Context);
+		return false;
+	}
+
+	ApplySnapshot(SaveGame, Context);
+	return true;
 }
 
 bool UWeaponSnapshotCoordinator::SerializeSaveGame(
@@ -139,6 +210,21 @@ bool UWeaponSnapshotCoordinator::DeserializeSaveGame(
 		OutError = TEXT("SaveGame byte buffer is empty");
 		return false;
 	}
+	if (Data.Num() < sizeof(int32))
+	{
+		OutError = TEXT("SaveGame byte buffer is too small to contain a modern header");
+		return false;
+	}
+
+	FMemoryReader HeaderReader(Data, true);
+	int32 FileTypeTag = 0;
+	HeaderReader << FileTypeTag;
+	if (HeaderReader.IsError() ||
+		FileTypeTag != WeaponSnapshotSerialization::SaveGameFileTypeTag)
+	{
+		OutError = TEXT("SaveGame byte buffer does not contain a modern SAVG header");
+		return false;
+	}
 
 	UWeaponMatchSaveGame* SaveGame = Cast<UWeaponMatchSaveGame>(UGameplayStatics::LoadGameFromMemory(Data));
 	if (!SaveGame)
@@ -159,14 +245,16 @@ bool UWeaponSnapshotCoordinator::DeserializeSaveGame(
 
 bool UWeaponSnapshotCoordinator::ValidateRestore(
 	const UWeaponMatchSaveGame* SaveGame,
+	FRestoreContext& OutContext,
 	FString& OutError) const
 {
+	OutContext = FRestoreContext();
 	if (!ValidateSaveGame(SaveGame, OutError))
 	{
 		return false;
 	}
 
-	const UWorld* World = GetWorld();
+	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client)
 	{
 		OutError = TEXT("SaveGame could only be restored into a valid server World");
@@ -182,11 +270,22 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 			*CurrentMapPackage);
 		return false;
 	}
+	OutContext.World = World;
+	OutContext.GameState = World->GetGameState<AWeaponGameState>();
+	OutContext.GameMode = World->GetAuthGameMode<AWeaponGameMode>();
+	if (!OutContext.GameState || !OutContext.GameMode ||
+		!OutContext.GameState->IsGameplayRecoveryBlocked() ||
+		OutContext.GameState->PlayerArray.Num() > SaveGame->MaxPlayers)
+	{
+		OutError = TEXT("Restore target is not a gated authoritative Recovery World or exceeds saved capacity");
+		return false;
+	}
 
 	const FWeaponSnapshot& Snapshot = SaveGame->Snapshot;
 	int32 GridMapCount = 0;
 	for (TActorIterator<AGridMapManager> It(World); It; ++It)
 	{
+		OutContext.GridMap = *It;
 		++GridMapCount;
 	}
 	if (GridMapCount != 1)
@@ -195,7 +294,8 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 		return false;
 	}
 
-	if (!Snapshot.GridMap.GeneratorClass.TryLoadClass<UGridMapGenerator>())
+	OutContext.GridGeneratorClass = Snapshot.GridMap.GeneratorClass.TryLoadClass<UGridMapGenerator>();
+	if (!OutContext.GridGeneratorClass)
 	{
 		OutError = FString::Printf(TEXT("GridMap generator class %s could not be loaded"),
 			*Snapshot.GridMap.GeneratorClass.ToString());
@@ -212,21 +312,105 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 		return false;
 	}
 
+	TMap<FUniqueNetIdRepl, const FWeaponRecoveryRosterSnapshot*> RosterById;
+	for (const FWeaponRecoveryRosterSnapshot& RosterEntry : Snapshot.RecoveryRoster)
+	{
+		RosterById.Add(RosterEntry.PlayerId, &RosterEntry);
+	}
+
+	for (APlayerState* BasePlayerState : OutContext.GameState->PlayerArray)
+	{
+		AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState);
+		const FUniqueNetIdRepl PlayerId = ResolvePlayerId(PlayerState);
+		const FWeaponRecoveryRosterSnapshot* const* RosterEntry = RosterById.Find(PlayerId);
+		if (!PlayerState || !PlayerId.IsValid() || OutContext.ConnectedPlayersById.Contains(PlayerId) ||
+			!RosterEntry || (*RosterEntry)->Status == EWeaponRecoveryPlayerStatus::Departed)
+		{
+			OutError = TEXT("Restore target contains a PlayerState outside the saved active roster");
+			return false;
+		}
+		OutContext.ConnectedPlayersById.Add(PlayerId, PlayerState);
+	}
+
+	TSet<FUniqueNetIdRepl> ProjectileSourceIds;
+	for (const FWeaponProjectileSnapshot& Projectile : Snapshot.Projectiles)
+	{
+		ProjectileSourceIds.Add(Projectile.InstigatorPlayerId);
+	}
+	for (const FWeaponGrenadeSnapshot& Grenade : Snapshot.Grenades)
+	{
+		ProjectileSourceIds.Add(Grenade.InstigatorPlayerId);
+	}
+
+	OutContext.Players.Reserve(Snapshot.Players.Num());
+	TSet<FUniqueNetIdRepl> RestorableSourceIds;
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
+		AWeaponPlayerState* const* FoundPlayerState = OutContext.ConnectedPlayersById.Find(Player.PlayerId);
+		const bool bNeedsAttributionTombstone = !FoundPlayerState && ProjectileSourceIds.Contains(Player.PlayerId);
+		if (!FoundPlayerState && !bNeedsAttributionTombstone)
+		{
+			continue;
+		}
+
+		FRestoreContext::FPlayerTarget& Target = OutContext.Players.AddDefaulted_GetRef();
+		Target.Snapshot = &Player;
+		Target.bAttributionTombstone = bNeedsAttributionTombstone;
+		if (FoundPlayerState)
+		{
+			Target.PlayerState = *FoundPlayerState;
+			Target.PlayerController = Target.PlayerState->GetPlayerController();
+			Target.ExistingPawn = Target.PlayerController
+				? Target.PlayerController->GetPawn().Get()
+				: Target.PlayerState->GetPawn();
+			Target.ASC = Target.PlayerState->GetAbilitySystemComponent();
+			if (!CanRestoreAttributeValues(Target.ASC, Player.AttributeState.Values))
+			{
+				OutError = FString::Printf(TEXT("Player %s ASC is incompatible with Snapshot attributes"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+		}
 		const bool bHasProfessionLoadout = !Player.ProfessionId.IsNone() || !Player.PrimaryWeaponId.IsNone() || !Player.SecondaryWeaponId.IsNone();
 		if ((Player.bHasPawn || bHasProfessionLoadout) &&
 			(!DataSubsystem->GetProfessionConfig(Player.ProfessionId) ||
 			!DataSubsystem->GetProfessionWeaponIds(Player.ProfessionId, TEXT("Primary")).Contains(Player.PrimaryWeaponId) ||
 			!DataSubsystem->GetProfessionWeaponIds(Player.ProfessionId, TEXT("Secondary")).Contains(Player.SecondaryWeaponId)))
 		{
-			OutError = FString::Printf(TEXT("Profession loadout for player %s is invalid"), *Player.PlayerId);
+			OutError = FString::Printf(TEXT("Profession loadout for player %s is invalid"),
+				*Player.PlayerId.ToDebugString());
 			return false;
 		}
 		if (!Player.bHasPawn)
 		{
 			continue;
 		}
+		if (!Target.PlayerController && !Target.bAttributionTombstone)
+		{
+			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"),
+				*Player.PlayerId.ToDebugString());
+			return false;
+		}
+
+		for (const FSoftObjectPath& WeaponPath : Player.WeaponInventory)
+		{
+			UWeaponDataAsset* Weapon = Cast<UWeaponDataAsset>(WeaponPath.TryLoad());
+			if (!Weapon)
+			{
+				OutError = FString::Printf(TEXT("Failed to load equipment for player %s"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+			Target.EquipmentSnapshot.WeaponInventory.Add(Weapon);
+		}
+		for (const FWeaponAmmoSnapshot& SavedAmmo : Player.WeaponAmmoStates)
+		{
+			FWeaponAmmoState& Ammo = Target.EquipmentSnapshot.WeaponAmmoStates.AddDefaulted_GetRef();
+			Ammo.MagazineAmmo = SavedAmmo.MagazineAmmo;
+			Ammo.ReserveAmmo = SavedAmmo.ReserveAmmo;
+		}
+		Target.EquipmentSnapshot.CurrentWeaponIndex = Player.CurrentWeaponIndex;
+		Target.EquipmentSnapshot.bWasReloading = Player.bWasReloading;
 
 		if (!DataSubsystem->GetCharacterAttributes(Player.CharacterConfigRowName))
 		{
@@ -234,32 +418,91 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 				*Player.CharacterConfigRowName.ToString());
 			return false;
 		}
+
+		Target.Character = Cast<AWeaponCharacter>(Target.ExistingPawn);
+		if (Target.Character)
+		{
+			Target.Equipment = Target.Character->FindComponentByClass<UWeaponEquipmentComponent>();
+			if (!Target.Character->GetCharacterMovement() || !Target.Equipment)
+			{
+				OutError = FString::Printf(TEXT("Existing Character for player %s is not Restore-compatible"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+			OutContext.FinalPawnsByPlayerId.Add(Player.PlayerId, Target.Character);
+		}
+		else
+		{
+			Target.PawnClass = OutContext.GameMode->GetDefaultPawnClassForController(Target.PlayerController);
+			if (!Target.PawnClass || Target.PawnClass->HasAnyClassFlags(CLASS_Abstract) ||
+				!Target.PawnClass->IsChildOf(AWeaponCharacter::StaticClass()))
+			{
+				OutError = FString::Printf(TEXT("Player %s has no restorable default Character class"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+		}
+		RestorableSourceIds.Add(Player.PlayerId);
 	}
 
+	if (!ProjectileSourceIds.IsEmpty())
+	{
+		OutContext.PlayerStateClass = OutContext.GameMode->PlayerStateClass;
+		if (!OutContext.PlayerStateClass || OutContext.PlayerStateClass->HasAnyClassFlags(CLASS_Abstract) ||
+			!OutContext.PlayerStateClass->IsChildOf(AWeaponPlayerState::StaticClass()))
+		{
+			OutError = TEXT("Restore target has no restorable WeaponPlayerState class");
+			return false;
+		}
+	}
+	for (const FUniqueNetIdRepl& SourceId : ProjectileSourceIds)
+	{
+		if (!RestorableSourceIds.Contains(SourceId))
+		{
+			OutError = FString::Printf(TEXT("Projectile source %s has no restorable player context"),
+				*SourceId.ToDebugString());
+			return false;
+		}
+	}
+
+	OutContext.EnemyClasses.Reserve(Snapshot.Enemies.Num());
 	for (const FWeaponEnemySnapshot& Enemy : Snapshot.Enemies)
 	{
-		if (!Enemy.EnemyClass.TryLoadClass<AEnemyCharacter>() ||
+		UClass* EnemyClass = Enemy.EnemyClass.TryLoadClass<AEnemyCharacter>();
+		if (!EnemyClass || EnemyClass->HasAnyClassFlags(CLASS_Abstract) ||
 			!DataSubsystem->GetEnemyConfig(Enemy.EnemyConfigRowName))
 		{
 			OutError = FString::Printf(TEXT("Enemy class or config %s could not be loaded"),
 				*Enemy.EnemyConfigRowName.ToString());
 			return false;
 		}
+		OutContext.EnemyClasses.Add(EnemyClass);
+	}
+	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
+	{
+		OutContext.ExistingEnemies.Add(*It);
 	}
 
+	OutContext.ProjectileClasses.Reserve(Snapshot.Projectiles.Num());
+	OutContext.ProjectileDamageEffects.Reserve(Snapshot.Projectiles.Num());
 	for (const FWeaponProjectileSnapshot& Projectile : Snapshot.Projectiles)
 	{
 		UClass* ProjectileClass = Projectile.ProjectileClass.TryLoadClass<AWeaponProjectile>();
+		TSubclassOf<UGameplayEffect> DamageEffectClass =
+			Projectile.DamageEffectClass.TryLoadClass<UGameplayEffect>();
 		if (!ProjectileClass || ProjectileClass->HasAnyClassFlags(CLASS_Abstract) ||
 			ProjectileClass->IsChildOf(AGrenadeProjectile::StaticClass()) ||
-			!Projectile.DamageEffectClass.TryLoadClass<UGameplayEffect>())
+			!DamageEffectClass)
 		{
 			OutError = FString::Printf(TEXT("Projectile class or damage effect %s could not be loaded"),
 				*Projectile.ProjectileClass.ToString());
 			return false;
 		}
+		OutContext.ProjectileClasses.Add(ProjectileClass);
+		OutContext.ProjectileDamageEffects.Add(DamageEffectClass);
 	}
 
+	OutContext.GrenadeDataAssets.Reserve(Snapshot.Grenades.Num());
 	for (const FWeaponGrenadeSnapshot& Grenade : Snapshot.Grenades)
 	{
 		const UWeaponGrenadeDataAsset* GrenadeData = Cast<UWeaponGrenadeDataAsset>(
@@ -271,6 +514,14 @@ bool UWeaponSnapshotCoordinator::ValidateRestore(
 			OutError = FString::Printf(TEXT("Grenade DataAsset %s could not be loaded"),
 				*Grenade.GrenadeDataAsset.ToString());
 			return false;
+		}
+		OutContext.GrenadeDataAssets.Add(GrenadeData);
+	}
+	for (TActorIterator<AWeaponProjectile> It(World); It; ++It)
+	{
+		if (!It->IsActorBeingDestroyed())
+		{
+			OutContext.ExistingProjectiles.Add(*It);
 		}
 	}
 	return true;
@@ -296,16 +547,13 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(
 	}
 
 	FWeaponSnapshot MatchSnapshot;
-	if (!ActiveMatchId.IsValid())
-	{
-		ActiveMatchId = FGuid::NewGuid();
-	}
-	MatchSnapshot.MatchId = ActiveMatchId;
+	MatchSnapshot.MatchId = GetOrCreateActiveMatchId();
 	MatchSnapshot.Revision = NextSnapshotRevision++;
 	MatchSnapshot.MatchPhase = GameState->GetMatchPhase();
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
 
-	if (!CapturePlayers(World, MatchSnapshot, OutError) ||
+	if (!CaptureRecoveryRoster(World, MatchSnapshot, OutError) ||
+		!CapturePlayers(World, MatchSnapshot, OutError) ||
 		!CaptureEnemies(World, MatchSnapshot, OutError) ||
 		!CaptureGridMap(World, MatchSnapshot, OutError) ||
 		!CaptureProjectiles(World, MatchSnapshot, OutError) ||
@@ -325,59 +573,452 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 {
 	OutError.Reset();
 	if (Snapshot.SchemaVersion != WeaponSnapshotVersion || Snapshot.Revision <= 0 ||
-		!Snapshot.MatchId.IsValid() || !FMath::IsFinite(Snapshot.RemainingPhaseTime))
+		!Snapshot.MatchId.IsValid() || !FMath::IsFinite(Snapshot.RemainingPhaseTime) ||
+		Snapshot.RemainingPhaseTime < 0.0f)
 	{
 		OutError = TEXT("Snapshot version, identity, revision or phase time is invalid");
 		return false;
 	}
-	if (MaxPlayers < 1 || MaxPlayers > 4 || Snapshot.Players.IsEmpty() || Snapshot.Players.Num() > MaxPlayers)
+	if (MaxPlayers < 1 || MaxPlayers > 4 || Snapshot.RecoveryRoster.IsEmpty())
 	{
-		OutError = TEXT("Snapshot player count or SaveGame capacity is invalid");
+		OutError = TEXT("Snapshot recovery roster or SaveGame capacity is invalid");
 		return false;
 	}
 
-	return ValidatePlayers(Snapshot, MaxPlayers, OutError) &&
+	return ValidateRecoveryRoster(Snapshot, MaxPlayers, OutError) &&
+		ValidatePlayers(Snapshot, OutError) &&
 		ValidateEnemies(Snapshot, OutError) &&
 		ValidateGridMap(Snapshot, OutError) &&
 		ValidateProjectiles(Snapshot, OutError);
 }
 
-bool UWeaponSnapshotCoordinator::RestoreSnapshot(
+bool UWeaponSnapshotCoordinator::StageRestoreActors(
 	const FWeaponSnapshot& Snapshot,
-	FString& OutError)
+	FRestoreContext& Context,
+	FString& OutError) const
 {
-	OutError.Reset();
-	const UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client)
+	for (FRestoreContext::FPlayerTarget& Target : Context.Players)
 	{
-		OutError = TEXT("Snapshot could only be restored into a valid server World");
-		return false;
+		const FWeaponPlayerSnapshot& Player = *Target.Snapshot;
+		if (!Player.bHasPawn || Target.Character)
+		{
+			continue;
+		}
+		if (Target.bAttributionTombstone)
+		{
+			FActorSpawnParameters SpawnParameters;
+			SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			Target.PlayerState = Context.World->SpawnActor<AWeaponPlayerState>(
+				Context.PlayerStateClass,
+				FTransform::Identity,
+				SpawnParameters);
+			if (!Target.PlayerState)
+			{
+				OutError = FString::Printf(TEXT("Failed to stage attribution PlayerState for %s"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+			Target.bPlayerStateStaged = true;
+			Target.PlayerState->SetUniqueId(Player.PlayerId);
+			Target.PlayerState->SetPlayerName(Player.PlayerName);
+			Target.PlayerState->SetTeamId(Player.TeamId);
+			Context.GameState->RemovePlayerState(Target.PlayerState);
+			Target.ASC = Target.PlayerState->GetAbilitySystemComponent();
+		}
+		if (!Target.PlayerState->SetProfessionLoadout(
+			Player.ProfessionId, Player.PrimaryWeaponId, Player.SecondaryWeaponId))
+		{
+			OutError = FString::Printf(TEXT("Failed to stage profession loadout for player %s"),
+				*Player.PlayerId.ToDebugString());
+			return false;
+		}
+
+		const FTransform SpawnTransform(Player.Rotation, Player.Location);
+		AWeaponCharacter* Character = Context.World->SpawnActorDeferred<AWeaponCharacter>(
+			Target.PawnClass,
+			SpawnTransform,
+			Target.PlayerController,
+			nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Character)
+		{
+			OutError = FString::Printf(TEXT("Failed to stage Character for player %s"),
+				*Player.PlayerId.ToDebugString());
+			return false;
+		}
+
+		Target.Character = Character;
+		Target.bCharacterStaged = true;
+		Character->SetActorEnableCollision(false);
+		Character->SetActorTickEnabled(false);
+		Character->FinishSpawning(SpawnTransform);
+		Character->SetActorEnableCollision(false);
+		Character->SetActorTickEnabled(false);
+		if (Target.bAttributionTombstone)
+		{
+			Character->InitializeAttributionTombstone(Target.PlayerState);
+			if (!Character->SetCharacterConfigRowNameAuthoritative(Player.CharacterConfigRowName))
+			{
+				OutError = FString::Printf(TEXT("Failed to stage Character config for player %s"),
+					*Player.PlayerId.ToDebugString());
+				return false;
+			}
+		}
+
+		Target.Equipment = Character->FindComponentByClass<UWeaponEquipmentComponent>();
+		if (!Character->GetCharacterMovement() || !Target.Equipment ||
+			!CanRestoreAttributeValues(Target.ASC, Player.AttributeState.Values))
+		{
+			OutError = FString::Printf(TEXT("Staged Character for player %s is not Restore-compatible"),
+				*Player.PlayerId.ToDebugString());
+			return false;
+		}
+		Context.FinalPawnsByPlayerId.Add(Player.PlayerId, Character);
 	}
 
-	AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
-	if (!GameState)
+	Context.StagedEnemies.Reserve(Snapshot.Enemies.Num());
+	for (int32 Index = 0; Index < Snapshot.Enemies.Num(); ++Index)
 	{
-		OutError = TEXT("Current World does not have AWeaponGameState");
-		return false;
-	}
-	if (GameState->PlayerArray.Num() != Snapshot.Players.Num())
-	{
-		OutError = TEXT("All Snapshot players must be connected before this synchronous Restore can run");
-		return false;
-	}
-	if (!ValidateSnapshot(Snapshot, GameState->GetMaxPlayers(), OutError) ||
-		!RestoreGridMap(Snapshot, OutError) ||
-		!RestorePlayers(Snapshot, OutError) ||
-		!RestoreEnemies(Snapshot, OutError) ||
-		!RestoreProjectiles(Snapshot, OutError))
-	{
-		return false;
+		const FWeaponEnemySnapshot& EnemySnap = Snapshot.Enemies[Index];
+		const FTransform SpawnTransform(EnemySnap.Rotation, EnemySnap.Location);
+		AEnemyCharacter* Enemy = Context.World->SpawnActorDeferred<AEnemyCharacter>(
+			Context.EnemyClasses[Index],
+			SpawnTransform,
+			nullptr,
+			nullptr,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Enemy)
+		{
+			OutError = FString::Printf(TEXT("Failed to stage enemy %d"), Index);
+			return false;
+		}
+
+		Context.StagedEnemies.Add(Enemy);
+		Enemy->SetActorEnableCollision(false);
+		Enemy->SetActorTickEnabled(false);
+		Enemy->SetEnemyConfigRowName(EnemySnap.EnemyConfigRowName);
+		Enemy->FinishSpawning(SpawnTransform);
+		Enemy->SetActorEnableCollision(false);
+		Enemy->SetActorTickEnabled(false);
+		if (!Enemy->GetCharacterMovement() ||
+			!CanRestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values))
+		{
+			OutError = FString::Printf(TEXT("Staged enemy %d is not Restore-compatible"), Index);
+			return false;
+		}
 	}
 
-	GameState->SetMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
+	Context.StagedProjectiles.Reserve(Snapshot.Projectiles.Num() + Snapshot.Grenades.Num());
+	for (int32 Index = 0; Index < Snapshot.Projectiles.Num(); ++Index)
+	{
+		const FWeaponProjectileSnapshot& SavedProjectile = Snapshot.Projectiles[Index];
+		APawn* const* FoundInstigator = Context.FinalPawnsByPlayerId.Find(SavedProjectile.InstigatorPlayerId);
+		if (!FoundInstigator || !*FoundInstigator)
+		{
+			OutError = FString::Printf(TEXT("Failed to resolve staged projectile %d instigator"), Index);
+			return false;
+		}
+
+		const FTransform SpawnTransform(SavedProjectile.Rotation, SavedProjectile.Location);
+		AWeaponProjectile* Projectile = Context.World->SpawnActorDeferred<AWeaponProjectile>(
+			Context.ProjectileClasses[Index],
+			FTransform::Identity,
+			*FoundInstigator,
+			*FoundInstigator,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Projectile)
+		{
+			OutError = FString::Printf(TEXT("Failed to stage projectile %d"), Index);
+			return false;
+		}
+
+		Context.StagedProjectiles.Add(Projectile);
+		Projectile->SetActorEnableCollision(false);
+		Projectile->SetActorTickEnabled(false);
+		Projectile->InitializeProjectile(
+			Context.ProjectileDamageEffects[Index],
+			SavedProjectile.DamageValue,
+			*FoundInstigator,
+			SavedProjectile.DamageTags,
+			SavedProjectile.bPenetratesTerrain,
+			SavedProjectile.ProjectileSpeed,
+			SavedProjectile.DamageFalloffStart,
+			SavedProjectile.DamageFalloffEnd,
+			SavedProjectile.InstigatorPlayerId);
+		Projectile->InitFlightParams(
+			SavedProjectile.RemainingLifeSeconds,
+			SavedProjectile.ProjectileGravityScale,
+			SavedProjectile.MaxHitTargets);
+		Projectile->InitAreaDamageParams(
+			SavedProjectile.AreaDamage,
+			SavedProjectile.AreaRadius,
+			SavedProjectile.AreaFalloff);
+		Projectile->FinishSpawning(SpawnTransform);
+		Projectile->SetActorEnableCollision(false);
+		Projectile->SetActorTickEnabled(false);
+		Projectile->RestoreSnapshotMotion(
+			SavedProjectile.Velocity,
+			SavedProjectile.RemainingLifeSeconds);
+	}
+
+	for (int32 Index = 0; Index < Snapshot.Grenades.Num(); ++Index)
+	{
+		const FWeaponGrenadeSnapshot& SavedGrenade = Snapshot.Grenades[Index];
+		APawn* const* FoundInstigator = Context.FinalPawnsByPlayerId.Find(SavedGrenade.InstigatorPlayerId);
+		if (!FoundInstigator || !*FoundInstigator)
+		{
+			OutError = FString::Printf(TEXT("Failed to resolve staged grenade %d instigator"), Index);
+			return false;
+		}
+
+		const FTransform SpawnTransform(SavedGrenade.Rotation, SavedGrenade.Location);
+		AGrenadeProjectile* Grenade = Context.World->SpawnActorDeferred<AGrenadeProjectile>(
+			Context.GrenadeDataAssets[Index]->ProjectileClass,
+			FTransform::Identity,
+			*FoundInstigator,
+			*FoundInstigator,
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+		if (!Grenade)
+		{
+			OutError = FString::Printf(TEXT("Failed to stage grenade %d"), Index);
+			return false;
+		}
+
+		Context.StagedProjectiles.Add(Grenade);
+		Grenade->SetActorEnableCollision(false);
+		Grenade->SetActorTickEnabled(false);
+		Grenade->InitFromGrenadeData(
+			Context.GrenadeDataAssets[Index],
+			*FoundInstigator,
+			SavedGrenade.InstigatorPlayerId);
+		Grenade->SetFuseTimeForSnapshotRestore(SavedGrenade.RemainingFuseTime);
+		Grenade->FinishSpawning(SpawnTransform);
+		Grenade->SetActorEnableCollision(false);
+		Grenade->SetActorTickEnabled(false);
+		Grenade->RestoreSnapshotMotion(SavedGrenade.Velocity, 0.0f);
+	}
+	return true;
+}
+
+void UWeaponSnapshotCoordinator::CleanupStagedActors(FRestoreContext& Context)
+{
+	for (AWeaponProjectile* Projectile : Context.StagedProjectiles)
+	{
+		if (Projectile)
+		{
+			Projectile->Destroy();
+		}
+	}
+	Context.StagedProjectiles.Reset();
+
+	for (AEnemyCharacter* Enemy : Context.StagedEnemies)
+	{
+		if (Enemy)
+		{
+			if (AController* Controller = Enemy->GetController())
+			{
+				Controller->Destroy();
+			}
+			Enemy->Destroy();
+		}
+	}
+	Context.StagedEnemies.Reset();
+
+	for (FRestoreContext::FPlayerTarget& Target : Context.Players)
+	{
+		if (Target.bCharacterStaged && Target.Character)
+		{
+			if (Target.bAttributionTombstone)
+			{
+				Target.Character->SetPlayerState(nullptr);
+			}
+			Target.Character->Destroy();
+			Target.Character = nullptr;
+			Target.Equipment = nullptr;
+			Target.bCharacterStaged = false;
+		}
+		if (Target.bPlayerStateStaged && Target.PlayerState)
+		{
+			Context.GameState->RemovePlayerState(Target.PlayerState);
+			Target.PlayerState->Destroy();
+			Target.PlayerState = nullptr;
+			Target.ASC = nullptr;
+			Target.bPlayerStateStaged = false;
+		}
+	}
+}
+
+void UWeaponSnapshotCoordinator::ApplySnapshot(
+	const UWeaponMatchSaveGame* SaveGame,
+	FRestoreContext& Context)
+{
+	const FWeaponSnapshot& Snapshot = SaveGame->Snapshot;
+
+	for (FRestoreContext::FPlayerTarget& Target : Context.Players)
+	{
+		const FWeaponPlayerSnapshot& Player = *Target.Snapshot;
+		if (!Target.bAttributionTombstone)
+		{
+			Target.PlayerState->SetPlayerName(Player.PlayerName);
+			Target.PlayerState->SetPlayerReady(Player.bIsReady);
+			Target.PlayerState->SetTeamId(Player.TeamId);
+			if (!Target.PlayerState->SetProfessionLoadout(
+				Player.ProfessionId, Player.PrimaryWeaponId, Player.SecondaryWeaponId))
+			{
+				UE_LOG(LogTemp, Fatal, TEXT("Validated profession loadout became invalid during Snapshot Apply"));
+			}
+			if (Target.Character)
+			{
+				Target.Character->RefreshProfessionLoadout();
+			}
+		}
+		if (Target.bAttributionTombstone)
+		{
+			RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
+			Context.GameMode->AdoptRecoveredAttributionTombstone(
+				Player.PlayerId,
+				Target.Character,
+				Target.PlayerState);
+			continue;
+		}
+		if (!Player.bHasPawn)
+		{
+			if (Target.ExistingPawn)
+			{
+				if (UWeaponEquipmentComponent* Equipment =
+					Target.ExistingPawn->FindComponentByClass<UWeaponEquipmentComponent>())
+				{
+					Equipment->UnequipWeapon();
+				}
+				if (Target.PlayerController && Target.PlayerController->GetPawn() == Target.ExistingPawn)
+				{
+					Target.PlayerController->UnPossess();
+				}
+				Target.ExistingPawn->Destroy();
+			}
+			Target.ASC->InitAbilityActorInfo(Target.PlayerState, nullptr);
+			RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
+			continue;
+		}
+
+		if (Target.bCharacterStaged)
+		{
+			if (Target.ExistingPawn)
+			{
+				if (UWeaponEquipmentComponent* ExistingEquipment =
+					Target.ExistingPawn->FindComponentByClass<UWeaponEquipmentComponent>())
+				{
+					ExistingEquipment->UnequipWeapon();
+				}
+				if (Target.PlayerController->GetPawn() == Target.ExistingPawn)
+				{
+					Target.PlayerController->UnPossess();
+				}
+			}
+
+			Target.PlayerController->Possess(Target.Character);
+			if (Target.PlayerController->GetPawn() != Target.Character)
+			{
+				UE_LOG(LogTemp, Fatal, TEXT("Validated Character possession failed during Snapshot Apply"));
+			}
+			if (Target.ExistingPawn)
+			{
+				Target.ExistingPawn->Destroy();
+			}
+		}
+		if (!Target.Character->SetCharacterConfigRowNameAuthoritative(Player.CharacterConfigRowName))
+		{
+			UE_LOG(LogTemp, Fatal, TEXT("Validated Character config became invalid during Snapshot Apply"));
+		}
+
+		Target.Character->SetActorLocation(Player.Location, false, nullptr, ETeleportType::TeleportPhysics);
+		Target.Character->SetAimDirectionAuthoritative(Player.Rotation.Vector());
+		Target.Character->GetCharacterMovement()->Velocity = Player.Velocity;
+		if (!Target.Equipment->RestoreSnapshotState(Target.EquipmentSnapshot) ||
+			!Target.Character->RestoreEquipmentSlot(Player.CurrentEquipmentSlot))
+		{
+			UE_LOG(LogTemp, Fatal, TEXT("Validated equipment state became invalid during Snapshot Apply"));
+		}
+		RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
+		if (Target.bCharacterStaged)
+		{
+			Target.Character->SetActorTickEnabled(true);
+			Target.Character->SetActorEnableCollision(true);
+			Target.Character->ForceNetUpdate();
+		}
+	}
+
+	for (int32 Index = 0; Index < Context.StagedEnemies.Num(); ++Index)
+	{
+		AEnemyCharacter* Enemy = Context.StagedEnemies[Index];
+		const FWeaponEnemySnapshot& EnemySnap = Snapshot.Enemies[Index];
+		Enemy->GetCharacterMovement()->Velocity = EnemySnap.Velocity;
+		RestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values);
+	}
+	for (AEnemyCharacter* Enemy : Context.ExistingEnemies)
+	{
+		Enemy->Destroy();
+	}
+	for (AEnemyCharacter* Enemy : Context.StagedEnemies)
+	{
+		Enemy->SetActorTickEnabled(true);
+		Enemy->SetActorEnableCollision(true);
+		Enemy->ForceNetUpdate();
+	}
+
+	for (AWeaponProjectile* Projectile : Context.ExistingProjectiles)
+	{
+		Projectile->Destroy();
+	}
+	for (AWeaponProjectile* Projectile : Context.StagedProjectiles)
+	{
+		Projectile->SetGameplayRecoveryBlocked(false);
+		Projectile->SetActorTickEnabled(true);
+		Projectile->SetActorEnableCollision(true);
+		Projectile->SetGameplayRecoveryBlocked(true);
+		Projectile->ForceNetUpdate();
+	}
+
+	const int32 PreviousMaxPlayers = Context.GameState->GetMaxPlayers();
+	if (SaveGame->MaxPlayers >= PreviousMaxPlayers &&
+		!Context.GameState->SetMaxPlayersAuthority(SaveGame->MaxPlayers))
+	{
+		UE_LOG(LogTemp, Fatal, TEXT("Validated player capacity became invalid during Snapshot Apply"));
+	}
+
+	for (const FRestoreContext::FPlayerTarget& Target : Context.Players)
+	{
+		const FWeaponPlayerSnapshot& Player = *Target.Snapshot;
+		if (Target.bAttributionTombstone)
+		{
+			continue;
+		}
+		Target.PlayerState->SetPlayerName(Player.PlayerName);
+		Target.PlayerState->SetPlayerReady(Player.bIsReady);
+		Target.PlayerState->SetTeamId(Player.TeamId);
+	}
+	for (const FWeaponRecoveryRosterSnapshot& RosterEntry : Snapshot.RecoveryRoster)
+	{
+		if (AWeaponPlayerState* const* ConnectedPlayerState =
+			Context.ConnectedPlayersById.Find(RosterEntry.PlayerId))
+		{
+			(*ConnectedPlayerState)->SetPlayerSlotIndex(RosterEntry.OriginalSlot);
+		}
+	}
+
+	if (SaveGame->MaxPlayers < PreviousMaxPlayers &&
+		!Context.GameState->SetMaxPlayersAuthority(SaveGame->MaxPlayers))
+	{
+		UE_LOG(LogTemp, Fatal, TEXT("Validated player capacity became invalid during Snapshot Apply"));
+	}
+	if (!Context.GameMode->SetRecoveryRoster(Snapshot.RecoveryRoster, Snapshot.RosterRevision))
+	{
+		UE_LOG(LogTemp, Fatal, TEXT("Validated recovery roster became invalid during Snapshot Apply"));
+	}
+
+	Context.GameMode->ApplyRecoveredMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 	ActiveMatchId = Snapshot.MatchId;
 	NextSnapshotRevision = Snapshot.Revision + 1;
-	return true;
 }
 
 bool UWeaponSnapshotCoordinator::CapturePlayers(
@@ -386,12 +1027,25 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 	FString& OutError)
 {
 	const AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
-	for (APlayerState* BasePlayerState : GameState->PlayerArray)
+	const AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>();
+	if (!GameState || !GameMode)
 	{
-		const AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState);
-		if (!PlayerState)
+		OutError = TEXT("Snapshot player Capture requires authoritative match owners");
+		return false;
+	}
+
+	TSet<FUniqueNetIdRepl> CapturedPlayerIds;
+	TMap<FUniqueNetIdRepl, AWeaponCharacter*> TombstonePawns;
+	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> TombstonePlayerStates;
+	GameMode->GetAttributionTombstoneActors(TombstonePawns, TombstonePlayerStates);
+	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds](
+		const AWeaponPlayerState* PlayerState,
+		const AWeaponCharacter* Character) -> bool
+	{
+		if (!PlayerState || !PlayerState->GetUniqueId().IsValid() ||
+			CapturedPlayerIds.Contains(PlayerState->GetUniqueId()))
 		{
-			continue;
+			return false;
 		}
 
 		FWeaponPlayerSnapshot& Player = Snapshot.Players.AddDefaulted_GetRef();
@@ -404,11 +1058,11 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		Player.PrimaryWeaponId = PlayerState->GetPrimaryWeaponId();
 		Player.SecondaryWeaponId = PlayerState->GetSecondaryWeaponId();
 		Player.AttributeState.Values = CaptureAttributeValues(PlayerState->GetAbilitySystemComponent());
+		CapturedPlayerIds.Add(Player.PlayerId);
 
-		const AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerState->GetPawn());
 		if (!Character)
 		{
-			continue;
+			return true;
 		}
 
 		Player.bHasPawn = true;
@@ -439,22 +1093,133 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 			SavedAmmo.MagazineAmmo = Ammo.MagazineAmmo;
 			SavedAmmo.ReserveAmmo = Ammo.ReserveAmmo;
 		}
+		return true;
+	};
+
+	for (APlayerState* BasePlayerState : GameState->PlayerArray)
+	{
+		const AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState);
+		const AWeaponCharacter* Character = PlayerState
+			? Cast<AWeaponCharacter>(PlayerState->GetPawn())
+			: nullptr;
+		if (PlayerState && !Character && TombstonePawns.Contains(PlayerState->GetUniqueId()))
+		{
+			continue;
+		}
+		if (!PlayerState ||
+			!CapturePlayer(PlayerState, Character))
+		{
+			OutError = OutError.IsEmpty()
+				? TEXT("Connected player state is invalid or duplicated during Snapshot Capture")
+				: OutError;
+			return false;
+		}
+	}
+
+	for (const auto& [PlayerId, TombstonePawn] : TombstonePawns)
+	{
+		if (CapturedPlayerIds.Contains(PlayerId))
+		{
+			continue;
+		}
+		AWeaponPlayerState* const* TombstonePlayerState = TombstonePlayerStates.Find(PlayerId);
+		if (!TombstonePlayerState || !CapturePlayer(*TombstonePlayerState, TombstonePawn))
+		{
+			OutError = OutError.IsEmpty()
+				? TEXT("Attribution tombstone is incomplete during Snapshot Capture")
+				: OutError;
+			return false;
+		}
 	}
 
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::ValidatePlayers(const FWeaponSnapshot& Snapshot,
+bool UWeaponSnapshotCoordinator::CaptureRecoveryRoster(
+	const UWorld* World,
+	FWeaponSnapshot& Snapshot,
+	FString& OutError)
+{
+	const AWeaponGameMode* GameMode = World ? World->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	if (!GameMode)
+	{
+		OutError = TEXT("Snapshot roster Capture requires AWeaponGameMode authority");
+		return false;
+	}
+
+	Snapshot.RosterRevision = GameMode->GetRosterRevision();
+	const double CurrentServerTime = World->GetTimeSeconds();
+	for (const auto& [PlayerId, RuntimeEntry] : GameMode->GetRecoveryRoster())
+	{
+		FWeaponRecoveryRosterSnapshot& SavedEntry = Snapshot.RecoveryRoster.AddDefaulted_GetRef();
+		SavedEntry.PlayerId = PlayerId;
+		SavedEntry.OriginalSlot = RuntimeEntry.OriginalSlot;
+		SavedEntry.Status = RuntimeEntry.Status;
+		if (RuntimeEntry.Status == EWeaponRecoveryPlayerStatus::Pending)
+		{
+			SavedEntry.RemainingGraceSeconds = static_cast<float>(
+				FMath::Max(0.0, RuntimeEntry.PendingDeadlineServerTime - CurrentServerTime));
+		}
+	}
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::ValidateRecoveryRoster(
+	const FWeaponSnapshot& Snapshot,
 	const int32 MaxPlayers,
 	FString& OutError)
 {
-	TSet<FString> PlayerIds;
-	TSet<int32> Slots;
+	if (Snapshot.RosterRevision == 0 || Snapshot.RosterRevision == MAX_uint64)
+	{
+		OutError = TEXT("Snapshot recovery roster revision is invalid");
+		return false;
+	}
+
+	TSet<FUniqueNetIdRepl> PlayerIds;
+	TSet<int32> ReservedSlots;
+	for (const FWeaponRecoveryRosterSnapshot& Entry : Snapshot.RecoveryRoster)
+	{
+		const bool bKnownStatus = Entry.Status == EWeaponRecoveryPlayerStatus::Pending ||
+			Entry.Status == EWeaponRecoveryPlayerStatus::Ready ||
+			Entry.Status == EWeaponRecoveryPlayerStatus::Departed;
+		if (!Entry.PlayerId.IsValid() || PlayerIds.Contains(Entry.PlayerId) || !bKnownStatus ||
+			Entry.OriginalSlot < 0 || Entry.OriginalSlot >= MaxPlayers ||
+			!FMath::IsFinite(Entry.RemainingGraceSeconds) || Entry.RemainingGraceSeconds < 0.0f ||
+			(Entry.Status != EWeaponRecoveryPlayerStatus::Pending &&
+			 Entry.RemainingGraceSeconds != 0.0f))
+		{
+			OutError = TEXT("Snapshot recovery roster entry is invalid or duplicated");
+			return false;
+		}
+		if (Entry.Status != EWeaponRecoveryPlayerStatus::Departed)
+		{
+			if (ReservedSlots.Contains(Entry.OriginalSlot))
+			{
+				OutError = TEXT("Snapshot active recovery roster has duplicated Slot reservations");
+				return false;
+			}
+			ReservedSlots.Add(Entry.OriginalSlot);
+		}
+		PlayerIds.Add(Entry.PlayerId);
+	}
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::ValidatePlayers(
+	const FWeaponSnapshot& Snapshot,
+	FString& OutError)
+{
+	TSet<FUniqueNetIdRepl> PlayerIds;
+	TMap<FUniqueNetIdRepl, int32> RosterSlots;
+	for (const FWeaponRecoveryRosterSnapshot& Entry : Snapshot.RecoveryRoster)
+	{
+		RosterSlots.Add(Entry.PlayerId, Entry.OriginalSlot);
+	}
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
-		if (Player.PlayerId.IsEmpty() || Player.PlayerName.IsEmpty() ||
-			PlayerIds.Contains(Player.PlayerId) || Slots.Contains(Player.SlotIndex) ||
-			Player.SlotIndex < 0 || Player.SlotIndex >= MaxPlayers ||
+		const int32* RosterSlot = RosterSlots.Find(Player.PlayerId);
+		if (!Player.PlayerId.IsValid() || Player.PlayerName.IsEmpty() ||
+			PlayerIds.Contains(Player.PlayerId) || !RosterSlot || *RosterSlot != Player.SlotIndex ||
 			!ValidateAttributeValues(Player.AttributeState.Values))
 		{
 			OutError = TEXT("Snapshot player has invalid or duplicated identity, slot or attributes");
@@ -504,7 +1269,6 @@ bool UWeaponSnapshotCoordinator::ValidatePlayers(const FWeaponSnapshot& Snapshot
 		}
 
 		PlayerIds.Add(Player.PlayerId);
-		Slots.Add(Player.SlotIndex);
 	}
 
 	return true;
@@ -576,29 +1340,6 @@ bool UWeaponSnapshotCoordinator::ValidateGridMap(
 	return AGridMapManager::ValidateRecoveryState(Snapshot.GridMap, OutError);
 }
 
-bool UWeaponSnapshotCoordinator::RestoreGridMap(
-	const FWeaponSnapshot& Snapshot,
-	FString& OutError) const
-{
-	AGridMapManager* GridMap = nullptr;
-	for (TActorIterator<AGridMapManager> It(GetWorld()); It; ++It)
-	{
-		if (GridMap)
-		{
-			OutError = TEXT("Snapshot currently supports exactly one GridMapManager");
-			return false;
-		}
-		GridMap = *It;
-	}
-
-	if (!GridMap)
-	{
-		OutError = TEXT("Snapshot requires one GridMapManager");
-		return false;
-	}
-	return GridMap->RestoreRecoveryState(Snapshot.GridMap, OutError);
-}
-
 bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 	const UWorld* World,
 	FWeaponSnapshot& Snapshot,
@@ -613,8 +1354,8 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		}
 
 		const FWeaponProjectileInitializationState& Initialization = Projectile->GetInitializationState();
-		const FString InstigatorPlayerId = ResolvePlayerIdFromActor(Initialization.InstigatorActor);
-		if (!Initialization.bInitialized || InstigatorPlayerId.IsEmpty())
+		const FUniqueNetIdRepl InstigatorPlayerId = Initialization.InstigatorPlayerId;
+		if (!Initialization.bInitialized || !InstigatorPlayerId.IsValid())
 		{
 			OutError = FString::Printf(TEXT("Projectile %s has no restorable initialization or player instigator"),
 				*GetNameSafe(Projectile));
@@ -648,6 +1389,8 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		SavedProjectile.DamageTags = Initialization.DamageTags;
 		SavedProjectile.DamageValue = Initialization.DamageValue;
 		SavedProjectile.ProjectileSpeed = Initialization.ProjectileSpeed;
+		SavedProjectile.DamageFalloffStart = Initialization.DamageFalloffStart;
+		SavedProjectile.DamageFalloffEnd = Initialization.DamageFalloffEnd;
 		SavedProjectile.AreaDamage = Initialization.AreaDamage;
 		SavedProjectile.AreaRadius = Initialization.AreaRadius;
 		SavedProjectile.AreaFalloff = Initialization.AreaFalloff;
@@ -663,7 +1406,7 @@ bool UWeaponSnapshotCoordinator::ValidateProjectiles(
 	const FWeaponSnapshot& Snapshot,
 	FString& OutError)
 {
-	TSet<FString> PlayersWithPawns;
+	TSet<FUniqueNetIdRepl> PlayersWithPawns;
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
 		if (Player.bHasPawn)
@@ -679,7 +1422,9 @@ bool UWeaponSnapshotCoordinator::ValidateProjectiles(
 			!IsFiniteVector(Projectile.Location) || !IsFiniteRotator(Projectile.Rotation) ||
 			!IsFiniteVector(Projectile.Velocity) || !FMath::IsFinite(Projectile.DamageValue) ||
 			Projectile.DamageValue < 0.0f || !FMath::IsFinite(Projectile.ProjectileSpeed) ||
-			Projectile.ProjectileSpeed <= 0.0f || !FMath::IsFinite(Projectile.RemainingLifeSeconds) ||
+			Projectile.ProjectileSpeed <= 0.0f || !FMath::IsFinite(Projectile.DamageFalloffStart) ||
+			Projectile.DamageFalloffStart < 0.0f || !FMath::IsFinite(Projectile.DamageFalloffEnd) ||
+			Projectile.DamageFalloffEnd < Projectile.DamageFalloffStart || !FMath::IsFinite(Projectile.RemainingLifeSeconds) ||
 			Projectile.RemainingLifeSeconds <= 0.0f || !FMath::IsFinite(Projectile.AreaDamage) || Projectile.AreaDamage < 0.0f ||
 			!FMath::IsFinite(Projectile.AreaRadius) || Projectile.AreaRadius < 0.0f ||
 			!FMath::IsFinite(Projectile.AreaFalloff) || Projectile.AreaFalloff < 0.0f || Projectile.AreaFalloff > 1.0f ||
@@ -732,10 +1477,10 @@ bool UWeaponSnapshotCoordinator::ValidateAttributeValues(
 		return false;
 	}
 
-	for (const auto& [Tag, Value] : Values)
+	for (const TPair<FGameplayTag, float>& Pair : Values)
 	{
-		const FGameplayAttribute* Attribute = AttributeMap.Find(Tag);
-		if (!Tag.IsValid() || !Attribute || !Attribute->IsValid() || !FMath::IsFinite(Value))
+		const FGameplayAttribute* Attribute = AttributeMap.Find(Pair.Key);
+		if (!Pair.Key.IsValid() || !Attribute || !Attribute->IsValid() || !FMath::IsFinite(Pair.Value))
 		{
 			return false;
 		}
@@ -743,14 +1488,34 @@ bool UWeaponSnapshotCoordinator::ValidateAttributeValues(
 	return true;
 }
 
-bool UWeaponSnapshotCoordinator::RestoreAttributeValues(
-	UAbilitySystemComponent* ASC,
+bool UWeaponSnapshotCoordinator::CanRestoreAttributeValues(
+	const UAbilitySystemComponent* ASC,
 	const TMap<FGameplayTag, float>& Values)
 {
-	if (!ASC)
+	if (!ASC || !ValidateAttributeValues(Values))
 	{
 		return false;
 	}
+
+	const TMap<FGameplayTag, FGameplayAttribute>& AttributeMap =
+		UAttributeModifierManager::GetAttributeTagMap();
+	for (const TPair<FGameplayTag, float>& Pair : Values)
+	{
+		const FGameplayAttribute* Attribute = AttributeMap.Find(Pair.Key);
+		if (!Attribute || !ASC->HasAttributeSetForAttribute(*Attribute))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+void UWeaponSnapshotCoordinator::RestoreAttributeValues(
+	UAbilitySystemComponent* ASC,
+	const TMap<FGameplayTag, float>& Values)
+{
+	check(CanRestoreAttributeValues(ASC, Values));
+
 	const FGameplayTag MaximumTags[] = {
 		TAG_Attr_MaxHealth,
 		TAG_Attr_MaxShield,
@@ -761,10 +1526,6 @@ bool UWeaponSnapshotCoordinator::RestoreAttributeValues(
 	{
 		const float* Value = Values.Find(Tag);
 		const FGameplayAttribute* Attribute = UAttributeModifierManager::GetAttributeTagMap().Find(Tag);
-		if (Value && (!Attribute || !ASC->HasAttributeSetForAttribute(*Attribute) || !ValidateAttributeValues(Values)))
-		{
-			return false;
-		}
 		if (Value)
 		{
 			ASC->SetNumericAttributeBase(*Attribute, *Value);
@@ -779,369 +1540,13 @@ bool UWeaponSnapshotCoordinator::RestoreAttributeValues(
 			continue;
 		}
 		const FGameplayAttribute* Attribute = UAttributeModifierManager::GetAttributeTagMap().Find(Tag);
-		if (!Attribute || !ASC->HasAttributeSetForAttribute(*Attribute) || !FMath::IsFinite(Value))
-		{
-			return false;
-		}
 		ASC->SetNumericAttributeBase(*Attribute, Value);
 	}
-	return true;
 }
 
-bool UWeaponSnapshotCoordinator::RestorePlayers(
-	const FWeaponSnapshot& Snapshot,
-	FString& OutError) const
+FUniqueNetIdRepl UWeaponSnapshotCoordinator::ResolvePlayerId(const APlayerState* PlayerState)
 {
-	const UWorld* World = GetWorld();
-	AWeaponGameState* GameState = World->GetGameState<AWeaponGameState>();
-	AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>();
-
-	TMap<FString, AWeaponPlayerState*> PlayersById;
-	for (APlayerState* BasePlayerState : GameState->PlayerArray)
-	{
-		if (AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState))
-		{
-			PlayersById.Add(ResolvePlayerId(PlayerState), PlayerState);
-		}
-	}
-	for (const FWeaponPlayerSnapshot& Snap : Snapshot.Players)
-	{
-		AWeaponPlayerState* const* FoundPlayerState = PlayersById.Find(Snap.PlayerId);
-		if (!FoundPlayerState)
-		{
-			OutError = FString::Printf(TEXT("Connected player %s is not ready for Snapshot Apply"), *Snap.PlayerId);
-			return false;
-		}
-		if (Snap.bHasPawn && !(*FoundPlayerState)->GetPlayerController())
-		{
-			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *Snap.PlayerId);
-			return false;
-		}
-	}
-
-	for (const FWeaponPlayerSnapshot& Snap : Snapshot.Players)
-	{
-		AWeaponPlayerState* PlayerState = PlayersById.FindChecked(Snap.PlayerId);
-		PlayerState->SetPlayerName(Snap.PlayerName);
-		PlayerState->SetPlayerSlotIndex(Snap.SlotIndex);
-		PlayerState->SetPlayerReady(Snap.bIsReady);
-		PlayerState->SetTeamId(Snap.TeamId);
-		const bool bHasProfessionLoadout = !Snap.ProfessionId.IsNone() || !Snap.PrimaryWeaponId.IsNone() || !Snap.SecondaryWeaponId.IsNone();
-		if (bHasProfessionLoadout && !PlayerState->SetProfessionLoadout(Snap.ProfessionId, Snap.PrimaryWeaponId, Snap.SecondaryWeaponId))
-		{
-			OutError = FString::Printf(TEXT("Failed to restore profession loadout for player %s"), *Snap.PlayerId);
-			return false;
-		}
-
-		APlayerController* PlayerController = PlayerState->GetPlayerController();
-		if (!Snap.bHasPawn)
-		{
-			if (PlayerController && PlayerController->GetPawn())
-			{
-				APawn* ExistingPawn = PlayerController->GetPawn();
-				if (UWeaponEquipmentComponent* Equipment = ExistingPawn->FindComponentByClass<UWeaponEquipmentComponent>())
-				{
-					Equipment->UnequipWeapon();
-				}
-				PlayerController->UnPossess();
-				ExistingPawn->Destroy();
-			}
-
-			UAbilitySystemComponent* ASC = PlayerState->GetAbilitySystemComponent();
-			if (ASC)
-			{
-				// PlayerState remains the GAS owner, but a no-Pawn Snapshot must not retain a destroyed Avatar.
-				ASC->InitAbilityActorInfo(PlayerState, nullptr);
-			}
-			if (!RestoreAttributeValues(ASC, Snap.AttributeState.Values))
-			{
-				OutError = FString::Printf(TEXT("Failed to restore attributes for player %s"), *Snap.PlayerId);
-				return false;
-			}
-			continue;
-		}
-
-		if (!PlayerController)
-		{
-			OutError = FString::Printf(TEXT("Player %s does not have a PlayerController"), *Snap.PlayerId);
-			return false;
-		}
-
-		AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerController->GetPawn());
-		if (!Character && GameMode)
-		{
-			if (APawn* NewPawn = GameMode->SpawnDefaultPawnFor(PlayerController, nullptr))
-			{
-				PlayerController->Possess(NewPawn);
-				Character = Cast<AWeaponCharacter>(NewPawn);
-			}
-		}
-		if (Character)
-		{
-			Character->RefreshProfessionLoadout();
-		}
-		if (!Character || !Character->SetCharacterConfigRowNameAuthoritative(Snap.CharacterConfigRowName))
-		{
-			OutError = FString::Printf(TEXT("Failed to prepare Character for player %s"), *Snap.PlayerId);
-			return false;
-		}
-
-		Character->SetActorLocation(Snap.Location, false, nullptr, ETeleportType::TeleportPhysics);
-		Character->SetAimDirectionAuthoritative(Snap.Rotation.Vector());
-		Character->GetCharacterMovement()->Velocity = Snap.Velocity;
-
-		UWeaponEquipmentComponent* Equipment = Character->FindComponentByClass<UWeaponEquipmentComponent>();
-		FWeaponEquipmentSnapshotState EquipmentSnapshot;
-		for (const FSoftObjectPath& WeaponPath : Snap.WeaponInventory)
-		{
-			UWeaponDataAsset* Weapon = Cast<UWeaponDataAsset>(WeaponPath.TryLoad());
-			if (!Weapon)
-			{
-				OutError = FString::Printf(TEXT("Failed to load equipment for player %s"), *Snap.PlayerId);
-				return false;
-			}
-			EquipmentSnapshot.WeaponInventory.Add(Weapon);
-		}
-		for (const FWeaponAmmoSnapshot& SavedAmmo : Snap.WeaponAmmoStates)
-		{
-			FWeaponAmmoState& Ammo = EquipmentSnapshot.WeaponAmmoStates.AddDefaulted_GetRef();
-			Ammo.MagazineAmmo = SavedAmmo.MagazineAmmo;
-			Ammo.ReserveAmmo = SavedAmmo.ReserveAmmo;
-		}
-		EquipmentSnapshot.CurrentWeaponIndex = Snap.CurrentWeaponIndex;
-		EquipmentSnapshot.bWasReloading = Snap.bWasReloading;
-		if (!Equipment || !Equipment->RestoreSnapshotState(EquipmentSnapshot) ||
-			!Character->RestoreEquipmentSlot(Snap.CurrentEquipmentSlot) ||
-			!RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), Snap.AttributeState.Values))
-		{
-			OutError = FString::Printf(TEXT("Failed to restore equipment or attributes for player %s"), *Snap.PlayerId);
-			return false;
-		}
-	}
-
-	return true;
-}
-
-bool UWeaponSnapshotCoordinator::RestoreEnemies(
-	const FWeaponSnapshot& Snapshot,
-	FString& OutError) const
-{
-	UWorld* World = GetWorld();
-	TArray<UClass*> EnemyClasses;
-	EnemyClasses.Reserve(Snapshot.Enemies.Num());
-	for (const FWeaponEnemySnapshot& EnemySnap : Snapshot.Enemies)
-	{
-		UClass* EnemyClass = EnemySnap.EnemyClass.TryLoadClass<AEnemyCharacter>();
-		if (!EnemyClass)
-		{
-			OutError = FString::Printf(TEXT("Failed to load enemy class %s"), *EnemySnap.EnemyClass.ToString());
-			return false;
-		}
-		EnemyClasses.Add(EnemyClass);
-	}
-
-	TArray<AEnemyCharacter*> ExistingEnemies;
-	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
-	{
-		ExistingEnemies.Add(*It);
-	}
-	for (AEnemyCharacter* Enemy : ExistingEnemies)
-	{
-		Enemy->Destroy();
-	}
-
-	for (int32 Index = 0; Index < Snapshot.Enemies.Num(); ++Index)
-	{
-		const FWeaponEnemySnapshot& EnemySnap = Snapshot.Enemies[Index];
-		const FTransform SpawnTransform(EnemySnap.Rotation, EnemySnap.Location);
-		AEnemyCharacter* Enemy = World->SpawnActorDeferred<AEnemyCharacter>(
-			EnemyClasses[Index],
-			SpawnTransform,
-			nullptr,
-			nullptr,
-			ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn);
-		if (!Enemy)
-		{
-			OutError = FString::Printf(TEXT("Failed to spawn enemy %d"), Index);
-			return false;
-		}
-
-		Enemy->SetEnemyConfigRowName(EnemySnap.EnemyConfigRowName);
-		Enemy->FinishSpawning(SpawnTransform);
-		Enemy->GetCharacterMovement()->Velocity = EnemySnap.Velocity;
-		if (!RestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values))
-		{
-			OutError = FString::Printf(TEXT("Failed to restore attributes for enemy %d"), Index);
-			return false;
-		}
-	}
-
-	return true;
-}
-
-bool UWeaponSnapshotCoordinator::RestoreProjectiles(
-	const FWeaponSnapshot& Snapshot,
-	FString& OutError) const
-{
-	UWorld* World = GetWorld();
-	const AWeaponGameState* GameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
-	if (!World || !GameState)
-	{
-		OutError = TEXT("Projectile Restore requires a valid World and AWeaponGameState");
-		return false;
-	}
-
-	TMap<FString, APawn*> PawnsByPlayerId;
-	for (APlayerState* BasePlayerState : GameState->PlayerArray)
-	{
-		if (AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(BasePlayerState))
-		{
-			PawnsByPlayerId.Add(ResolvePlayerId(PlayerState), PlayerState->GetPawn());
-		}
-	}
-
-	TArray<AWeaponProjectile*> ExistingProjectiles;
-	for (TActorIterator<AWeaponProjectile> It(World); It; ++It)
-	{
-		if (!It->IsActorBeingDestroyed())
-		{
-			ExistingProjectiles.Add(*It);
-		}
-	}
-
-	TArray<AWeaponProjectile*> StagedProjectiles;
-	StagedProjectiles.Reserve(Snapshot.Projectiles.Num() + Snapshot.Grenades.Num());
-	const auto AbortStaging = [&StagedProjectiles]()
-	{
-		for (AWeaponProjectile* Projectile : StagedProjectiles)
-		{
-			if (Projectile)
-			{
-				Projectile->Destroy();
-			}
-		}
-	};
-
-	for (int32 Index = 0; Index < Snapshot.Projectiles.Num(); ++Index)
-	{
-		const FWeaponProjectileSnapshot& SavedProjectile = Snapshot.Projectiles[Index];
-		APawn* const* FoundInstigator = PawnsByPlayerId.Find(SavedProjectile.InstigatorPlayerId);
-		UClass* ProjectileClass = SavedProjectile.ProjectileClass.TryLoadClass<AWeaponProjectile>();
-		TSubclassOf<UGameplayEffect> DamageEffectClass =
-			SavedProjectile.DamageEffectClass.TryLoadClass<UGameplayEffect>();
-		if (!FoundInstigator || !*FoundInstigator || !ProjectileClass || !DamageEffectClass)
-		{
-			AbortStaging();
-			OutError = FString::Printf(TEXT("Failed to resolve projectile %d dependencies"), Index);
-			return false;
-		}
-
-		const FTransform SpawnTransform(SavedProjectile.Rotation, SavedProjectile.Location);
-		AWeaponProjectile* Projectile = World->SpawnActorDeferred<AWeaponProjectile>(
-			ProjectileClass,
-			FTransform::Identity,
-			*FoundInstigator,
-			*FoundInstigator,
-			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		if (!Projectile)
-		{
-			AbortStaging();
-			OutError = FString::Printf(TEXT("Failed to stage projectile %d"), Index);
-			return false;
-		}
-
-		StagedProjectiles.Add(Projectile);
-		Projectile->SetActorEnableCollision(false);
-		Projectile->InitializeProjectile(
-			DamageEffectClass,
-			SavedProjectile.DamageValue,
-			*FoundInstigator,
-			SavedProjectile.DamageTags,
-			SavedProjectile.bPenetratesTerrain,
-			SavedProjectile.ProjectileSpeed);
-		Projectile->InitFlightParams(
-			SavedProjectile.RemainingLifeSeconds,
-			SavedProjectile.ProjectileGravityScale,
-			SavedProjectile.MaxHitTargets);
-		Projectile->InitAreaDamageParams(
-			SavedProjectile.AreaDamage,
-			SavedProjectile.AreaRadius,
-			SavedProjectile.AreaFalloff);
-		Projectile->FinishSpawning(SpawnTransform);
-		Projectile->SetActorEnableCollision(false);
-		Projectile->RestoreSnapshotMotion(
-			SavedProjectile.Velocity,
-			SavedProjectile.RemainingLifeSeconds);
-	}
-
-	for (int32 Index = 0; Index < Snapshot.Grenades.Num(); ++Index)
-	{
-		const FWeaponGrenadeSnapshot& SavedGrenade = Snapshot.Grenades[Index];
-		APawn* const* FoundInstigator = PawnsByPlayerId.Find(SavedGrenade.InstigatorPlayerId);
-		const UWeaponGrenadeDataAsset* GrenadeData = Cast<UWeaponGrenadeDataAsset>(
-			SavedGrenade.GrenadeDataAsset.TryLoad());
-		if (!FoundInstigator || !*FoundInstigator || !GrenadeData || !GrenadeData->ProjectileClass)
-		{
-			AbortStaging();
-			OutError = FString::Printf(TEXT("Failed to resolve grenade %d dependencies"), Index);
-			return false;
-		}
-
-		const FTransform SpawnTransform(SavedGrenade.Rotation, SavedGrenade.Location);
-		AGrenadeProjectile* Grenade = World->SpawnActorDeferred<AGrenadeProjectile>(
-			GrenadeData->ProjectileClass,
-			FTransform::Identity,
-			*FoundInstigator,
-			*FoundInstigator,
-			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-		if (!Grenade)
-		{
-			AbortStaging();
-			OutError = FString::Printf(TEXT("Failed to stage grenade %d"), Index);
-			return false;
-		}
-
-		StagedProjectiles.Add(Grenade);
-		Grenade->SetActorEnableCollision(false);
-		Grenade->InitFromGrenadeData(GrenadeData, *FoundInstigator);
-		Grenade->SetFuseTimeForSnapshotRestore(SavedGrenade.RemainingFuseTime);
-		Grenade->FinishSpawning(SpawnTransform);
-		Grenade->SetActorEnableCollision(false);
-		Grenade->RestoreSnapshotMotion(SavedGrenade.Velocity, 0.0f);
-	}
-
-	for (AWeaponProjectile* ExistingProjectile : ExistingProjectiles)
-	{
-		ExistingProjectile->Destroy();
-	}
-	for (AWeaponProjectile* StagedProjectile : StagedProjectiles)
-	{
-		StagedProjectile->SetActorEnableCollision(true);
-		StagedProjectile->ForceNetUpdate();
-	}
-	return true;
-}
-
-FString UWeaponSnapshotCoordinator::ResolvePlayerId(const APlayerState* PlayerState)
-{
-	return PlayerState ? PlayerState->GetPlayerName() : FString();
-}
-
-FString UWeaponSnapshotCoordinator::ResolvePlayerIdFromActor(const AActor* Actor)
-{
-	if (const APlayerState* PlayerState = Cast<APlayerState>(Actor))
-	{
-		return ResolvePlayerId(PlayerState);
-	}
-	if (const APawn* Pawn = Cast<APawn>(Actor))
-	{
-		return ResolvePlayerId(Pawn->GetPlayerState());
-	}
-	if (const AController* Controller = Cast<AController>(Actor))
-	{
-		return ResolvePlayerId(Controller->GetPlayerState<APlayerState>());
-	}
-	return FString();
+	return PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
 }
 
 bool UWeaponSnapshotCoordinator::IsFiniteVector(const FVector& Value)

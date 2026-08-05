@@ -2,14 +2,25 @@
 
 
 #include "WeaponGameMode.h"
+#include "LetsDeepRock.h"
 #include "WeaponCharacter.h"
+#include "NPCBase.h"
+#include "Drone.h"
+#include "AI/EnemyAIController.h"
+#include "WeaponPlayerController.h"
 #include "WeaponPlayerState.h"
+#include "Weapons/WeaponProjectile.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "AbilitySystemComponent.h"
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponGameState.h"
+#include "Online/WeaponHostMigrationSubsystem.h"
+#include "Online/WeaponSnapshotCoordinator.h"
+#include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "Kismet/GameplayStatics.h"
 #include "UI/WeaponHUD.h"
 
 AWeaponGameMode::AWeaponGameMode()
@@ -17,6 +28,817 @@ AWeaponGameMode::AWeaponGameMode()
 	HUDClass = AWeaponHUD::StaticClass();
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
+}
+
+void AWeaponGameMode::InitGame(
+	const FString& MapName,
+	const FString& Options,
+	FString& ErrorMessage)
+{
+	bRecoveryWorldRequested = UGameplayStatics::HasOption(Options, TEXT("WeaponRecovery"));
+	Super::InitGame(MapName, Options, ErrorMessage);
+}
+
+void AWeaponGameMode::InitGameState()
+{
+	Super::InitGameState();
+	if (bRecoveryWorldRequested && !EnterGameplayRecoveryBarrier())
+	{
+		UE_LOG(LogLetsDeepRock, Fatal, TEXT("Recovery World could not enter its gameplay barrier during InitGameState"));
+	}
+}
+
+bool AWeaponGameMode::RefreshHostMigrationRoles(FString& OutError)
+{
+	OutError.Reset();
+	UWorld* World = GetWorld();
+	AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !World || !WeaponGameState)
+	{
+		OutError = TEXT("Migration roles require an authoritative Weapon server World");
+		return false;
+	}
+	if (World->GetNetMode() != NM_ListenServer)
+	{
+		return true;
+	}
+	if (WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return true;
+	}
+
+	UGameInstance* GameInstance = GetGameInstance();
+	UWeaponHostMigrationSubsystem* MigrationSubsystem =
+		GameInstance ? GameInstance->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+	UWeaponSnapshotCoordinator* SnapshotCoordinator =
+		GameInstance ? GameInstance->GetSubsystem<UWeaponSnapshotCoordinator>() : nullptr;
+	if (!MigrationSubsystem || !SnapshotCoordinator)
+	{
+		OutError = TEXT("Migration role or Snapshot subsystem is unavailable");
+		return false;
+	}
+
+	struct FConnectedMigrationMember
+	{
+		FWeaponMigrationRoleMember Member;
+		AWeaponPlayerController* Controller = nullptr;
+	};
+
+	FConnectedMigrationMember ActiveHost;
+	TArray<FConnectedMigrationMember> BackupCandidates;
+	for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+	{
+		AWeaponPlayerController* Controller = Cast<AWeaponPlayerController>(It->Get());
+		AWeaponPlayerState* PlayerState = Controller
+			? Controller->GetPlayerState<AWeaponPlayerState>()
+			: nullptr;
+		const FUniqueNetIdRepl PlayerId = PlayerState
+			? PlayerState->GetUniqueId()
+			: FUniqueNetIdRepl();
+		const FWeaponRecoveryRosterEntry* RosterEntry = RecoveryRoster.Find(PlayerId);
+		if (!Controller || !PlayerState || !PlayerId.IsValid() || !RosterEntry ||
+			RosterEntry->Status != EWeaponRecoveryPlayerStatus::Ready ||
+			RosterEntry->OriginalSlot != PlayerState->GetPlayerSlotIndex())
+		{
+			continue;
+		}
+
+		FConnectedMigrationMember ConnectedMember;
+		ConnectedMember.Member.PlayerId = PlayerId;
+		ConnectedMember.Member.OriginalSlot = RosterEntry->OriginalSlot;
+		ConnectedMember.Controller = Controller;
+		if (Controller->IsLocalController())
+		{
+			if (ActiveHost.Controller)
+			{
+				OutError = TEXT("Server World contains more than one local Active Host controller");
+				return false;
+			}
+			ActiveHost = MoveTemp(ConnectedMember);
+		}
+		else
+		{
+			BackupCandidates.Add(MoveTemp(ConnectedMember));
+		}
+	}
+
+	if (!ActiveHost.Controller)
+	{
+		OutError = TEXT("Listen server Active Host is not Ready in the recovery roster");
+		return false;
+	}
+	BackupCandidates.Sort([](
+		const FConnectedMigrationMember& A,
+		const FConnectedMigrationMember& B)
+	{
+		return A.Member.OriginalSlot < B.Member.OriginalSlot;
+	});
+
+	const FGuid MatchId = SnapshotCoordinator->GetOrCreateActiveMatchId();
+	uint64 AuthorityEpoch = 0;
+	if (!MigrationSubsystem->PrepareAuthorityTerm(
+		MatchId,
+		ActiveHost.Member,
+		RosterRevision,
+		AuthorityEpoch,
+		OutError))
+	{
+		return false;
+	}
+
+	FWeaponMigrationRoleAssignment Assignment;
+	Assignment.MatchId = MatchId;
+	Assignment.AuthorityEpoch = AuthorityEpoch;
+	Assignment.RosterRevision = RosterRevision;
+	Assignment.ActiveHost = ActiveHost.Member;
+	if (BackupCandidates.IsValidIndex(0))
+	{
+		Assignment.BackupA = BackupCandidates[0].Member;
+	}
+	if (BackupCandidates.IsValidIndex(1))
+	{
+		Assignment.BackupB = BackupCandidates[1].Member;
+	}
+
+	const FWeaponMigrationRoleAssignment* PreviousAssignment =
+		MigrationSubsystem->GetCurrentRoleAssignment();
+	const bool bAssignmentChanged = MigrationSubsystem->IsCurrentRoleAssignmentProvisional() ||
+		!PreviousAssignment ||
+		!Assignment.IdentifiesSameAssignment(*PreviousAssignment);
+	if (!MigrationSubsystem->SetAuthorityRoleAssignment(Assignment, OutError))
+	{
+		return false;
+	}
+
+	if (bAssignmentChanged)
+	{
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
+		{
+			if (AWeaponPlayerController* Controller = Cast<AWeaponPlayerController>(It->Get()))
+			{
+				Controller->ClientUpdateMigrationRoleAssignment(Assignment);
+			}
+		}
+
+		const int32 BackupCount = Assignment.BackupA.IsAssigned() + Assignment.BackupB.IsAssigned();
+		if (BackupCount < 2)
+		{
+			UE_LOG(
+				LogLetsDeepRock,
+				Warning,
+				TEXT("Host migration redundancy reduced to %d backup(s) for Match %s Epoch %llu"),
+				BackupCount,
+				*Assignment.MatchId.ToString(),
+				Assignment.AuthorityEpoch);
+		}
+	}
+
+	if (!Assignment.BackupA.IsAssigned() || !Assignment.BackupB.IsAssigned())
+	{
+		MigrationSubsystem->StopHostSnapshotTransport();
+		return true;
+	}
+
+	AWeaponPlayerController* BackupAController = BackupCandidates[0].Controller;
+	AWeaponPlayerController* BackupBController = BackupCandidates[1].Controller;
+	if (bAssignmentChanged || !MigrationSubsystem->IsHostSnapshotTransportConfigured(
+		BackupAController,
+		BackupBController,
+		AuthorityEpoch))
+	{
+		return MigrationSubsystem->StartHostSnapshotTransport(
+			BackupAController,
+			BackupBController,
+			AuthorityEpoch,
+			OutError);
+	}
+	return true;
+}
+
+bool AWeaponGameMode::EnterGameplayRecoveryBarrier()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState)
+	{
+		return false;
+	}
+	if (WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return true;
+	}
+
+	const EWeaponMatchPhase FrozenPhase = WeaponGameState->GetMatchPhase();
+	FrozenMatchPhaseRemaining = WeaponGameState->GetRemainingPhaseTime();
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	for (const auto& TimerPair : RespawnTimers)
+	{
+		GetWorldTimerManager().PauseTimer(TimerPair.Value);
+	}
+
+	WeaponGameState->SetGameplayRecoveryBlockedAuthority(true);
+	WeaponGameState->SetMatchPhase(FrozenPhase);
+	ApplyGameplayRecoveryBarrierToWorld(true);
+	return true;
+}
+
+bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || !WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return false;
+	}
+
+	const EWeaponMatchPhase FrozenPhase = WeaponGameState->GetMatchPhase();
+	const float RemainingPhaseTime = FrozenMatchPhaseRemaining;
+	ApplyGameplayRecoveryBarrierToWorld(false);
+	for (const auto& TimerPair : RespawnTimers)
+	{
+		GetWorldTimerManager().UnPauseTimer(TimerPair.Value);
+	}
+	ArmMatchPhaseTimer(FrozenPhase, RemainingPhaseTime);
+	FrozenMatchPhaseRemaining = 0.0f;
+	WeaponGameState->SetGameplayRecoveryBlockedAuthority(false);
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Error, TEXT("Failed to publish migration roles after recovery: %s"), *MigrationError);
+		EnterGameplayRecoveryBarrier();
+		return false;
+	}
+
+	if (RemainingPhaseTime <= 0.0f)
+	{
+		if (FrozenPhase == EWeaponMatchPhase::Starting)
+		{
+			BeginWeaponMatch();
+		}
+		else if (FrozenPhase == EWeaponMatchPhase::Ending)
+		{
+			ReturnToWaitingForPlayers();
+		}
+	}
+	return true;
+}
+
+void AWeaponGameMode::ApplyRecoveredMatchPhase(
+	const EWeaponMatchPhase Phase,
+	const float RemainingPhaseTime)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	check(HasAuthority() && WeaponGameState && WeaponGameState->IsGameplayRecoveryBlocked());
+
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	FrozenMatchPhaseRemaining = FMath::Max(0.0f, RemainingPhaseTime);
+	WeaponGameState->SetMatchPhase(Phase);
+}
+
+void AWeaponGameMode::ApplyGameplayRecoveryBarrierToWorld(const bool bBlocked)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (TActorIterator<AWeaponProjectile> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<AWeaponCharacter> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<ANPCBase> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<ADrone> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+	for (TActorIterator<AEnemyAIController> It(World); It; ++It)
+	{
+		It->SetGameplayRecoveryBlocked(bBlocked);
+	}
+}
+
+void AWeaponGameMode::ArmMatchPhaseTimer(
+	const EWeaponMatchPhase Phase,
+	const float RemainingPhaseTime)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState)
+	{
+		return;
+	}
+
+	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	WeaponGameState->SetMatchPhase(Phase, RemainingPhaseTime);
+	if (RemainingPhaseTime <= 0.0f)
+	{
+		return;
+	}
+
+	if (Phase == EWeaponMatchPhase::Starting)
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::BeginWeaponMatch,
+			RemainingPhaseTime,
+			false);
+	}
+	else if (Phase == EWeaponMatchPhase::Ending)
+	{
+		GetWorldTimerManager().SetTimer(
+			MatchPhaseTimer,
+			this,
+			&AWeaponGameMode::ReturnToWaitingForPlayers,
+			RemainingPhaseTime,
+			false);
+	}
+}
+
+bool AWeaponGameMode::SetRecoveryRoster(
+	const TArray<FWeaponRecoveryRosterSnapshot>& NewRoster,
+	const uint64 RestoredRevision)
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || RestoredRevision == MAX_uint64)
+	{
+		return false;
+	}
+
+	TMap<FUniqueNetIdRepl, int32> ImportedReservations;
+	TMap<FUniqueNetIdRepl, FWeaponRecoveryRosterEntry> ImportedRoster;
+	TMap<FUniqueNetIdRepl, float> PendingDurations;
+	TSet<int32> ReservedSlots;
+	TSet<FUniqueNetIdRepl> ConnectedPlayerIds;
+	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		if (!PlayerState || !PlayerState->GetUniqueId().IsValid() ||
+			ConnectedPlayerIds.Contains(PlayerState->GetUniqueId()))
+		{
+			return false;
+		}
+		ConnectedPlayerIds.Add(PlayerState->GetUniqueId());
+	}
+
+	for (const FWeaponRecoveryRosterSnapshot& SavedEntry : NewRoster)
+	{
+		const bool bKnownStatus = SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Ready ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed;
+		if (!SavedEntry.PlayerId.IsValid() || ImportedRoster.Contains(SavedEntry.PlayerId) ||
+			SavedEntry.OriginalSlot < 0 || SavedEntry.OriginalSlot >= WeaponGameState->GetMaxPlayers() ||
+			!bKnownStatus || !FMath::IsFinite(SavedEntry.RemainingGraceSeconds) ||
+			SavedEntry.RemainingGraceSeconds < 0.0f ||
+			(SavedEntry.Status != EWeaponRecoveryPlayerStatus::Pending &&
+			 SavedEntry.RemainingGraceSeconds != 0.0f))
+		{
+			return false;
+		}
+
+		FWeaponRecoveryRosterEntry& Entry = ImportedRoster.Add(SavedEntry.PlayerId);
+		Entry.PlayerId = SavedEntry.PlayerId;
+		Entry.OriginalSlot = SavedEntry.OriginalSlot;
+
+		if (ConnectedPlayerIds.Contains(SavedEntry.PlayerId))
+		{
+			if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed)
+			{
+				return false;
+			}
+			Entry.Status = EWeaponRecoveryPlayerStatus::Ready;
+		}
+		else if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Departed ||
+			(SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending &&
+			 SavedEntry.RemainingGraceSeconds <= 0.0f))
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Departed;
+		}
+		else if (SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending ||
+			SavedEntry.Status == EWeaponRecoveryPlayerStatus::Ready)
+		{
+			Entry.Status = EWeaponRecoveryPlayerStatus::Pending;
+			PendingDurations.Add(
+				SavedEntry.PlayerId,
+				SavedEntry.Status == EWeaponRecoveryPlayerStatus::Pending
+					? SavedEntry.RemainingGraceSeconds
+					: PendingGracePeriodSeconds);
+		}
+		else
+		{
+			return false;
+		}
+
+		if (Entry.Status != EWeaponRecoveryPlayerStatus::Departed)
+		{
+			if (ReservedSlots.Contains(Entry.OriginalSlot))
+			{
+				return false;
+			}
+			ReservedSlots.Add(Entry.OriginalSlot);
+			ImportedReservations.Add(Entry.PlayerId, Entry.OriginalSlot);
+		}
+	}
+
+	for (const FUniqueNetIdRepl& ConnectedPlayerId : ConnectedPlayerIds)
+	{
+		if (!ImportedRoster.Contains(ConnectedPlayerId))
+		{
+			return false;
+		}
+	}
+
+	for (auto& TimerPair : PendingGraceTimers)
+	{
+		GetWorldTimerManager().ClearTimer(TimerPair.Value);
+	}
+	PendingGraceTimers.Reset();
+
+	PlayerSlotReservations = MoveTemp(ImportedReservations);
+	RecoveryRoster = MoveTemp(ImportedRoster);
+	RosterRevision = FMath::Max(RosterRevision, RestoredRevision) + 1;
+	for (const auto& [PlayerId, RemainingGraceSeconds] : PendingDurations)
+	{
+		SchedulePendingGrace(PlayerId, RemainingGraceSeconds);
+	}
+	return true;
+}
+
+void AWeaponGameMode::ClearPendingGraceTimer(const FUniqueNetIdRepl& PlayerId)
+{
+	if (FTimerHandle* TimerHandle = PendingGraceTimers.Find(PlayerId))
+	{
+		GetWorldTimerManager().ClearTimer(*TimerHandle);
+		PendingGraceTimers.Remove(PlayerId);
+	}
+}
+
+void AWeaponGameMode::MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, const int32 OriginalSlot)
+{
+	ClearPendingGraceTimer(PlayerId);
+
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	const bool bRosterChanged = !Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Ready ||
+		Entry->OriginalSlot != OriginalSlot;
+	if (!Entry)
+	{
+		Entry = &RecoveryRoster.Add(PlayerId);
+	}
+
+	Entry->PlayerId = PlayerId;
+	Entry->OriginalSlot = OriginalSlot;
+	Entry->Status = EWeaponRecoveryPlayerStatus::Ready;
+	Entry->PendingDeadlineServerTime = 0.0;
+	PlayerSlotReservations.Add(PlayerId, OriginalSlot);
+	if (bRosterChanged)
+	{
+		++RosterRevision;
+	}
+}
+
+void AWeaponGameMode::MarkPlayerPending(const FUniqueNetIdRepl& PlayerId)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	const int32* OriginalSlot = PlayerSlotReservations.Find(PlayerId);
+	if (!Entry || !OriginalSlot)
+	{
+		return;
+	}
+
+	if (Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		Entry->Status = EWeaponRecoveryPlayerStatus::Pending;
+		++RosterRevision;
+	}
+	SchedulePendingGrace(PlayerId, PendingGracePeriodSeconds);
+}
+
+void AWeaponGameMode::SchedulePendingGrace(
+	const FUniqueNetIdRepl& PlayerId,
+	const float RemainingGraceSeconds)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		return;
+	}
+
+	Entry->PendingDeadlineServerTime = GetWorld()->GetTimeSeconds() + RemainingGraceSeconds;
+	ClearPendingGraceTimer(PlayerId);
+	if (RemainingGraceSeconds <= 0.0f)
+	{
+		HandlePendingGraceExpired(PlayerId);
+		return;
+	}
+
+	FTimerDelegate ExpirationDelegate;
+	ExpirationDelegate.BindUObject(this, &AWeaponGameMode::HandlePendingGraceExpired, PlayerId);
+	FTimerHandle& TimerHandle = PendingGraceTimers.Add(PlayerId);
+	GetWorldTimerManager().SetTimer(
+		TimerHandle,
+		ExpirationDelegate,
+		RemainingGraceSeconds,
+		false);
+}
+
+bool AWeaponGameMode::MarkPlayerDeparted(const FUniqueNetIdRepl& PlayerId)
+{
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status == EWeaponRecoveryPlayerStatus::Departed)
+	{
+		return false;
+	}
+
+	ClearPendingGraceTimer(PlayerId);
+	Entry->Status = EWeaponRecoveryPlayerStatus::Departed;
+	Entry->PendingDeadlineServerTime = 0.0;
+	PlayerSlotReservations.Remove(PlayerId);
+	++RosterRevision;
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after departure: %s"), *MigrationError);
+	}
+	return true;
+}
+
+bool AWeaponGameMode::PreserveLeavingPlayerAttribution(AWeaponPlayerController* LeavingController)
+{
+	if (!HasAuthority() || !LeavingController)
+	{
+		return false;
+	}
+
+	AWeaponCharacter* Pawn = Cast<AWeaponCharacter>(LeavingController->GetPawn());
+	AWeaponPlayerState* PlayerState = LeavingController->GetPlayerState<AWeaponPlayerState>();
+	const FUniqueNetIdRepl PlayerId = PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
+	const TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId);
+	if (!Pawn || !PlayerState || !PlayerId.IsValid() || !ActiveProjectiles)
+	{
+		return false;
+	}
+
+	FWeaponAttributionTombstone Tombstone;
+	for (const TWeakObjectPtr<AWeaponProjectile>& WeakProjectile : *ActiveProjectiles)
+	{
+		AWeaponProjectile* Projectile = WeakProjectile.Get();
+		if (Projectile && Projectile->GetInitializationState().InstigatorActor == Pawn)
+		{
+			Tombstone.Projectiles.Add(Projectile);
+		}
+	}
+	if (Tombstone.Projectiles.IsEmpty())
+	{
+		return false;
+	}
+
+	if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+	{
+		WeaponGameState->RemovePlayerState(PlayerState);
+	}
+	LeavingController->UnPossess();
+	Pawn->InitializeAttributionTombstone(PlayerState);
+
+	Tombstone.Pawn = Pawn;
+	Tombstone.PlayerState = PlayerState;
+	AttributionTombstones.FindOrAdd(PlayerId).Add(MoveTemp(Tombstone));
+	return true;
+}
+
+bool AWeaponGameMode::HandleAttributionPlayerStateDeactivated(AWeaponPlayerState* PlayerState)
+{
+	if (!HasAuthority() || !PlayerState)
+	{
+		return false;
+	}
+
+	const FUniqueNetIdRepl PlayerId = PlayerState->GetUniqueId();
+	TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId);
+	if (!Tombstones)
+	{
+		return false;
+	}
+
+	bool bFound = false;
+	for (FWeaponAttributionTombstone& Tombstone : *Tombstones)
+	{
+		if (Tombstone.PlayerState == PlayerState)
+		{
+			Tombstone.bPlayerStateDeactivated = true;
+			bFound = true;
+			break;
+		}
+	}
+	if (bFound)
+	{
+		CleanupCompletedAttributionTombstones(PlayerId);
+	}
+	return bFound;
+}
+
+void AWeaponGameMode::RegisterAttributionProjectile(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponProjectile* Projectile)
+{
+	if (HasAuthority() && PlayerId.IsValid() && Projectile)
+	{
+		ActiveAttributionProjectiles.FindOrAdd(PlayerId).Add(Projectile);
+	}
+}
+
+void AWeaponGameMode::UnregisterAttributionProjectile(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponProjectile* Projectile)
+{
+	if (!HasAuthority() || !PlayerId.IsValid() || !Projectile)
+	{
+		return;
+	}
+
+	if (TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId))
+	{
+		ActiveProjectiles->Remove(Projectile);
+		if (ActiveProjectiles->IsEmpty())
+		{
+			ActiveAttributionProjectiles.Remove(PlayerId);
+		}
+	}
+
+	if (TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId))
+	{
+		for (FWeaponAttributionTombstone& Tombstone : *Tombstones)
+		{
+			Tombstone.Projectiles.Remove(Projectile);
+		}
+	}
+	CleanupCompletedAttributionTombstones(PlayerId);
+}
+
+void AWeaponGameMode::AdoptRecoveredAttributionTombstone(
+	const FUniqueNetIdRepl& PlayerId,
+	AWeaponCharacter* Pawn,
+	AWeaponPlayerState* PlayerState)
+{
+	check(HasAuthority() && PlayerId.IsValid() && Pawn && PlayerState);
+
+	FWeaponAttributionTombstone Tombstone;
+	if (const TSet<TWeakObjectPtr<AWeaponProjectile>>* ActiveProjectiles =
+		ActiveAttributionProjectiles.Find(PlayerId))
+	{
+		for (const TWeakObjectPtr<AWeaponProjectile>& WeakProjectile : *ActiveProjectiles)
+		{
+			AWeaponProjectile* Projectile = WeakProjectile.Get();
+			if (Projectile && Projectile->GetInitializationState().InstigatorActor == Pawn)
+			{
+				Tombstone.Projectiles.Add(Projectile);
+			}
+		}
+	}
+	check(!Tombstone.Projectiles.IsEmpty());
+
+	if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+	{
+		WeaponGameState->RemovePlayerState(PlayerState);
+	}
+	Tombstone.Pawn = Pawn;
+	Tombstone.PlayerState = PlayerState;
+	Tombstone.bPlayerStateDeactivated = true;
+	AttributionTombstones.FindOrAdd(PlayerId).Add(MoveTemp(Tombstone));
+}
+
+void AWeaponGameMode::GetAttributionTombstoneActors(
+	TMap<FUniqueNetIdRepl, AWeaponCharacter*>& OutPawns,
+	TMap<FUniqueNetIdRepl, AWeaponPlayerState*>& OutPlayerStates) const
+{
+	OutPawns.Reset();
+	OutPlayerStates.Reset();
+	for (const auto& [PlayerId, Tombstones] : AttributionTombstones)
+	{
+		for (const FWeaponAttributionTombstone& Tombstone : Tombstones)
+		{
+			AWeaponCharacter* Pawn = Tombstone.Pawn.Get();
+			AWeaponPlayerState* PlayerState = Tombstone.PlayerState.Get();
+			if (Pawn && PlayerState && !Tombstone.Projectiles.IsEmpty())
+			{
+				OutPawns.Add(PlayerId, Pawn);
+				OutPlayerStates.Add(PlayerId, PlayerState);
+				break;
+			}
+		}
+	}
+}
+
+void AWeaponGameMode::CleanupCompletedAttributionTombstones(const FUniqueNetIdRepl& PlayerId)
+{
+	TArray<FWeaponAttributionTombstone>* Tombstones = AttributionTombstones.Find(PlayerId);
+	if (!Tombstones)
+	{
+		return;
+	}
+
+	for (int32 Index = Tombstones->Num() - 1; Index >= 0; --Index)
+	{
+		FWeaponAttributionTombstone& Tombstone = (*Tombstones)[Index];
+		for (auto It = Tombstone.Projectiles.CreateIterator(); It; ++It)
+		{
+			if (!It->IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+		if (!Tombstone.bPlayerStateDeactivated || !Tombstone.Projectiles.IsEmpty())
+		{
+			continue;
+		}
+
+		if (AWeaponCharacter* Pawn = Tombstone.Pawn.Get())
+		{
+			Pawn->SetPlayerState(nullptr);
+			Pawn->Destroy();
+		}
+		if (AWeaponPlayerState* PlayerState = Tombstone.PlayerState.Get())
+		{
+			PlayerState->Destroy();
+		}
+		Tombstones->RemoveAtSwap(Index);
+	}
+	if (Tombstones->IsEmpty())
+	{
+		AttributionTombstones.Remove(PlayerId);
+	}
+}
+
+void AWeaponGameMode::HandlePendingGraceExpired(FUniqueNetIdRepl PlayerId)
+{
+	PendingGraceTimers.Remove(PlayerId);
+	FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(PlayerId);
+	if (!Entry || Entry->Status != EWeaponRecoveryPlayerStatus::Pending)
+	{
+		return;
+	}
+
+	MarkPlayerDeparted(PlayerId);
+}
+
+bool AWeaponGameMode::IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || !PlayerId.IsValid())
+	{
+		return false;
+	}
+
+	for (const APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		if (PlayerState && PlayerState->GetUniqueId() == PlayerId)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+int32 AWeaponGameMode::FindSmallestUnreservedPlayerSlot() const
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState)
+	{
+		return INDEX_NONE;
+	}
+
+	for (int32 SlotIndex = 0; SlotIndex < WeaponGameState->GetMaxPlayers(); ++SlotIndex)
+	{
+		if (!PlayerSlotReservations.FindKey(SlotIndex))
+		{
+			return SlotIndex;
+		}
+	}
+	return INDEX_NONE;
+}
+
+int32 AWeaponGameMode::FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId)
+{
+	if (!PlayerId.IsValid())
+	{
+		return INDEX_NONE;
+	}
+	if (const int32* ReservedSlot = PlayerSlotReservations.Find(PlayerId))
+	{
+		return *ReservedSlot;
+	}
+
+	const int32 AvailableSlot = FindSmallestUnreservedPlayerSlot();
+	if (AvailableSlot != INDEX_NONE)
+	{
+		PlayerSlotReservations.Add(PlayerId, AvailableSlot);
+	}
+	return AvailableSlot;
 }
 
 void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId,
@@ -37,10 +859,31 @@ void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, c
 		ErrorMessage = TEXT("Match state is not initialized.");
 		return;
 	}
+	if (!UniqueId.IsValid())
+	{
+		ErrorMessage = TEXT("A stable online player identity is required.");
+		return;
+	}
+	if (IsPlayerIdentityConnected(UniqueId))
+	{
+		ErrorMessage = TEXT("This player identity is already connected.");
+		return;
+	}
+	if (const FWeaponRecoveryRosterEntry* Entry = RecoveryRoster.Find(UniqueId);
+		Entry && Entry->Status == EWeaponRecoveryPlayerStatus::Departed)
+	{
+		ErrorMessage = TEXT("This player has departed from the recoverable match roster.");
+		return;
+	}
 	
 	if (WeaponGameState->GetConnectedPlayerCount() >= WeaponGameState->GetMaxPlayers())
 	{
 		ErrorMessage = TEXT("Room is full.");
+		return;
+	}
+	if (!PlayerSlotReservations.Contains(UniqueId) && FindSmallestUnreservedPlayerSlot() == INDEX_NONE)
+	{
+		ErrorMessage = TEXT("All player slots are reserved.");
 	}
 }
 
@@ -62,23 +905,42 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 		return;
 	}
 	
-	const int32 AvailableSlot = WeaponGameState->FindSmallestAvailablePlayerSlot();
+	const FUniqueNetIdRepl& PlayerId = WeaponPlayerState->GetUniqueId();
+	const int32 AvailableSlot = FindOrReservePlayerSlot(PlayerId);
 	
 	// 理论上 PreLogin 已阻止此情况；保留保护，避免异常连接污染状态。
 	if (AvailableSlot == INDEX_NONE)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("No available player slot for %s."), *GetNameSafe(NewPlayer));
+		UE_LOG(LogTemp, Warning, TEXT("No available player slot for %s (%s)."),
+			*GetNameSafe(NewPlayer), *PlayerId.ToDebugString());
 		return;
 	}
 	
 	WeaponPlayerState->SetPlayerSlotIndex(AvailableSlot);
 	WeaponPlayerState->SetPlayerReady(false);
+	MarkPlayerReady(PlayerId, AvailableSlot);
 	
 	RefreshMatchPhase();
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after login: %s"), *MigrationError);
+	}
 }
 
 void AWeaponGameMode::Logout(AController* ExitingController)
 {
+	FUniqueNetIdRepl ExitingPlayerId;
+	APlayerState* ExitingPlayerState = nullptr;
+	if (ExitingController)
+	{
+		if (APlayerState* PlayerState = ExitingController->GetPlayerState<APlayerState>())
+		{
+			ExitingPlayerState = PlayerState;
+			ExitingPlayerId = PlayerState->GetUniqueId();
+		}
+	}
+
 	// 首先清理 Timer，防止Super::Logout 后，Controller/PlayerState 已被移除或销毁，不适合作为 Timer Map 的查找键
 	if (ExitingController)
 	{
@@ -89,15 +951,32 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 			RespawnTimers.Remove(ExitingController);
 		}
 	}
+	if (ExitingPlayerId.IsValid())
+	{
+		MarkPlayerPending(ExitingPlayerId);
+	}
+	if (ExitingPlayerState)
+	{
+		if (AWeaponGameState* WeaponGameState = GetWorld()->GetGameState<AWeaponGameState>())
+		{
+			WeaponGameState->RemovePlayerState(ExitingPlayerState);
+		}
+	}
 	
 	Super::Logout(ExitingController);
 	
 	RefreshMatchPhase();
+	FString MigrationError;
+	if (!RefreshHostMigrationRoles(MigrationError))
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after logout: %s"), *MigrationError);
+	}
 }
 
 void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 {
-	if (!HasAuthority() || !DeadPlayerController)
+	if (!HasAuthority() || !DeadPlayerController ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -131,7 +1010,8 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 bool AWeaponGameMode::CanStartWeaponMatch() const
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart)
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart)
 	{
 		return false;
 	}
@@ -179,7 +1059,8 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 void AWeaponGameMode::BeginWeaponMatch()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting)
 	{
 		return;
 	}
@@ -196,7 +1077,8 @@ void AWeaponGameMode::BeginWeaponMatch()
 void AWeaponGameMode::EndWeaponMatch()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!HasAuthority() || !WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
 	{
 		return;
 	}
@@ -222,7 +1104,8 @@ void AWeaponGameMode::EndWeaponMatch()
 void AWeaponGameMode::ReturnToWaitingForPlayers()
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Ending)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Ending)
 	{
 		return;
 	}
@@ -272,7 +1155,7 @@ void AWeaponGameMode::RespawnPlayerImmediately(AController* PlayerController)
 
 void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 {
-	if (!PlayerController)
+	if (!PlayerController || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -319,7 +1202,7 @@ void AWeaponGameMode::RefreshMatchPhase()
 	AWeaponGameState* WeaponGameState =
 		GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 
-	if (!WeaponGameState)
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked())
 	{
 		return;
 	}

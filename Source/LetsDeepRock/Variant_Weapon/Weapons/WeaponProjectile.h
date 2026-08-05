@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "GameplayTagContainer.h"
 #include "WeaponProjectile.generated.h"
 
@@ -12,25 +13,29 @@ class UStaticMeshComponent;
 class UProjectileMovementComponent;
 class UGameplayEffect;
 
-/** 投射物生成时由服务器确定、随后整体复制的初始化状态。 */
-USTRUCT(BlueprintType)
+/** 投射物生成时由服务器确定、随后整体复制的内部 C++ 协议状态。 */
+USTRUCT()
 struct FWeaponProjectileInitializationState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	TSubclassOf<UGameplayEffect> DamageEffectClass;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float DamageValue = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	TObjectPtr<AActor> InstigatorActor = nullptr;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	/** Stable source identity retained after the instigator Pawn is unpossessed. */
+	UPROPERTY()
+	FUniqueNetIdRepl InstigatorPlayerId;
+
+	UPROPERTY()
 	FGameplayTagContainer DamageTags;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float ProjectileSpeed = 3000.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
@@ -57,7 +62,7 @@ struct FWeaponProjectileInitializationState
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	bool bPenetratesTerrain = false;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	bool bInitialized = false;
 };
 
@@ -84,13 +89,15 @@ public:
 	void InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed,
-		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f);
+		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f,
+		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
 	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
 	FVector GetProjectileVelocity() const;
 
 	/** FinishSpawning 后恢复动态运动状态；普通投射物同时恢复剩余寿命。 */
 	void RestoreSnapshotMotion(const FVector& Velocity, float RemainingLifeSeconds);
+	virtual void SetGameplayRecoveryBlocked(bool bBlocked);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
@@ -103,6 +110,7 @@ public:
 protected:
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** 碰撞体 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components")
@@ -117,7 +125,7 @@ protected:
 	TObjectPtr<UProjectileMovementComponent> ProjectileMovement;
 
 	/** 初始化参数作为单个复制快照发送，避免客户端观察到字段组合不一致。 */
-	UPROPERTY(ReplicatedUsing = OnRep_InitializationState, BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY(ReplicatedUsing = OnRep_InitializationState)
 	FWeaponProjectileInitializationState InitializationState;
 
 	int32 MaxHitTargets = 1;
@@ -127,6 +135,12 @@ protected:
 	float AreaRadius = 0.0f;
 	float AreaFalloff = 0.0f;
 	bool bHasExploded = false;
+
+	bool bGameplayRecoveryBlocked = false;
+	bool bMovementWasActiveBeforeRecovery = false;
+	bool bCollisionWasEnabledBeforeRecovery = false;
+	FVector RecoveryBlockedVelocity = FVector::ZeroVector;
+	float RecoveryBlockedLifeSeconds = 0.0f;
 
 	UFUNCTION()
 	void OnRep_InitializationState();

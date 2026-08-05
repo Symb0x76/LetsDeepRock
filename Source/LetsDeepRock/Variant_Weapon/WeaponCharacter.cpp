@@ -12,6 +12,7 @@
 #include "AbilitySystemComponent.h"
 #include "WeaponPlayerState.h"
 #include "WeaponGameMode.h"
+#include "WeaponGameState.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/AttributeInitHelper.h"
 #include "Weapons/WeaponEquipmentComponent.h"
@@ -88,6 +89,7 @@ void AWeaponCharacter::PossessedBy(AController* NewController)
 	// 服务端：Pawn 被 Possess、PlayerState 已就绪，初始化 ASC ActorInfo
 	InitAbilitySystem();
 
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
 }
 
 void AWeaponCharacter::OnRep_PlayerState()
@@ -244,9 +246,105 @@ void AWeaponCharacter::InitProfessionWeapons(const FProfessionConfigRow* Profess
 	}
 }
 
+void AWeaponCharacter::InitializeAttributionTombstone(AWeaponPlayerState* SourcePlayerState)
+{
+	check(HasAuthority() && SourcePlayerState);
+
+	SetPlayerState(SourcePlayerState);
+	InitAbilitySystem();
+	if (AbilitySystemComponent)
+	{
+		AbilitySystemComponent->CancelAllAbilities();
+		AbilitySystemComponent->SetUserAbilityActivationInhibited(true);
+	}
+	if (UWeaponHealthSet* HealthSet = SourcePlayerState->GetHealthSet())
+	{
+		HealthSet->OnHealthDepleted.RemoveAll(this);
+	}
+	if (GrenadeAbilityHandle.IsValid() && AbilitySystemComponent)
+	{
+		AbilitySystemComponent->ClearAbility(GrenadeAbilityHandle);
+	}
+	GrenadeAbilityHandle = FGameplayAbilitySpecHandle();
+	if (UWeaponEquipmentComponent* Equipment = FindComponentByClass<UWeaponEquipmentComponent>())
+	{
+		Equipment->UnequipWeapon();
+	}
+
+	HideGrenadePreview();
+	SetActorHiddenInGame(true);
+	SetCanBeDamaged(false);
+	SetActorEnableCollision(false);
+	SetActorTickEnabled(false);
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		Movement->DisableMovement();
+		Movement->StopMovementImmediately();
+		Movement->SetComponentTickEnabled(false);
+	}
+	if (VisionSource)
+	{
+		VisionSource->bActive = false;
+	}
+}
+
+void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (!HasAuthority() || bGameplayRecoveryBlocked == bBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = bBlocked;
+
+	const FGameplayTagContainer WeaponAbilityTags(TAG_Ability_Weapon);
+	if (AbilitySystemComponent)
+	{
+		if (bBlocked)
+		{
+			AbilitySystemComponent->CancelAbilities(&WeaponAbilityTags);
+			AbilitySystemComponent->BlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+		else
+		{
+			AbilitySystemComponent->UnBlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+	}
+
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+	{
+		if (bBlocked)
+		{
+			SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
+			SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
+			bSavedMovementModeForRecovery = true;
+			Movement->DisableMovement();
+			Movement->StopMovementImmediately();
+		}
+		else if (bSavedMovementModeForRecovery && !IsDead())
+		{
+			Movement->SetMovementMode(
+				static_cast<EMovementMode>(SavedRecoveryMovementMode),
+				SavedRecoveryCustomMovementMode);
+		}
+	}
+	if (bBlocked)
+	{
+		HideGrenadePreview();
+	}
+	else
+	{
+		bSavedMovementModeForRecovery = false;
+	}
+}
+
 void AWeaponCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		HideGrenadePreview();
+		return;
+	}
 
 	// TeamId 可能在 PlayerState 到达后继续复制变化，保持本地视野来源同步。
 	if (const AWeaponPlayerState* PS = GetPlayerState<AWeaponPlayerState>())
@@ -271,8 +369,12 @@ void AWeaponCharacter::Tick(float DeltaTime)
 
 void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 死亡时不旋转
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -355,6 +457,10 @@ void AWeaponCharacter::SetAimDirectionAuthoritative(const FVector& NewAimDirecti
 
 void AWeaponCharacter::ServerSetAimDirection_Implementation(FVector_NetQuantizeNormal NewAimDirection)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 服务器只接受有限、非零的水平向量，避免客户端提交非法瞄准方向。
 	const FVector Candidate = FVector(NewAimDirection);
 	if (!FMath::IsFinite(Candidate.X) || !FMath::IsFinite(Candidate.Y) ||
@@ -384,7 +490,7 @@ void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 
 void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)
 {
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -395,7 +501,8 @@ void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocat
 void AWeaponCharacter::ServerRequestBuildTile_Implementation(
 	FVector_NetQuantize WorldLocation, EGridTileType BuildType)
 {
-	if (IsDead() || !FMath::IsFinite(WorldLocation.X) ||
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!FMath::IsFinite(WorldLocation.X) ||
 		!FMath::IsFinite(WorldLocation.Y) || !FMath::IsFinite(WorldLocation.Z))
 	{
 		return;
@@ -540,7 +647,7 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 void AWeaponCharacter::Move(const FInputActionValue& Value)
 {
 	// 死亡时禁止移动
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -567,7 +674,7 @@ void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 	#if !UE_BUILD_SHIPPING
 	LogFireTraceState(TEXT("Enhanced Started"));
 	#endif
-	if (IsDead()) return;
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this)) return;
 	ActiveFireInputSlot = CurrentEquipmentSlot;
 
 	if (ActiveFireInputSlot == 2)
@@ -602,7 +709,7 @@ void AWeaponCharacter::FireTriggered(const FInputActionValue& Value)
 		LogFireTraceState(TEXT("Enhanced first Triggered"));
 	}
 	#endif
-	if (IsDead()) return;
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this)) return;
 
 	if (ActiveFireInputSlot <= 1 && IsCurrentWeaponHoldTrigger())
 	{
@@ -620,7 +727,8 @@ void AWeaponCharacter::FireCompleted(const FInputActionValue& Value)
 	#if !UE_BUILD_SHIPPING
 	LogFireTraceState(TEXT("Enhanced Completed"));
 	#endif
-	if (!IsDead() && ActiveFireInputSlot <= 1 && bIsChargingFire)
+	const bool bCanCompleteFire = !IsDead() && !AWeaponGameState::IsGameplayRecoveryBlockedFor(this);
+	if (bCanCompleteFire && ActiveFireInputSlot <= 1 && bIsChargingFire)
 	{
 		UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
 		const bool bSameSelection = EquipComp
@@ -635,7 +743,7 @@ void AWeaponCharacter::FireCompleted(const FInputActionValue& Value)
 			FireWeapon();
 		}
 	}
-	else if (!IsDead() && ActiveFireInputSlot == 2)
+	else if (bCanCompleteFire && ActiveFireInputSlot == 2)
 	{
 		ThrowGrenadeCompleted(Value);
 	}
@@ -744,7 +852,7 @@ float AWeaponCharacter::GetChargeFireProgress() const
 
 void AWeaponCharacter::CycleFireMode()
 {
-	if (IsDead() || CurrentEquipmentSlot > 1)
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) || CurrentEquipmentSlot > 1)
 	{
 		return;
 	}
@@ -761,7 +869,7 @@ void AWeaponCharacter::CycleFireMode()
 
 void AWeaponCharacter::ServerCycleFireMode_Implementation()
 {
-	if (!IsDead() && CurrentEquipmentSlot <= 1)
+	if (!IsDead() && !AWeaponGameState::IsGameplayRecoveryBlockedFor(this) && CurrentEquipmentSlot <= 1)
 	{
 		if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
 		{
@@ -772,6 +880,10 @@ void AWeaponCharacter::ServerCycleFireMode_Implementation()
 
 void AWeaponCharacter::FireWeapon()
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 通过 ASC 尝试激活射击 Ability（由 WeaponEquipmentComponent 授予）
 	if (!AbilitySystemComponent)
 	{
@@ -833,7 +945,7 @@ void AWeaponCharacter::FireWeapon()
 void AWeaponCharacter::Melee(const FInputActionValue& Value)
 {
 	// 死亡时禁止近战
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -853,7 +965,7 @@ void AWeaponCharacter::Melee(const FInputActionValue& Value)
 
 void AWeaponCharacter::ReloadWeapon()
 {
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -873,7 +985,7 @@ void AWeaponCharacter::ReloadWeapon()
 
 void AWeaponCharacter::ServerReloadWeapon_Implementation()
 {
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -891,7 +1003,7 @@ void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 {
 	CancelChargeFire();
 	// 死亡时禁止切枪
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -962,7 +1074,7 @@ void AWeaponCharacter::SelectTool()
 
 void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
 {
-	if (IsDead()) return;
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this)) return;
 	if (!HasAuthority())
 	{
 		ServerSelectEquipmentSlot(SlotIndex);
@@ -1015,13 +1127,32 @@ bool AWeaponCharacter::RestoreEquipmentSlot(uint8 SlotIndex)
 	{
 		return false;
 	}
-	SelectEquipmentSlot(SlotIndex);
+	UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	if (!EquipComp || (SlotIndex == 2 && !bHasSkillItem) ||
+		(SlotIndex == 3 && !bHasProfessionTool))
+	{
+		return false;
+	}
+	if (SlotIndex <= 1)
+	{
+		if (!EquipComp->RestoreWeaponSelection(SlotIndex))
+		{
+			return false;
+		}
+	}
+	else
+	{
+		EquipComp->SelectNonWeaponSlot();
+	}
+	CurrentEquipmentSlot = SlotIndex;
+	ForceNetUpdate();
 	return CurrentEquipmentSlot == SlotIndex;
 }
 
 void AWeaponCharacter::DeployProfessionTool()
 {
-	if (IsDead() || !bHasProfessionTool || !ProfessionToolDroneClass || IsValid(ActiveDrone)) return;
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!bHasProfessionTool || !ProfessionToolDroneClass || IsValid(ActiveDrone)) return;
 
 	if (!HasAuthority())
 	{
@@ -1050,7 +1181,7 @@ void AWeaponCharacter::ServerDeployProfessionTool_Implementation()
 void AWeaponCharacter::ThrowGrenadeStarted(const FInputActionValue& Value)
 {
 	// 死亡时禁止投掷
-	if (IsDead())
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}
@@ -1099,7 +1230,8 @@ void AWeaponCharacter::ThrowGrenadeStarted(const FInputActionValue& Value)
 
 void AWeaponCharacter::ThrowGrenadeTriggered(const FInputActionValue& Value)
 {
-	if (!bEnableGrenadePreview || !bIsPreviewingGrenade)
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!bEnableGrenadePreview || !bIsPreviewingGrenade)
 	{
 		return;
 	}
@@ -1109,6 +1241,12 @@ void AWeaponCharacter::ThrowGrenadeTriggered(const FInputActionValue& Value)
 
 void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		bIsPreviewingGrenade = false;
+		HideGrenadePreview();
+		return;
+	}
 	if (!bEnableGrenadePreview)
 	{
 		if (!IsDead() && AbilitySystemComponent && GrenadeAbilityClass)
@@ -1319,7 +1457,7 @@ void AWeaponCharacter::HideGrenadePreview()
 void AWeaponCharacter::ServerThrowGrenade_Implementation(FVector_NetQuantize TargetPoint, bool bHasValidTarget)
 {
 	// 死亡时拒绝
-	if (IsDead() || !bHasSkillItem)
+	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) || !bHasSkillItem)
 	{
 		return;
 	}

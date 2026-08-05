@@ -52,6 +52,11 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	EWeaponMatchPhase,	// 事件携带的数据类型
 	NewPhase);	// 参数回调名
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FOnWeaponGameplayRecoveryBarrierChanged,
+	bool,
+	bGameplayBlocked);
+
 /**
  * 所有客户端共享的战局状态
  *
@@ -68,8 +73,6 @@ class AWeaponGameState : public AGameStateBase
 public:
 	AWeaponGameState();
 	
-	/** 返回最小未占用槽位；满员时返回 INDEX_NONE。仅服务端调用。 */
-	int32 FindSmallestAvailablePlayerSlot() const;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 
 /** 房间固定最大人数 */
@@ -88,9 +91,19 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Match")
 	int32 GetConnectedPlayerCount() const;
 
+	/** RecoveryReady 发布前为 true；UI 和本地输入读取同一个复制事实。 */
+	UFUNCTION(BlueprintPure, Category = "Recovery")
+	bool IsGameplayRecoveryBlocked() const { return bGameplayRecoveryBlocked; }
+
+	/** Low-level gameplay owners use this without depending on GameMode. */
+	static bool IsGameplayRecoveryBlockedFor(const UObject* WorldContextObject);
+
 	/** MatchPhase 在服务器或客户端变化后通知 UI */
 	UPROPERTY(BlueprintAssignable, Category = "Match")
 	FOnWeaponMatchPhaseChanged OnMatchPhaseChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Recovery")
+	FOnWeaponGameplayRecoveryBarrierChanged OnGameplayRecoveryBarrierChanged;
 	
 protected:
 	
@@ -101,9 +114,15 @@ protected:
 	/** 当前阶段及其倒计时作为一个复制快照发送。 */
 	UPROPERTY(ReplicatedUsing = OnRep_MatchState, BlueprintReadOnly, Category = "Match")
 	FWeaponReplicatedMatchState MatchState;
+
+	UPROPERTY(ReplicatedUsing = OnRep_GameplayRecoveryBlocked, BlueprintReadOnly, Category = "Recovery")
+	bool bGameplayRecoveryBlocked = false;
 	
 	UFUNCTION()
 	void OnRep_MatchState() const;
+
+	UFUNCTION()
+	void OnRep_GameplayRecoveryBlocked() const;
 
 private:
 	friend class AWeaponGameMode;
@@ -111,4 +130,5 @@ private:
 	friend class UWeaponSessionSubsystem;
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
 	bool SetMaxPlayersAuthority(int32 NewMaxPlayers);
+	bool SetGameplayRecoveryBlockedAuthority(bool bBlocked);
 };

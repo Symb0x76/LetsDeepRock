@@ -9,6 +9,7 @@
 #include "WeaponGameState.h"
 
 #include "WeaponPlayerState.h"
+#include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 
 AWeaponGameState::AWeaponGameState()
@@ -16,40 +17,33 @@ AWeaponGameState::AWeaponGameState()
 	bReplicates = true;	// 显式设置 GameStateBase 可复制
 }
 
-int32 AWeaponGameState::FindSmallestAvailablePlayerSlot() const
-{
-	TSet<int32> OccupiedSlots;
-
-	for (const APlayerState* PlayerState : PlayerArray)
-	{
-		const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
-
-		if (!WeaponPlayerState)
-		{
-			continue;
-		}
-
-		if (const int32 SlotIndex = WeaponPlayerState->GetPlayerSlotIndex(); 
-			SlotIndex >= 0 && SlotIndex < MaxPlayers)
-		{
-			OccupiedSlots.Add(SlotIndex);
-		}
-	}
-
-	for (int32 SlotIndex = 0; SlotIndex < MaxPlayers; ++SlotIndex)
-	{
-		if (!OccupiedSlots.Contains(SlotIndex))
-		{
-			return SlotIndex;
-		}
-	}
-
-	return INDEX_NONE;
-}
-
 int32 AWeaponGameState::GetConnectedPlayerCount() const
 {
 	return PlayerArray.Num();
+}
+
+bool AWeaponGameState::IsGameplayRecoveryBlockedFor(const UObject* WorldContextObject)
+{
+	const UWorld* World = WorldContextObject ? WorldContextObject->GetWorld() : nullptr;
+	const AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	return WeaponGameState && WeaponGameState->IsGameplayRecoveryBlocked();
+}
+
+bool AWeaponGameState::SetGameplayRecoveryBlockedAuthority(const bool bBlocked)
+{
+	if (!HasAuthority())
+	{
+		return false;
+	}
+	if (bGameplayRecoveryBlocked == bBlocked)
+	{
+		return true;
+	}
+
+	bGameplayRecoveryBlocked = bBlocked;
+	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
+	ForceNetUpdate();
+	return true;
 }
 
 bool AWeaponGameState::SetMaxPlayersAuthority(const int32 NewMaxPlayers)
@@ -100,9 +94,15 @@ void AWeaponGameState::OnRep_MatchState() const
 	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 }
 
+void AWeaponGameState::OnRep_GameplayRecoveryBlocked() const
+{
+	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
+}
+
 void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
 	DOREPLIFETIME(AWeaponGameState, MatchState);
+	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 }

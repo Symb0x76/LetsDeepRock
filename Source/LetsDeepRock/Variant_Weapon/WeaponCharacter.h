@@ -22,6 +22,7 @@ class UGrenadeTrajectoryPreviewComponent;
 struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
+class AWeaponPlayerState;
 class ADrone;
 struct FGrenadeBallisticsOutput;
 struct FProfessionConfigRow;
@@ -126,12 +127,15 @@ public:
 	FName GetCharacterConfigRowName() const { return ActiveCharacterAttributeRow; }
 	bool SetCharacterConfigRowNameAuthoritative(FName NewRowName);
 
+	/** Retain this Pawn only as an inert outgoing-effect attribution context. */
+	void InitializeAttributionTombstone(AWeaponPlayerState* SourcePlayerState);
+	void SetGameplayRecoveryBlocked(bool bBlocked);
+
 	/** PlayerState 职业状态复制到达后刷新派生属性表现；客户端不会建立库存。 */
 	void RefreshProfessionLoadout();
 
 	uint8 GetCurrentEquipmentSlot() const { return CurrentEquipmentSlot; }
 	bool RestoreEquipmentSlot(uint8 SlotIndex);
-
 	/** 本地玩家提交建造意图；服务器负责距离、格子状态和类型验证。 */
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	void RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType);
@@ -301,6 +305,11 @@ protected:
 
 	/** PendingGrenadeTarget 是否有效 */
 	mutable bool bHasPendingGrenadeTarget = false;
+
+	bool bGameplayRecoveryBlocked = false;
+	bool bSavedMovementModeForRecovery = false;
+	uint8 SavedRecoveryMovementMode = 0;
+	uint8 SavedRecoveryCustomMovementMode = 0;
 
 	/** 当前装备槽：由服务端权威选择并复制。 */
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentEquipmentSlot)

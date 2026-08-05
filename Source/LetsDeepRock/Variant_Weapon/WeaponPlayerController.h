@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Online/WeaponHostMigrationTypes.h"
 #include "UI/WeaponDebugTypes.h"
 #include "WeaponPlayerController.generated.h"
 
@@ -29,6 +30,28 @@ class AWeaponPlayerController : public APlayerController
 public:
 
 	AWeaponPlayerController();
+
+	/** Server -> owning Backup: one paced chunk of an immutable migration payload. */
+	UFUNCTION(Client, Reliable)
+	void ClientReceiveMigrationPayloadChunk(
+		const FWeaponMigrationPayloadEnvelope& Envelope,
+		const TArray<uint8>& ChunkBytes);
+
+	/** Server -> every client: current fixed roles and authority fencing term. */
+	UFUNCTION(Client, Reliable)
+	void ClientUpdateMigrationRoleAssignment(const FWeaponMigrationRoleAssignment& Assignment);
+
+	/** Server -> every client: A and B both ACKed this exact recovery payload. */
+	UFUNCTION(Client, Reliable)
+	void ClientConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
+
+	/** Candidate -> owning survivor: the restored World is ready for presentation acknowledgement. */
+	UFUNCTION(Client, Reliable)
+	void ClientRequestRecoveryReadyAcknowledgement(
+		FGuid MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		FGuid RecoveryAttemptId);
 
 	/** 接收服务端权威伤害结果，仅用于本地 Debug HUD。 */
 	UFUNCTION(Client, Unreliable)
@@ -63,6 +86,32 @@ protected:
 
 	/** 初始化输入绑定 */
 	virtual void SetupInputComponent() override;
+
+	/** Preserve an inert attribution source before the engine's default Pawn destruction. */
+	virtual void PawnLeavingGame() override;
+
+	/** Owning Backup -> Host: emitted only after local Pending promotion succeeds. */
+	UFUNCTION(Server, Reliable)
+	void ServerAcknowledgeMigrationPayload(const FWeaponMigrationPayloadAck& Ack);
+
+	/** Backup -> Host: confirms the announced CommonCommitted payload is pinned locally. */
+	UFUNCTION(Server, Reliable)
+	void ServerConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
+
+	UFUNCTION(Server, Reliable)
+	void ServerAcknowledgeRecoveryReady(
+		FGuid MatchId,
+		uint64 AuthorityEpoch,
+		uint64 RosterRevision,
+		FGuid RecoveryAttemptId);
+
+	void SendPendingRecoveryReadyAcknowledgement();
+
+	FGuid PendingRecoveryReadyMatchId;
+	FGuid PendingRecoveryReadyAttemptId;
+	uint64 PendingRecoveryReadyEpoch = 0;
+	uint64 PendingRecoveryReadyRosterRevision = 0;
+	bool bRecoveryReadyAcknowledgementPending = false;
 
 	/** F8 切换 Weapon.DebugUI。 */
 	void ToggleWeaponDebugUI();

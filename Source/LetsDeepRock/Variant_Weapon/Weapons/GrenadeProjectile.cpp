@@ -9,6 +9,7 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffect.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
@@ -36,7 +37,10 @@ AGrenadeProjectile::AGrenadeProjectile()
 	InitialLifeSpan = 0.0f;
 }
 
-void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* GrenadeData, AActor* InInstigator)
+void AGrenadeProjectile::InitFromGrenadeData(
+	const UWeaponGrenadeDataAsset* GrenadeData,
+	AActor* InInstigator,
+	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!GrenadeData)
 	{
@@ -51,7 +55,10 @@ void AGrenadeProjectile::InitFromGrenadeData(const UWeaponGrenadeDataAsset* Gren
 		InInstigator,
 		GrenadeData->DamageTags,
 		false,
-		GrenadeData->ThrowSpeed
+		GrenadeData->ThrowSpeed,
+		0.0f,
+		0.0f,
+		ExplicitPlayerId
 	);
 	InitFlightParams(0.0f, GrenadeData->GravityScale, 1);
 
@@ -145,6 +152,32 @@ void AGrenadeProjectile::BeginPlay()
 			false // 不循环，单次触发
 		);
 	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
+}
+
+void AGrenadeProjectile::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	Super::SetGameplayRecoveryBlocked(bBlocked);
+	if (!HasAuthority())
+	{
+		// 客户端不做本地模拟:位置/旋转完全由服务器 ReplicatedMovement 驱动,
+		// 避免 simulated 本地模拟与服务器修正之间的累积误差造成飞行抖动。
+		// 基类在恢复屏障解除时可能重新 Activate 移动组件,这里无条件保持 Deactivate。
+		if (ProjectileMovement)
+		{
+			ProjectileMovement->Deactivate();
+		}
+		return;
+	}
+	if (bBlocked)
+	{
+		GetWorldTimerManager().PauseTimer(FuseTimerHandle);
+	}
+	else
+	{
+		GetWorldTimerManager().UnPauseTimer(FuseTimerHandle);
+	}
 }
 
 void AGrenadeProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -163,6 +196,17 @@ void AGrenadeProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 
 void AGrenadeProjectile::OnFuseExpired()
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		GetWorldTimerManager().SetTimer(
+			FuseTimerHandle,
+			this,
+			&AGrenadeProjectile::OnFuseExpired,
+			0.01f,
+			false);
+		GetWorldTimerManager().PauseTimer(FuseTimerHandle);
+		return;
+	}
 	ExplodeOnce();
 }
 
@@ -170,7 +214,8 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 {
 	// 覆写父类：额外注入 DynamicAssetTags，使 ExecCalc 能识别伤害类型（如 Damage.Type.Explosion）
 	// 从而正确应用对应的元素抗性（Resist.Explosion）
-	if (!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
 	{
 		return;
 	}
@@ -231,7 +276,7 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 void AGrenadeProjectile::ExplodeOnce()
 {
 	// 防止重复爆炸（引信触发 + 可能的多端同步触发）
-	if (bHasExploded)
+	if (bHasExploded || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}

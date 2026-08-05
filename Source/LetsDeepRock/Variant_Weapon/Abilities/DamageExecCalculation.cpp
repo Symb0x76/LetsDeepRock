@@ -7,6 +7,7 @@
 #include "Attributes/WeaponCombatSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 #include "EnemyCharacter.h"
 #include "WeaponPlayerController.h"
 #include "UI/WeaponDebugTypes.h"
@@ -87,6 +88,12 @@ void UDamageExecCalculation::Execute_Implementation(
 	const FGameplayEffectCustomExecutionParameters& ExecutionParams,
 	FGameplayEffectCustomExecutionOutput& OutExecutionOutput) const
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(
+		ExecutionParams.GetTargetAbilitySystemComponent()))
+	{
+		return;
+	}
+
 	const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();
 	const FGameplayTagContainer& DamageTags = Spec.GetDynamicAssetTags();
 	FName DamageTypeName = TAG_Damage_Type_Physical.GetTag().GetTagName();

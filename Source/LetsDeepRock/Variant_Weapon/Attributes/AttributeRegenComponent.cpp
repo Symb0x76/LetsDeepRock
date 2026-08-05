@@ -5,6 +5,7 @@
 #include "AbilitySystemInterface.h"
 #include "WeaponHealthSet.h"
 #include "WeaponResourceSet.h"
+#include "WeaponGameState.h"
 
 UAttributeRegenComponent::UAttributeRegenComponent()
 {
@@ -53,7 +54,7 @@ void UAttributeRegenComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 	if (!ASC) return;
 
 	// 仅服务端写入属性
-	if (!GetOwner()->HasAuthority())
+	if (!GetOwner()->HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		return;
 	}

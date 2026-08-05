@@ -9,10 +9,35 @@
 #include "AbilitySystemBlueprintLibrary.h"
 #include "GameplayEffectTypes.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameMode.h"
+#include "WeaponGameState.h"
+#include "GameFramework/Controller.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerState.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
+
+namespace
+{
+FUniqueNetIdRepl ResolveInstigatorPlayerId(const AActor* Actor)
+{
+	if (const APlayerState* PlayerState = Cast<APlayerState>(Actor))
+	{
+		return PlayerState->GetUniqueId();
+	}
+	if (const APawn* Pawn = Cast<APawn>(Actor))
+	{
+		return Pawn->GetPlayerState() ? Pawn->GetPlayerState()->GetUniqueId() : FUniqueNetIdRepl();
+	}
+	if (const AController* Controller = Cast<AController>(Actor))
+	{
+		const APlayerState* PlayerState = Controller->GetPlayerState<APlayerState>();
+		return PlayerState ? PlayerState->GetUniqueId() : FUniqueNetIdRepl();
+	}
+	return FUniqueNetIdRepl();
+}
+}
 
 AWeaponProjectile::AWeaponProjectile()
 {
@@ -66,12 +91,35 @@ void AWeaponProjectile::BeginPlay()
 	{
 		ProjectileMovement->OnProjectileStop.AddDynamic(this, &AWeaponProjectile::OnProjectileStop);
 	}
+
+	if (HasAuthority())
+	{
+		if (AWeaponGameMode* WeaponGameMode = GetWorld()->GetAuthGameMode<AWeaponGameMode>())
+		{
+			WeaponGameMode->RegisterAttributionProjectile(InitializationState.InstigatorPlayerId, this);
+		}
+	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
+}
+
+void AWeaponProjectile::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (HasAuthority())
+	{
+		if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+		{
+			WeaponGameMode->UnregisterAttributionProjectile(InitializationState.InstigatorPlayerId, this);
+		}
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 	bool bInPenetratesTerrain, float InProjectileSpeed,
-	float InDamageFalloffStart, float InDamageFalloffEnd)
+	float InDamageFalloffStart, float InDamageFalloffEnd,
+	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!HasAuthority())
 	{
@@ -81,6 +129,9 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	InitializationState.DamageEffectClass = InDamageGE;
 	InitializationState.DamageValue = InDamage;
 	InitializationState.InstigatorActor = InInstigator;
+	InitializationState.InstigatorPlayerId = ExplicitPlayerId.IsValid()
+		? ExplicitPlayerId
+		: ResolveInstigatorPlayerId(InInstigator);
 	InitializationState.DamageTags = InDamageTags;
 	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
@@ -111,6 +162,12 @@ FVector AWeaponProjectile::GetProjectileVelocity() const
 
 void AWeaponProjectile::RestoreSnapshotMotion(const FVector& Velocity, float RemainingLifeSeconds)
 {
+	if (bGameplayRecoveryBlocked)
+	{
+		RecoveryBlockedVelocity = Velocity;
+		RecoveryBlockedLifeSeconds = FMath::Max(0.0f, RemainingLifeSeconds);
+		return;
+	}
 	if (ProjectileMovement)
 	{
 		ProjectileMovement->Velocity = Velocity;
@@ -119,6 +176,49 @@ void AWeaponProjectile::RestoreSnapshotMotion(const FVector& Velocity, float Rem
 	{
 		SetLifeSpan(RemainingLifeSeconds);
 	}
+}
+
+void AWeaponProjectile::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (bBlocked)
+	{
+		if (!bGameplayRecoveryBlocked)
+		{
+			bMovementWasActiveBeforeRecovery = ProjectileMovement && ProjectileMovement->IsActive();
+			RecoveryBlockedVelocity = ProjectileMovement ? ProjectileMovement->Velocity : FVector::ZeroVector;
+			bCollisionWasEnabledBeforeRecovery = GetActorEnableCollision();
+			RecoveryBlockedLifeSeconds = GetLifeSpan();
+		}
+		bGameplayRecoveryBlocked = true;
+		if (ProjectileMovement)
+		{
+			ProjectileMovement->StopMovementImmediately();
+			ProjectileMovement->Deactivate();
+		}
+		SetActorEnableCollision(false);
+		SetLifeSpan(0.0f);
+		return;
+	}
+
+	if (!bGameplayRecoveryBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = false;
+	SetActorEnableCollision(bCollisionWasEnabledBeforeRecovery);
+	if (RecoveryBlockedLifeSeconds > 0.0f)
+	{
+		SetLifeSpan(RecoveryBlockedLifeSeconds);
+	}
+	if (bMovementWasActiveBeforeRecovery && ProjectileMovement)
+	{
+		ProjectileMovement->Activate(true);
+		ProjectileMovement->Velocity = RecoveryBlockedVelocity;
+	}
+	bMovementWasActiveBeforeRecovery = false;
+	bCollisionWasEnabledBeforeRecovery = false;
+	RecoveryBlockedVelocity = FVector::ZeroVector;
+	RecoveryBlockedLifeSeconds = 0.0f;
 }
 
 void AWeaponProjectile::OnRep_InitializationState()
@@ -194,6 +294,10 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 	UPrimitiveComponent* OtherComp, int32 OtherBodyIndex,
 	bool bFromSweep, const FHitResult& SweepResult)
 {
+	if (bGameplayRecoveryBlocked || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 不打自己
 	if (!OtherActor || OtherActor == GetOwner() || OtherActor == GetInstigator())
 	{
@@ -241,6 +345,10 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 {
+	if (bGameplayRecoveryBlocked || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	// 只在服务端处理
 	if (!HasAuthority())
 	{
@@ -283,7 +391,8 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> DamageOverride)
 {
 	const float AppliedDamage = DamageOverride.IsSet() ? DamageOverride.GetValue() : InitializationState.DamageValue;
-	if (!InitializationState.DamageEffectClass || AppliedDamage <= 0.0f)
+	if (bGameplayRecoveryBlocked || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!InitializationState.DamageEffectClass || AppliedDamage <= 0.0f)
 	{
 		return false;
 	}

@@ -30,6 +30,8 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "AI")
 	AActor* GetPerceivedTarget() const { return PerceivedTarget; }
 
+	void SetGameplayRecoveryBlocked(bool bBlocked);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void OnPossess(APawn* InPawn) override;
@@ -79,4 +81,6 @@ private:
 	/** 当前感知到的目标（最高优先级） */
 	UPROPERTY()
 	TObjectPtr<AActor> PerceivedTarget;
+	bool bGameplayRecoveryBlocked = false;
+	bool bBehaviorWasRunningBeforeRecovery = false;
 };

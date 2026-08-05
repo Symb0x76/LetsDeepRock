@@ -1,6 +1,7 @@
 // 网格地图系统 - 服务器权威管理器实现
 
 #include "GridMapManager.h"
+#include "WeaponGameState.h"
 #include "GridMapData.h"
 #include "GridMapGenerator.h"
 #include "GridMapRenderer.h"
@@ -338,7 +339,8 @@ bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGrid
 
 bool AGridMapManager::DamageTile(int32 GridX, int32 GridY, int32 DamageAmount)
 {
-	if (!HasAuthority() || !MapData || DamageAmount <= 0)
+	if (!HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!MapData || DamageAmount <= 0)
 	{
 		return false;
 	}
@@ -361,7 +363,7 @@ bool AGridMapManager::DamageTile(int32 GridX, int32 GridY, int32 DamageAmount)
 
 bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, int32 DamageAmount)
 {
-	if (!HasAuthority() || !MapData)
+	if (!HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) || !MapData)
 	{
 		return false;
 	}
@@ -374,7 +376,8 @@ bool AGridMapManager::DamageTileAtWorldLocation(const FVector& WorldLocation, in
 
 bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, float MaxDamage)
 {
-	if (!HasAuthority() || !MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
+	if (!HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!MapData || Radius <= 0.0f || MaxDamage <= 0.0f)
 	{
 		return false;
 	}
@@ -421,7 +424,8 @@ bool AGridMapManager::DamageTilesInRadius(const FVector& Center, float Radius, f
 bool AGridMapManager::DamageTilesInRect(const FVector& Center, float HalfWidth,
 	float HalfHeight, float MaxDamage)
 {
-	if (!HasAuthority() || !MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
+	if (!HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!MapData || HalfWidth <= 0.0f || HalfHeight <= 0.0f || MaxDamage <= 0.0f)
 	{
 		return false;
 	}
@@ -791,7 +795,8 @@ bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
 {
 	const bool bValidBuildType = BuildType == EGridTileType::Tree ||
 		BuildType == EGridTileType::Rock || BuildType == EGridTileType::LargeTree;
-	if (!HasAuthority() || !MapData || !RequestingActor || !bValidBuildType ||
+	if (!HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
+		!MapData || !RequestingActor || !bValidBuildType ||
 		FVector::DistSquared2D(RequestingActor->GetActorLocation(), WorldLocation) > FMath::Square(MaxBuildDistance))
 	{
 		return false;

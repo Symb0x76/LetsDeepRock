@@ -35,6 +35,7 @@ public:
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
+	void SetGameplayRecoveryBlocked(bool bBlocked);
 
 
 protected:
@@ -71,4 +72,9 @@ protected:
 
 	/** Health 归零时的回调（子类可覆写添加额外逻辑） */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
+
+	bool bGameplayRecoveryBlocked = false;
+	bool bSavedMovementModeForRecovery = false;
+	uint8 SavedRecoveryMovementMode = 0;
+	uint8 SavedRecoveryCustomMovementMode = 0;
 };

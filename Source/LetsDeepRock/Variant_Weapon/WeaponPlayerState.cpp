@@ -49,6 +49,16 @@ UAbilitySystemComponent* AWeaponPlayerState::GetAbilitySystemComponent() const
 	return AbilitySystemComponent;
 }
 
+void AWeaponPlayerState::OnDeactivated()
+{
+	if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+		WeaponGameMode && WeaponGameMode->HandleAttributionPlayerStateDeactivated(this))
+	{
+		return;
+	}
+	Super::OnDeactivated();
+}
+
 // 声明类成员同步 (Server -> Client)
 void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
@@ -145,7 +155,7 @@ void AWeaponPlayerState::ServerSetPlayerReady_Implementation(const bool bNewIsRe
 void AWeaponPlayerState::ApplyPlayerReadyRequest(const bool bNewIsReady)
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState ||
+	if (!WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
 		(WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting &&
 		 WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Starting))
 	{

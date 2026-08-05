@@ -8,6 +8,7 @@
 #include "Data/DataTableRows.h"
 #include "GameDataSubsystem.h"
 #include "WeaponGameplayTags.h"
+#include "WeaponGameState.h"
 #include "TimerManager.h"
 #include "Engine/World.h"
 
@@ -29,7 +30,47 @@ UAbilitySystemComponent* ADrone::GetAbilitySystemComponent() const
 
 void ADrone::SetOrbitTarget(AActor* Target)
 {
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 	OrbitTarget = Target;
+}
+
+void ADrone::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (!HasAuthority() || bGameplayRecoveryBlocked == bBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = bBlocked;
+
+	const FGameplayTagContainer WeaponAbilityTags(TAG_Ability_Weapon);
+	if (AbilitySystemComponent)
+	{
+		if (bBlocked)
+		{
+			AbilitySystemComponent->CancelAbilities(&WeaponAbilityTags);
+			AbilitySystemComponent->BlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+		else
+		{
+			AbilitySystemComponent->UnBlockAbilitiesWithTags(WeaponAbilityTags);
+		}
+	}
+
+	if (bBlocked)
+	{
+		bTickWasEnabledBeforeRecovery = IsActorTickEnabled();
+		SetActorTickEnabled(false);
+		GetWorldTimerManager().PauseTimer(LifetimeTimerHandle);
+	}
+	else
+	{
+		SetActorTickEnabled(bTickWasEnabledBeforeRecovery);
+		GetWorldTimerManager().UnPauseTimer(LifetimeTimerHandle);
+		bTickWasEnabledBeforeRecovery = false;
+	}
 }
 
 void ADrone::BeginPlay()
@@ -73,6 +114,8 @@ void ADrone::BeginPlay()
 			}
 		}
 	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
 }
 
 void ADrone::InitializeFromConfig(const FDroneConfigRow& Config)
@@ -82,9 +125,8 @@ void ADrone::InitializeFromConfig(const FDroneConfigRow& Config)
 	if (Config.Duration > 0.0f)
 	{
 		TWeakObjectPtr<ADrone> WeakThis(this);
-		FTimerHandle LifetimeHandle;
 		GetWorldTimerManager().SetTimer(
-			LifetimeHandle,
+			LifetimeTimerHandle,
 			[WeakThis]()
 			{
 				if (WeakThis.IsValid())
@@ -107,6 +149,10 @@ void ADrone::InitializeFromConfig(const FDroneConfigRow& Config)
 void ADrone::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 
 	if (OrbitTarget.Get())
 	{

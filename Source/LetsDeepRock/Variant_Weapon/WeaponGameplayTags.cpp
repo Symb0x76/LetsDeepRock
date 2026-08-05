@@ -8,6 +8,7 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffStart, "Data.DamageFalloffStart");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffEnd, "Data.DamageFalloffEnd");
 
 // Ability 标识
+UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon, "Ability.Weapon");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon_Fire, "Ability.Weapon.Fire");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon_Melee, "Ability.Weapon.Melee");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon_Grenade, "Ability.Weapon.Grenade");

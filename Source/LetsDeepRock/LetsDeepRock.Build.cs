@@ -10,6 +10,7 @@ public class LetsDeepRock : ModuleRules
 
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core",
+			"CoreOnline",
 			"CoreUObject",
 			"Engine",
 			"NetCore",
@@ -32,7 +33,10 @@ public class LetsDeepRock : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Networking",
-			"Sockets"
+			"PlatformCrypto",
+			"PlatformCryptoContext",
+			"Sockets",
+			"SlateCore"
 		});
 
 		// 阶段 1 起会用到 GameplayAbilities 类型的头文件，保持公共依赖即可
@@ -51,6 +55,7 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_Weapon/Weapons",
 			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/GridMap",
+			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/AI",
 			"LetsDeepRock/Variant_Weapon/AI/Tasks",
 			"LetsDeepRock/Variant_Weapon/AI/Services",

@@ -7,6 +7,7 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Sight.h"
+#include "WeaponGameState.h"
 
 AEnemyAIController::AEnemyAIController()
 {
@@ -80,6 +81,8 @@ void AEnemyAIController::OnPossess(APawn* InPawn)
 
 		BehaviorTreeComponent->StartTree(*DefaultBehaviorTree);
 	}
+
+	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
 }
 
 void AEnemyAIController::OnUnPossess()
@@ -95,7 +98,11 @@ void AEnemyAIController::OnUnPossess()
 
 void AEnemyAIController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus Stimulus)
 {
-	if (!Actor) return;
+	if (!Actor || bGameplayRecoveryBlocked ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
 
 	if (Stimulus.WasSuccessfullySensed())
 	{
@@ -108,4 +115,38 @@ void AEnemyAIController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus St
 			PerceivedTarget = nullptr;
 		}
 	}
+}
+
+void AEnemyAIController::SetGameplayRecoveryBlocked(const bool bBlocked)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+
+	if (bBlocked)
+	{
+		if (BehaviorTreeComponent && BehaviorTreeComponent->IsRunning())
+		{
+			bBehaviorWasRunningBeforeRecovery = true;
+		}
+		bGameplayRecoveryBlocked = true;
+		StopMovement();
+		if (BehaviorTreeComponent)
+		{
+			BehaviorTreeComponent->PauseLogic(TEXT("Snapshot recovery barrier"));
+		}
+		return;
+	}
+
+	if (!bGameplayRecoveryBlocked)
+	{
+		return;
+	}
+	bGameplayRecoveryBlocked = false;
+	if (bBehaviorWasRunningBeforeRecovery && BehaviorTreeComponent)
+	{
+		BehaviorTreeComponent->ResumeLogic(TEXT("Snapshot recovery complete"));
+	}
+	bBehaviorWasRunningBeforeRecovery = false;
 }
