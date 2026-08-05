@@ -90,6 +90,7 @@ void UWeaponEquipmentComponent::EquipWeapon(UWeaponDataAsset* InWeaponData)
 
 	CurrentWeaponData = InWeaponData;
 	EquipmentState.CurrentWeaponIndex = InventoryIndex;
+	InitializeFireModes();
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -139,9 +140,14 @@ void UWeaponEquipmentComponent::EquipWeaponLocal(UWeaponDataAsset* InWeaponData)
 
 void UWeaponEquipmentComponent::OnRep_EquipmentState()
 {
+	UWeaponDataAsset* PreviousWeaponData = CurrentWeaponData;
 	CurrentWeaponData = EquipmentState.WeaponInventory.IsValidIndex(EquipmentState.CurrentWeaponIndex)
 		? EquipmentState.WeaponInventory[EquipmentState.CurrentWeaponIndex]
 		: nullptr;
+	if (CurrentWeaponData != PreviousWeaponData)
+	{
+		InitializeFireModes();
+	}
 	NotifyEquipmentChanged();
 }
 
@@ -187,6 +193,8 @@ void UWeaponEquipmentComponent::UnequipWeapon()
 		return;
 	}
 	CancelReload();
+	CurrentFireModeIds.Reset();
+	CurrentFireModeId = NAME_None;
 
 	UAbilitySystemComponent* ASC = GetOwnerASC();
 
@@ -227,6 +235,55 @@ UAbilitySystemComponent* UWeaponEquipmentComponent::GetOwnerASC() const
 		return ASCInterface->GetAbilitySystemComponent();
 	}
 	return nullptr;
+}
+
+void UWeaponEquipmentComponent::InitializeFireModes()
+{
+	CurrentFireModeIds.Reset();
+	CurrentFireModeId = NAME_None;
+	if (!CurrentWeaponData || CurrentWeaponData->WeaponConfigId.IsNone())
+	{
+		return;
+	}
+
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FWeaponConfigRow* Config = DataSubsystem ? DataSubsystem->GetWeaponConfig(CurrentWeaponData->WeaponConfigId) : nullptr;
+	if (!Config)
+	{
+		return;
+	}
+
+	TArray<FString> ModeStrings;
+	Config->FireModeIds.ParseIntoArray(ModeStrings, TEXT(","), true);
+	for (FString& ModeString : ModeStrings)
+	{
+		ModeString.TrimStartAndEndInline();
+		if (!ModeString.IsEmpty())
+		{
+			CurrentFireModeIds.AddUnique(FName(*ModeString));
+		}
+	}
+
+	// 默认模式仅用于装备初始化/配置缺失回退，运行时读取统一走 CurrentFireModeId。
+	if (CurrentFireModeIds.Num() == 0 && !Config->DefaultFireModeId.IsNone())
+	{
+		CurrentFireModeIds.Add(Config->DefaultFireModeId);
+	}
+	CurrentFireModeId = CurrentFireModeIds.Contains(Config->DefaultFireModeId)
+		? Config->DefaultFireModeId
+		: (CurrentFireModeIds.Num() > 0 ? CurrentFireModeIds[0] : NAME_None);
+}
+
+void UWeaponEquipmentComponent::CycleFireMode()
+{
+	if (CurrentFireModeIds.Num() <= 1)
+	{
+		return;
+	}
+
+	const int32 CurrentIndex = CurrentFireModeIds.IndexOfByKey(CurrentFireModeId);
+	CurrentFireModeId = CurrentFireModeIds[(CurrentIndex + 1) % CurrentFireModeIds.Num()];
 }
 
 // ---- 多武器库存与切换实现 ----

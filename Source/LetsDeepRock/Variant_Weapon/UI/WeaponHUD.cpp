@@ -4,6 +4,7 @@
 #include "Attributes/WeaponHealthSet.h"
 #include "Data/GameDataSubsystem.h"
 #include "EnemyCharacter.h"
+#include "WeaponCharacter.h"
 #include "Weapons/WeaponDataAsset.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "Engine/Canvas.h"
@@ -36,16 +37,23 @@ namespace WeaponHUDPrivate
 void AWeaponHUD::DrawHUD()
 {
 	Super::DrawHUD();
-	if (!IsWeaponDebugUIEnabled() || !Canvas)
+	if (!Canvas)
 	{
 		return;
 	}
 
-	DrawCurrentWeaponInfo();
-	DrawNPCDebugInfo();
-	DrawDamageEvents();
-	DrawLastDamageDetails();
-	DrawAmmoPanel();
+	// 蓄力条是玩法 UI，不受 Weapon Debug UI 开关影响，始终按蓄力状态绘制；
+	// 其余调试面板仍受 IsWeaponDebugUIEnabled 控制。
+	const bool bDebugUIEnabled = IsWeaponDebugUIEnabled();
+	if (bDebugUIEnabled)
+	{
+		DrawCurrentWeaponInfo();
+		DrawNPCDebugInfo();
+		DrawDamageEvents();
+		DrawLastDamageDetails();
+		DrawAmmoPanel();
+	}
+	DrawChargeFireBar(bDebugUIEnabled);
 }
 
 void AWeaponHUD::AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event)
@@ -91,7 +99,7 @@ void AWeaponHUD::DrawCurrentWeaponInfo()
 				WeaponConfig = DataSys->GetWeaponConfig(WeaponData->WeaponConfigId);
 				if (WeaponConfig)
 				{
-					FireModeConfig = DataSys->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId);
+					FireModeConfig = DataSys->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId());
 				}
 			}
 		}
@@ -129,7 +137,7 @@ void AWeaponHUD::DrawCurrentWeaponInfo()
 	Lines.Add(FString::Printf(TEXT("当前武器: %s"), *DisplayName));
 	Lines.Add(FString::Printf(TEXT("ConfigId: %s"), WeaponData ? *WeaponData->WeaponConfigId.ToString() : TEXT("N/A")));
 	Lines.Add(FString::Printf(TEXT("索引/槽位: %d / %s"), WeaponIndex, *SlotName));
-	Lines.Add(FString::Printf(TEXT("FireModeId: %s"), WeaponConfig ? *WeaponConfig->DefaultFireModeId.ToString() : TEXT("N/A")));
+	Lines.Add(FString::Printf(TEXT("当前模式: %s"), EquipComp ? *EquipComp->GetCurrentFireModeId().ToString() : TEXT("N/A")));
 	Lines.Add(FString::Printf(TEXT("DamageType: %s"), *DamageType));
 	const FString BaseDamageText = FireModeConfig ? FString::SanitizeFloat(FireModeConfig->BaseDamage)
 		: (WeaponData ? FString::SanitizeFloat(WeaponData->BaseDamage) : TEXT("N/A"));
@@ -335,5 +343,55 @@ void AWeaponHUD::DrawAmmoPanel()
 	else
 	{
 		WeaponHUDPrivate::DrawLine(Canvas, SmallFont, TEXT("就绪"), InnerX, CursorY, FLinearColor(0.3f, 0.9f, 0.35f));
+	}
+}
+
+void AWeaponHUD::DrawChargeFireBar(bool bDebugUIEnabled)
+{
+	const AWeaponCharacter* WeaponPawn = Cast<AWeaponCharacter>(GetOwningPawn());
+	if (!WeaponPawn || !WeaponPawn->IsChargingFire())
+	{
+		return;
+	}
+
+	const float Progress = FMath::Clamp(WeaponPawn->GetChargeFireProgress(), 0.0f, 1.0f);
+	const bool bFullyCharged = Progress >= 1.0f;
+
+	// 尺寸/位置随分辨率自适应，右下角安全边距。
+	const float BarWidth = 220.0f;
+	const float BarHeight = 16.0f;
+	const float Margin = 20.0f;
+	const float BarX = Canvas->ClipX - BarWidth - Margin;
+
+	// Debug 面板开启时让位到弹药面板（DrawAmmoPanel）上方，避免遮挡；
+	// 关闭时蓄力条是唯一的右下角玩法 UI，直接贴近角落，只保留安全边距。
+	float BarY;
+	if (bDebugUIEnabled)
+	{
+		const float AmmoPanelHeight = 122.0f; // 与 DrawAmmoPanel 换弹中状态高度一致，取较大值保证不重叠
+		BarY = Canvas->ClipY - AmmoPanelHeight - Margin - BarHeight - 34.0f;
+	}
+	else
+	{
+		BarY = Canvas->ClipY - BarHeight - Margin;
+	}
+
+	// 满蓄力时边框/填充变为亮橙色，作为"可以松手释放"的明确提示。
+	const FLinearColor FillColor = bFullyCharged ? FLinearColor(1.0f, 0.55f, 0.05f) : FLinearColor(1.0f, 0.85f, 0.25f);
+	const FLinearColor LabelColor = bFullyCharged ? FLinearColor(1.0f, 0.6f, 0.1f) : FLinearColor(1.0f, 0.9f, 0.5f);
+
+	UFont* SmallFont = GEngine->GetSmallFont();
+	WeaponHUDPrivate::DrawLine(Canvas, SmallFont, bFullyCharged ? TEXT("蓄力完毕") : TEXT("蓄力中"),
+		BarX, BarY - 18.0f, LabelColor);
+
+	DrawRect(FLinearColor(0.0f, 0.0f, 0.0f, 0.7f), BarX, BarY, BarWidth, BarHeight);
+	DrawRect(FLinearColor(0.05f, 0.05f, 0.05f, 0.85f), BarX + 2.0f, BarY + 2.0f, BarWidth - 4.0f, BarHeight - 4.0f);
+	DrawRect(FillColor, BarX + 2.0f, BarY + 2.0f, (BarWidth - 4.0f) * Progress, BarHeight - 4.0f);
+
+	// 满蓄力时边缘描一层高亮边框，进一步强化"已就绪"的视觉反馈。
+	if (bFullyCharged)
+	{
+		DrawRect(FLinearColor(1.0f, 0.85f, 0.3f, 0.9f), BarX, BarY, BarWidth, 2.0f);
+		DrawRect(FLinearColor(1.0f, 0.85f, 0.3f, 0.9f), BarX, BarY + BarHeight - 2.0f, BarWidth, 2.0f);
 	}
 }

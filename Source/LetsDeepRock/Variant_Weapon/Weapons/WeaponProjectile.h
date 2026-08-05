@@ -34,6 +34,12 @@ struct FWeaponProjectileInitializationState
 	float ProjectileSpeed = 3000.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float DamageFalloffStart = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float DamageFalloffEnd = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	float AreaDamage = 0.0f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
@@ -77,7 +83,8 @@ public:
 	/** Deferred Spawn 完成前由服务器调用，一次写入完整初始化状态。 */
 	void InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
-		bool bInPenetratesTerrain, float InProjectileSpeed);
+		bool bInPenetratesTerrain, float InProjectileSpeed,
+		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f);
 
 	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
 	FVector GetProjectileVelocity() const;
@@ -121,15 +128,11 @@ protected:
 	float AreaFalloff = 0.0f;
 	bool bHasExploded = false;
 
-	/** SetByCaller 伤害 Tag */
-	FGameplayTag DamageTag;
-
 	UFUNCTION()
 	void OnRep_InitializationState();
 
 	/** 将初始化快照应用到本地移动组件和碰撞忽略列表。 */
 	void ApplyInitializationState();
-
 	/** 命中处理（碰撞回调），子类可覆写以改变命中行为（如手雷弹跳过而不引爆） */
 	UFUNCTION()
 	virtual void OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,

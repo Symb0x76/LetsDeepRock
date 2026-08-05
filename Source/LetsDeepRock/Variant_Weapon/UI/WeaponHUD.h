@@ -38,6 +38,10 @@ protected:
 	void DrawLastDamageDetails();
 	/** 绘制右下角弹药测试面板（弹匣/容量、备弹、换弹状态）。 */
 	void DrawAmmoPanel();
+	/** 绘制右下角蓄力条（仅蓄力射击进行中显示）。这是玩法 UI，不受 Weapon Debug UI 开关影响，
+	 *  始终按蓄力状态绘制；bDebugUIEnabled 仅用于决定 Y 位置（Debug 面板开启时让位到弹药面板上方，
+	 *  关闭时贴近右下角）。 */
+	void DrawChargeFireBar(bool bDebugUIEnabled);
 
 private:
 	struct FActiveDamageNumber

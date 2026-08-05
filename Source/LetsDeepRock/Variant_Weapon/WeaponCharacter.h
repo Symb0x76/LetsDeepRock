@@ -16,6 +16,7 @@ class UInputAction;
 class UInputMappingContext;
 class UAbilitySystemComponent;
 class UWeaponEquipmentComponent;
+class UWeaponDataAsset;
 class UGameplayAbility;
 class UGrenadeTrajectoryPreviewComponent;
 struct FCharacterAttributeRow;
@@ -138,6 +139,15 @@ public:
 	/** GA 调用：消费一次性 pending 手雷目标，返回 true 表示有有效目标 */
 	bool ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOutValid) const;
 
+	// === 蓄力状态只读查询（供 HUD 绘制蓄力条使用） ===
+
+	/** 是否正在蓄力射击 */
+	bool IsChargingFire() const { return bIsChargingFire; }
+
+	/** 当前蓄力进度 0~1，按 ChargeFireModeId 对应的 ChargeDuration 计算；
+	 *  非蓄力状态、找不到配置或 ChargeDuration<=0 时返回 0。 */
+	float GetChargeFireProgress() const;
+
 protected:
 
 	/** 缓存的 ASC 指针（实际拥有者是 PlayerState） */
@@ -185,6 +195,12 @@ protected:
 
 	/** 当前武器是否配置为按住射击。 */
 	bool IsCurrentWeaponHoldTrigger() const;
+	bool IsCurrentWeaponChargeTrigger() const;
+	void CancelChargeFire();
+	void CycleFireMode();
+
+	UFUNCTION(Server, Reliable)
+	void ServerCycleFireMode();
 
 	/** 主副武器尝试射击 */
 	void FireWeapon();
@@ -296,6 +312,12 @@ protected:
 	/** 每次按压只记录一次 Enhanced Input Triggered，避免按住时逐帧刷屏。 */
 	bool bFireTriggeredLoggedThisPress = false;
 
+	/** 蓄力开始时的快照，用于阻止切槽、切枪或切模式后的错误释放。 */
+	bool bIsChargingFire = false;
+	double ChargeFireStartTime = 0.0;
+	TObjectPtr<UWeaponDataAsset> ChargeWeaponData;
+	FName ChargeFireModeId = NAME_None;
+
 	/** 当前职业是否配置了技能道具和职业工具 */
 	bool bHasSkillItem = false;
 	bool bHasProfessionTool = false;
@@ -303,4 +325,12 @@ protected:
 	/** 当前已部署的独立职业工具无人机 */
 	UPROPERTY()
 	TObjectPtr<ADrone> ActiveDrone;
+
+	// === 相机后坐力反馈 ===
+
+	/** SpringArm 基准距离（构造时初始化，后坐恢复目标） */
+	float BaseTargetArmLength = 2200.0f;
+
+	/** 当前累积的后坐偏移量（拉近镜头的 UU 数） */
+	float CurrentRecoilOffset = 0.0f;
 };
