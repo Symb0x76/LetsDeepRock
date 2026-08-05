@@ -121,6 +121,30 @@ void UDamageExecCalculation::Execute_Implementation(
 	{
 		return;
 	}
+	const float DamageFalloffStart = Spec.GetSetByCallerMagnitude(TAG_Data_DamageFalloffStart, false, 0.0f);
+	const float DamageFalloffEnd = Spec.GetSetByCallerMagnitude(TAG_Data_DamageFalloffEnd, false, 0.0f);
+
+	UAbilitySystemComponent* SourceASC = ExecutionParams.GetSourceAbilitySystemComponent();
+	UAbilitySystemComponent* TargetASC = ExecutionParams.GetTargetAbilitySystemComponent();
+	AActor* SourceAvatar = SourceASC ? SourceASC->GetAvatarActor() : nullptr;
+	AActor* TargetAvatar = TargetASC ? TargetASC->GetAvatarActor() : nullptr;
+	const FVector SourceLocation = SourceAvatar ? SourceAvatar->GetActorLocation() : FVector::ZeroVector;
+	FVector TargetLocation = TargetAvatar ? TargetAvatar->GetActorLocation() : FVector::ZeroVector;
+	const FHitResult* HitResult = Spec.GetContext().GetHitResult();
+	if (HitResult)
+	{
+		if (!HitResult->ImpactPoint.IsNearlyZero())
+		{
+			TargetLocation = HitResult->ImpactPoint;
+		}
+		else if (!HitResult->Location.IsNearlyZero())
+		{
+			TargetLocation = HitResult->Location;
+		}
+	}
+	const float HitDistanceCm = SourceAvatar
+		? FVector::Distance(SourceLocation, TargetLocation)
+		: 0.0f;
 
 	// ---------- 捕获源方属性 ----------
 	const FAggregatorEvaluateParameters EvalParams;
@@ -143,6 +167,41 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	// ---------- ② 全局伤害加成 ----------
 	float Damage = BaseDamage * (1.0f + DmgBonus);
+	const float DamageBeforeFalloff = Damage;
+	float FalloffMultiplier = 1.0f;
+	const bool bFalloffEnabled = SourceAvatar && DamageFalloffEnd > DamageFalloffStart && DamageFalloffEnd > 0.0f;
+	if (bFalloffEnabled)
+	{
+		FalloffMultiplier = 1.0f - FMath::Clamp(
+			(HitDistanceCm - DamageFalloffStart) / (DamageFalloffEnd - DamageFalloffStart),
+			0.0f,
+			1.0f);
+		Damage *= FalloffMultiplier;
+	}
+
+#if !UE_BUILD_SHIPPING
+	const TCHAR* FalloffReason = bFalloffEnabled
+		? TEXT("Enabled")
+		: (!SourceAvatar
+			? TEXT("Disabled:NoSourceAvatar")
+			: (DamageFalloffEnd <= 0.0f
+				? TEXT("Disabled:FalloffEndNotPositive")
+				: TEXT("Disabled:FalloffEndNotGreaterThanStart")));
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] ExecCalculation BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f Source=%s Target=%s SourceLocation=%s TargetLocation=%s HasHitResult=%s HitDistanceCm=%.3f FalloffMultiplier=%.6f DamageBeforeFalloff=%.3f DamageAfterFalloff=%.3f Reason=%s"),
+		BaseDamage,
+		DamageFalloffStart,
+		DamageFalloffEnd,
+		*GetNameSafe(SourceAvatar),
+		*GetNameSafe(TargetAvatar),
+		*SourceLocation.ToCompactString(),
+		*TargetLocation.ToCompactString(),
+		HitResult ? TEXT("true") : TEXT("false"),
+		HitDistanceCm,
+		FalloffMultiplier,
+		DamageBeforeFalloff,
+		Damage,
+		FalloffReason);
+#endif
 
 	// ---------- ③ 伤害类型克制修正 ----------
 	// TODO: 后续通过 DataTable（FDamageTypeModifierRow）查询类型克制系数，
@@ -210,10 +269,6 @@ void UDamageExecCalculation::Execute_Implementation(
 	if (Damage > 0.0f)
 	{
 #if !UE_BUILD_SHIPPING
-		UAbilitySystemComponent* SourceASC = ExecutionParams.GetSourceAbilitySystemComponent();
-		UAbilitySystemComponent* TargetASC = ExecutionParams.GetTargetAbilitySystemComponent();
-		AActor* SourceAvatar = SourceASC ? SourceASC->GetAvatarActor() : nullptr;
-		AActor* TargetAvatar = TargetASC ? TargetASC->GetAvatarActor() : nullptr;
 		AWeaponPlayerController* SourceController = nullptr;
 		if (APawn* SourcePawn = Cast<APawn>(SourceAvatar))
 		{
@@ -237,23 +292,8 @@ void UDamageExecCalculation::Execute_Implementation(
 					}
 				}
 
-				FVector TargetLocation = TargetAvatar ? TargetAvatar->GetActorLocation() : FVector::ZeroVector;
-				if (const FHitResult* HitResult = Spec.GetContext().GetHitResult())
-				{
-					if (!HitResult->ImpactPoint.IsNearlyZero())
-					{
-						TargetLocation = HitResult->ImpactPoint;
-					}
-					else if (!HitResult->Location.IsNearlyZero())
-					{
-						TargetLocation = HitResult->Location;
-					}
-				}
 				DebugEvent.TargetLocation = TargetLocation;
-				if (SourceAvatar)
-				{
-					DebugEvent.HitDistanceMeters = FVector::Distance(SourceAvatar->GetActorLocation(), TargetLocation) / 100.0f;
-				}
+				DebugEvent.HitDistanceMeters = HitDistanceCm / 100.0f;
 				TargetHealthSet->SetPendingWeaponDamageDebug(DebugEvent, SourceController);
 			}
 		}

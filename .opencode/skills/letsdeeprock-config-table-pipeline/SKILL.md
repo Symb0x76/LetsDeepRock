@@ -66,16 +66,16 @@ description: 该技能在用户要求为 LetsDeepRock 新增、修改、导出�
 
 ### 3. 安全修改 xlsx
 
-`.xlsx`/`.xlsm` 必须使用 `exstruct`，不得把二进制文件当文本处理。按以下顺序执行：
+`.xlsx`/`.xlsm` 必须使用 `excel-com` MCP，不得把二进制文件当文本处理。项目 `Config\Excel` 已加入 allowlist，可直接读取目标表，不需要复制到 `D:\workspace`，读取和校验也不需要额外用户授权。按以下顺序执行：
 
-1. 用 `exstruct_validate_input` 或 `exstruct_extract` 确认可读，并用 `exstruct_read_range` 等读取目标表头和数据区域；
-2. 因 `exstruct` 工作区限定为 `D:\workspace`，如目标表不在该范围，先说明限制并征得用户同意后使用 `D:\workspace` 下的临时副本；未经授权不得借此覆盖项目源表；
-3. 用 `exstruct_patch` 执行 `dry_run=True`，检查 `diff`、`warnings` 和目标单元格；
-4. 向用户展示预演改动，暂停并等待明确确认；
-5. 确认后使用 `exstruct_patch(..., dry_run=False, backend="auto")` 真正写入，禁止最终写入使用 `backend="openpyxl"`；
-6. 回读目标范围，核对元数据、类型、字段名、说明、RowName 和数据值；若使用临时副本，只有在用户已授权写项目表时才将确认后的结果更新到目标 `.xlsx`。
+1. 用 `excel_com_validate` 确认可读，再用 `excel_com_read` 读取目标表头、数据区域和当前值；
+2. 用 `excel_com_patch(..., dry_run=true)` 预演，检查逐操作 diff、`changed_cells`、`unchanged_cells` 及目标单元格；
+3. 向用户展示预演差异，暂停并等待明确确认；
+4. 确认后使用相同 operations 调用 `excel_com_patch(..., dry_run=false)` 正式写入；
+5. 正式写入后用 `excel_com_read` 回读目标范围，核对元数据、类型、字段名、说明、RowName 和数据值；
+6. 新建工作簿使用 `excel_com_create`，且只能创建 `.xlsx`；新建后同样使用 `excel_com_read` 回读。
 
-批量矩形区域优先使用 `set_range_values`；需要安全匹配原值时使用 `set_value_if`。只改当前任务指定的表和单元格。
+当前 patch/create 只支持 `set_value` 和 `set_range_values`，批量矩形区域优先使用 `set_range_values`。公式只能读取，不能写入；样式、图表、合并单元格等能力也未支持。遇到这些需求时必须停下并明确说明，不允许自动回退到 `openpyxl` 或其他后端。只改当前任务指定的表和单元格。
 
 ### 4. 导出 CSV
 

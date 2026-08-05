@@ -256,6 +256,17 @@ void AWeaponCharacter::Tick(float DeltaTime)
 
 	// 每帧让角色面向鼠标位置
 	RotateToMouseCursor(DeltaTime);
+
+	// 平滑恢复相机后坐力偏移（指数插值，约 0.15~0.35 秒明显回弹、0.5 秒内归零）
+	if (CurrentRecoilOffset > 0.0f)
+	{
+		CurrentRecoilOffset = FMath::FInterpTo(CurrentRecoilOffset, 0.0f, DeltaTime, 12.0f);
+		if (CurrentRecoilOffset < 0.5f)
+		{
+			CurrentRecoilOffset = 0.0f;
+		}
+		SpringArm->TargetArmLength = BaseTargetArmLength - CurrentRecoilOffset;
+	}
 }
 
 void AWeaponCharacter::RotateToMouseCursor(float DeltaTime)
@@ -398,6 +409,8 @@ void AWeaponCharacter::ServerRequestBuildTile_Implementation(
 
 void AWeaponCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	CancelChargeFire();
+
 	// 隐藏预览
 	HideGrenadePreview();
 
@@ -425,6 +438,7 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 	{
 		return;
 	}
+	CancelChargeFire();
 
 	const UWeaponHealthSet* HealthSet = GetPlayerState<AWeaponPlayerState>()
 		? GetPlayerState<AWeaponPlayerState>()->GetHealthSet()
@@ -518,6 +532,7 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AWeaponCharacter::SelectSkill);
 	PlayerInputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AWeaponCharacter::SelectTool);
 	PlayerInputComponent->BindKey(EKeys::R, IE_Pressed, this, &AWeaponCharacter::ReloadWeapon);
+	PlayerInputComponent->BindKey(EKeys::B, IE_Pressed, this, &AWeaponCharacter::CycleFireMode);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AWeaponCharacter::RawFirePressed);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AWeaponCharacter::RawFireReleased);
 }
@@ -563,6 +578,14 @@ void AWeaponCharacter::FireStarted(const FInputActionValue& Value)
 	{
 		DeployProfessionTool();
 	}
+	else if (IsCurrentWeaponChargeTrigger())
+	{
+		UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+		bIsChargingFire = EquipComp && EquipComp->GetCurrentWeaponData();
+		ChargeFireStartTime = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.0;
+		ChargeWeaponData = bIsChargingFire ? EquipComp->GetCurrentWeaponData() : nullptr;
+		ChargeFireModeId = bIsChargingFire ? EquipComp->GetCurrentFireModeId() : NAME_None;
+	}
 	else if (!IsCurrentWeaponHoldTrigger())
 	{
 		// Press 武器只响应按下瞬间，避免后续 Triggered 阶段连射。
@@ -597,10 +620,26 @@ void AWeaponCharacter::FireCompleted(const FInputActionValue& Value)
 	#if !UE_BUILD_SHIPPING
 	LogFireTraceState(TEXT("Enhanced Completed"));
 	#endif
-	if (!IsDead() && ActiveFireInputSlot == 2)
+	if (!IsDead() && ActiveFireInputSlot <= 1 && bIsChargingFire)
+	{
+		UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+		const bool bSameSelection = EquipComp
+			&& CurrentEquipmentSlot == ActiveFireInputSlot
+			&& EquipComp->GetCurrentWeaponData() == ChargeWeaponData
+			&& EquipComp->GetCurrentFireModeId() == ChargeFireModeId;
+		const UGameDataSubsystem* DataSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UGameDataSubsystem>() : nullptr;
+		const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem ? DataSubsystem->GetWeaponFireModeConfig(ChargeFireModeId) : nullptr;
+		const double Elapsed = GetWorld() ? GetWorld()->GetTimeSeconds() - ChargeFireStartTime : 0.0;
+		if (bSameSelection && FireModeConfig && Elapsed >= FireModeConfig->ChargeDuration)
+		{
+			FireWeapon();
+		}
+	}
+	else if (!IsDead() && ActiveFireInputSlot == 2)
 	{
 		ThrowGrenadeCompleted(Value);
 	}
+	CancelChargeFire();
 	ActiveFireInputSlot = 255;
 	bFireTriggeredLoggedThisPress = false;
 }
@@ -614,6 +653,7 @@ void AWeaponCharacter::FireCanceled(const FInputActionValue& Value)
 	{
 		ThrowGrenadeCanceled(Value);
 	}
+	CancelChargeFire();
 	ActiveFireInputSlot = 255;
 	bFireTriggeredLoggedThisPress = false;
 }
@@ -659,11 +699,75 @@ bool AWeaponCharacter::IsCurrentWeaponHoldTrigger() const
 
 	const UGameInstance* GameInstance = GetGameInstance();
 	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
-	const FWeaponConfigRow* WeaponConfig = DataSubsystem ? DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId) : nullptr;
-	const FWeaponFireModeConfigRow* FireModeConfig = WeaponConfig
-		? DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId)
+	const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem
+		? DataSubsystem->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId())
 		: nullptr;
 	return FireModeConfig && FireModeConfig->TriggerType == FName(TEXT("Hold"));
+}
+
+bool AWeaponCharacter::IsCurrentWeaponChargeTrigger() const
+{
+	const UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>();
+	const UGameDataSubsystem* DataSubsystem = GetGameInstance() ? GetGameInstance()->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FWeaponFireModeConfigRow* FireModeConfig = EquipComp && DataSubsystem
+		? DataSubsystem->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId())
+		: nullptr;
+	return FireModeConfig && FireModeConfig->TriggerType == FName(TEXT("Charge"));
+}
+
+void AWeaponCharacter::CancelChargeFire()
+{
+	bIsChargingFire = false;
+	ChargeFireStartTime = 0.0;
+	ChargeWeaponData = nullptr;
+	ChargeFireModeId = NAME_None;
+}
+
+float AWeaponCharacter::GetChargeFireProgress() const
+{
+	if (!bIsChargingFire || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	const UGameInstance* GameInstance = GetGameInstance();
+	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem ? DataSubsystem->GetWeaponFireModeConfig(ChargeFireModeId) : nullptr;
+	if (!FireModeConfig || FireModeConfig->ChargeDuration <= 0.0f)
+	{
+		return 0.0f;
+	}
+
+	const double Elapsed = GetWorld()->GetTimeSeconds() - ChargeFireStartTime;
+	return FMath::Clamp(static_cast<float>(Elapsed / FireModeConfig->ChargeDuration), 0.0f, 1.0f);
+}
+
+void AWeaponCharacter::CycleFireMode()
+{
+	if (IsDead() || CurrentEquipmentSlot > 1)
+	{
+		return;
+	}
+	CancelChargeFire();
+	if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
+	{
+		EquipComp->CycleFireMode();
+	}
+	if (!HasAuthority())
+	{
+		ServerCycleFireMode();
+	}
+}
+
+void AWeaponCharacter::ServerCycleFireMode_Implementation()
+{
+	if (!IsDead() && CurrentEquipmentSlot <= 1)
+	{
+		if (UWeaponEquipmentComponent* EquipComp = FindComponentByClass<UWeaponEquipmentComponent>())
+		{
+			EquipComp->CycleFireMode();
+		}
+	}
 }
 
 void AWeaponCharacter::FireWeapon()
@@ -682,6 +786,26 @@ void AWeaponCharacter::FireWeapon()
 	{
 		const UWeaponDataAsset* WeaponData = EquipComp->GetCurrentWeaponData();
 		const bool bActivated = AbilitySystemComponent->TryActivateAbilityByClass(WeaponData->FireAbilityClass);
+
+		// 激活成功且本地控制时，触发相机后坐力反馈
+		if (bActivated && IsLocallyControlled())
+		{
+			if (UGameInstance* GI = GetGameInstance())
+			{
+				if (UGameDataSubsystem* DataSubsystem = GI->GetSubsystem<UGameDataSubsystem>())
+				{
+					const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId());
+					if (FireModeConfig && FireModeConfig->Recoil > 0.0f)
+					{
+						// 每点 Recoil 拉近约 100 UU，最大叠加 180 UU
+						const float RecoilImpulse = FireModeConfig->Recoil * 100.0f;
+						CurrentRecoilOffset = FMath::Min(CurrentRecoilOffset + RecoilImpulse, 180.0f);
+						SpringArm->TargetArmLength = BaseTargetArmLength - CurrentRecoilOffset;
+					}
+				}
+			}
+		}
+
 		#if !UE_BUILD_SHIPPING
 		if (bActivated)
 		{
@@ -765,6 +889,7 @@ void AWeaponCharacter::ServerReloadWeapon_Implementation()
 
 void AWeaponCharacter::SwitchWeapon(const FInputActionValue& Value)
 {
+	CancelChargeFire();
 	// 死亡时禁止切枪
 	if (IsDead())
 	{
@@ -846,6 +971,7 @@ void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
 	if (SlotIndex > 3) return;
 	if (SlotIndex == 2 && !bHasSkillItem) return;
 	if (SlotIndex == 3 && !bHasProfessionTool) return;
+	CancelChargeFire();
 
 	// 按住手雷时切槽视为取消，避免松开左键后从其它槽意外投掷。
 	if (ActiveFireInputSlot == 2)

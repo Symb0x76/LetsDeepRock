@@ -4,6 +4,8 @@
 
 // 伤害数值（SetByCaller）
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_Damage, "Data.Damage");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffStart, "Data.DamageFalloffStart");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffEnd, "Data.DamageFalloffEnd");
 
 // Ability 标识
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon_Fire, "Ability.Weapon.Fire");

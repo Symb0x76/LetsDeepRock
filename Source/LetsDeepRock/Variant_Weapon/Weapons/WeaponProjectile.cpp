@@ -48,15 +48,11 @@ AWeaponProjectile::AWeaponProjectile()
 	ProjectileMovement->ProjectileGravityScale = 0.0f;
 	ProjectileMovement->bShouldBounce = false;
 
-	// DamageTag 在 BeginPlay 中从 Native Tag 初始化
 }
 
 void AWeaponProjectile::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// 使用 Native Tag 代替字符串查找
-	DamageTag = TAG_Data_Damage;
 
 	ApplyInitializationState();
 
@@ -74,7 +70,8 @@ void AWeaponProjectile::BeginPlay()
 
 void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
-	bool bInPenetratesTerrain, float InProjectileSpeed)
+	bool bInPenetratesTerrain, float InProjectileSpeed,
+	float InDamageFalloffStart, float InDamageFalloffEnd)
 {
 	if (!HasAuthority())
 	{
@@ -87,7 +84,18 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	InitializationState.DamageTags = InDamageTags;
 	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
+	InitializationState.DamageFalloffStart = InDamageFalloffStart;
+	InitializationState.DamageFalloffEnd = InDamageFalloffEnd;
 	InitializationState.bInitialized = true;
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] Projectile InitDamageParams Projectile=%s Target=None AppliedDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f PendingHitResult=%s"),
+		*GetNameSafe(this),
+		InDamage,
+		InDamageFalloffStart,
+		InDamageFalloffEnd,
+		PendingHitResult.IsSet() ? TEXT("true") : TEXT("false"));
+#endif
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
@@ -324,8 +332,20 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> 
 	}
 
 	// 注入 SetByCaller 伤害值
-	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, DamageTag, AppliedDamage);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_Damage, AppliedDamage);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffStart, InitializationState.DamageFalloffStart);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffEnd, InitializationState.DamageFalloffEnd);
 	SpecHandle.Data->AppendDynamicAssetTags(InitializationState.DamageTags);
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] Projectile ApplyGE Projectile=%s Target=%s AppliedDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f PendingHitResult=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(TargetPawn),
+		AppliedDamage,
+		InitializationState.DamageFalloffStart,
+		InitializationState.DamageFalloffEnd,
+		PendingHitResult.IsSet() ? TEXT("true") : TEXT("false"));
+#endif
 
 	// 对目标应用伤害（从 Source 施加到 Target）
 	return SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC).IsValid();

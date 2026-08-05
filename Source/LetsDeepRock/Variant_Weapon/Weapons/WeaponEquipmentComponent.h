@@ -132,6 +132,14 @@ public:
 	void CaptureSnapshotState(FWeaponEquipmentSnapshotState& OutState) const;
 	bool RestoreSnapshotState(const FWeaponEquipmentSnapshotState& InState);
 
+	/** 获取当前武器正在使用的射击模式。 */
+	UFUNCTION(BlueprintPure, Category = "Weapon|FireMode")
+	FName GetCurrentFireModeId() const { return CurrentFireModeId; }
+
+	/** 循环切换当前武器的射击模式。 */
+	UFUNCTION(BlueprintCallable, Category = "Weapon|FireMode")
+	void CycleFireMode();
+
 	/** 当前弹匣内弹药数。 */
 	UFUNCTION(BlueprintPure, Category = "Weapon|Ammo")
 	int32 GetCurrentMagazineAmmo() const;
@@ -209,6 +217,9 @@ private:
 	/** 切换/卸载时取消旧武器换弹。 */
 	void CancelReload();
 
+	/** 从当前武器配置解析模式列表，并重置为默认模式。 */
+	void InitializeFireModes();
+
 	/** 当前武器数据引用 */
 	UPROPERTY()
 	UWeaponDataAsset* CurrentWeaponData;
@@ -225,6 +236,8 @@ private:
 
 	UPROPERTY(ReplicatedUsing = OnRep_EquipmentState)
 	FWeaponEquipmentReplicatedState EquipmentState;
-
+	/** 当前武器可用模式及当前选择；每次装备都会重置。 */
+	TArray<FName> CurrentFireModeIds;
+	FName CurrentFireModeId = NAME_None;
 	FTimerHandle ReloadTimerHandle;
 };

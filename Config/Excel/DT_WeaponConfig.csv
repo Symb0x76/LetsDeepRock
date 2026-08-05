@@ -1,5 +1,5 @@
-﻿---,DisplayName,FireModeIds,DefaultFireModeId,AmmoType,MagazineSize,ReserveAmmo,ReloadDuration,WeaponMesh,MuzzleSocketName
-Ranger_ArcaneCrossbow,"奥术连弩","Ranger_ArcaneCrossbow_RapidBolt",Ranger_ArcaneCrossbow_RapidBolt,Bolt,36,288,1.6,"",Muzzle
+---,DisplayName,FireModeIds,DefaultFireModeId,AmmoType,MagazineSize,ReserveAmmo,ReloadDuration,WeaponMesh,MuzzleSocketName
+Ranger_ArcaneCrossbow,"奥术连弩","Ranger_ArcaneCrossbow_RapidBolt,Ranger_ArcaneCrossbow_ChargedArcaneMissile",Ranger_ArcaneCrossbow_RapidBolt,Bolt,36,288,1.6,"",Muzzle
 Ranger_SawedOffShotgun,"单手短管霰弹","Ranger_SawedOffShotgun_Default",Ranger_SawedOffShotgun_Default,Shell,2,24,2.2,"",Muzzle
 Ranger_FullAutoPistol,"全自动手枪","Ranger_FullAutoPistol_Default",Ranger_FullAutoPistol_Default,LightAmmo,18,90,1.8,"",Muzzle
 Ranger_ThrowingKnife,"飞刀","Ranger_ThrowingKnife_Default",Ranger_ThrowingKnife_Default,Knife,4,16,1.2,"",Muzzle

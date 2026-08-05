@@ -19,6 +19,8 @@
 
 // 伤害数值（SetByCaller）
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Data_Damage);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Data_DamageFalloffStart);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Data_DamageFalloffEnd);
 
 // Ability 标识
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Ability_Weapon_Fire);

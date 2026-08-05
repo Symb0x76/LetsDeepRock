@@ -155,6 +155,9 @@ void UGA_Fire::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
 {
 	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
 	float FireInterval = WeaponData ? WeaponData->FireInterval : 0.01f;
+	const UWeaponEquipmentComponent* EquipComp = ActorInfo && ActorInfo->AvatarActor.IsValid()
+		? ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>()
+		: nullptr;
 	if (WeaponData && !WeaponData->WeaponConfigId.IsNone())
 	{
 		if (UGameInstance* GameInstance = ActorInfo && ActorInfo->AvatarActor.IsValid()
@@ -163,9 +166,9 @@ void UGA_Fire::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
 		{
 			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
 			{
-				if (const FWeaponConfigRow* WeaponConfig = DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId))
+				if (EquipComp)
 				{
-					if (const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId))
+					if (const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId()))
 					{
 						FireInterval = FireModeConfig->FireInterval;
 					}
@@ -241,15 +244,19 @@ AWeaponBase* UGA_Fire::GetWeaponActor(const FGameplayAbilityActorInfo* ActorInfo
 void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData)
 {
 	const FWeaponFireModeConfigRow* FireModeConfig = nullptr;
+	const UWeaponEquipmentComponent* EquipComp = ActorInfo->AvatarActor.IsValid()
+		? ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>()
+		: nullptr;
+	const FName CurrentFireModeId = EquipComp ? EquipComp->GetCurrentFireModeId() : NAME_None;
 	if (!WeaponData->WeaponConfigId.IsNone())
 	{
 		if (UGameInstance* GameInstance = ActorInfo->AvatarActor.IsValid() ? ActorInfo->AvatarActor->GetGameInstance() : nullptr)
 		{
 			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
 			{
-				if (const FWeaponConfigRow* WeaponConfig = DataSubsystem->GetWeaponConfig(WeaponData->WeaponConfigId))
+				if (EquipComp)
 				{
-					FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(WeaponConfig->DefaultFireModeId);
+					FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(CurrentFireModeId);
 				}
 			}
 		}
@@ -315,6 +322,17 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	const float AreaDamage = FireModeConfig ? FireModeConfig->AreaDamage : 0.0f;
 	const float AreaRadius = FireModeConfig ? FireModeConfig->AreaRadius : 0.0f;
 	const float AreaFalloff = FireModeConfig ? FireModeConfig->AreaFalloff : 0.0f;
+	const float DamageFalloffStart = FireModeConfig ? FireModeConfig->DamageFalloffStart : 0.0f;
+	const float DamageFalloffEnd = FireModeConfig ? FireModeConfig->DamageFalloffEnd : 0.0f;
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] GA_Fire CurrentFireModeId=%s FireModeConfigFound=%s BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f"),
+		*CurrentFireModeId.ToString(),
+		FireModeConfig ? TEXT("true") : TEXT("false"),
+		BaseDamage,
+		DamageFalloffStart,
+		DamageFalloffEnd);
+#endif
 
 	for (int32 ProjectileIndex = 0; ProjectileIndex < ProjectileCount; ++ProjectileIndex)
 	{
@@ -340,7 +358,9 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 				Avatar,
 				DamageTags,
 				WeaponData->bProjectilePenetratesTerrain,
-				ProjectileSpeed);
+				ProjectileSpeed,
+				DamageFalloffStart,
+				DamageFalloffEnd);
 			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
 			if (FireModeConfig)
 			{
