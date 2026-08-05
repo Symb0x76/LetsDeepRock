@@ -11,6 +11,7 @@
 #include "WeaponGameplayTags.h"
 #include "WeaponCharacter.h"
 #include "Engine/World.h"
+#include "Data/GameDataSubsystem.h"
 
 UGA_Fire::UGA_Fire()
 {
@@ -35,10 +36,56 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	const FGameplayAbilityActivationInfo ActivationInfo,
 	const FGameplayEventData* TriggerEventData)
 {
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire ActivateAbility entered Weapon=%s"), *GetNameSafe(GetWeaponData(ActorInfo)));
+	#endif
 	// 获取武器数据
 	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
 	if (!WeaponData)
 	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: no weapon"));
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+
+	UWeaponEquipmentComponent* EquipComp = nullptr;
+	if (const FGameplayAbilitySpec* Spec = GetCurrentAbilitySpec())
+	{
+		EquipComp = Cast<UWeaponEquipmentComponent>(Spec->SourceObject.Get());
+	}
+	if (!EquipComp && ActorInfo && ActorInfo->AvatarActor.IsValid())
+	{
+		EquipComp = ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>();
+	}
+	if (!EquipComp)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: no equipment component Weapon=%s"), *GetNameSafe(WeaponData));
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+	if (EquipComp->IsReloading())
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: reloading Weapon=%s Magazine=%d Reserve=%d"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+		#endif
+		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
+		return;
+	}
+	if (EquipComp->GetCurrentMagazineAmmo() <= 0)
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire rejected: empty magazine Weapon=%s Magazine=%d Reserve=%d"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+		#endif
+		if (HasAuthority(&ActivationInfo))
+		{
+			EquipComp->StartReload();
+		}
 		CancelAbility(Handle, ActorInfo, ActivationInfo, true);
 		return;
 	}
@@ -46,15 +93,35 @@ void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
 	// CommitAbility：检查 + 触发 Cooldown（本期无 Cost）
 	if (!CommitAbility(Handle, ActorInfo, ActivationInfo))
 	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire CommitAbility failed Weapon=%s"), *GetNameSafe(WeaponData));
+		#endif
+		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
+		return;
+	}
+
+	const bool bHasAuthority = HasAuthority(&ActivationInfo);
+	// 一次成功射击固定消耗一发，且只由服务端权威修改弹药状态。
+	if (bHasAuthority && !EquipComp->ConsumeAmmoForShot())
+	{
+		#if !UE_BUILD_SHIPPING
+		UE_LOG(LogTemp, Warning, TEXT("[FireTrace] GA_Fire ConsumeAmmo failed Weapon=%s Magazine=%d Reserve=%d Reloading=%s"),
+			*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo(),
+			EquipComp->IsReloading() ? TEXT("true") : TEXT("false"));
+		#endif
 		EndAbility(Handle, ActorInfo, ActivationInfo, true, true);
 		return;
 	}
 
 	// 仅服务端生成投射物（bReplicates=true 的投射物会自动复制到客户端）
-	if (HasAuthority(&ActivationInfo))
+	if (bHasAuthority)
 	{
 		ServerSpawnProjectile(ActorInfo, WeaponData);
 	}
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire shot succeeded Weapon=%s Magazine=%d Reserve=%d"),
+		*GetNameSafe(WeaponData), EquipComp->GetCurrentMagazineAmmo(), EquipComp->GetCurrentReserveAmmo());
+	#endif
 
 	// 单发射击：立即结束 Ability（Cooldown GE 已独立运行，不需要等待）
 	EndAbility(Handle, ActorInfo, ActivationInfo, true, false);
@@ -80,6 +147,54 @@ UGameplayEffect* UGA_Fire::GetCooldownGameplayEffect() const
 	}
 	// 后备：调用父类（通常返回 nullptr）
 	return Super::GetCooldownGameplayEffect();
+}
+
+void UGA_Fire::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
+	const FGameplayAbilityActorInfo* ActorInfo,
+	const FGameplayAbilityActivationInfo ActivationInfo) const
+{
+	const UWeaponDataAsset* WeaponData = GetWeaponData(ActorInfo);
+	float FireInterval = WeaponData ? WeaponData->FireInterval : 0.01f;
+	const UWeaponEquipmentComponent* EquipComp = ActorInfo && ActorInfo->AvatarActor.IsValid()
+		? ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>()
+		: nullptr;
+	if (WeaponData && !WeaponData->WeaponConfigId.IsNone())
+	{
+		if (UGameInstance* GameInstance = ActorInfo && ActorInfo->AvatarActor.IsValid()
+			? ActorInfo->AvatarActor->GetGameInstance()
+			: nullptr)
+		{
+			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (EquipComp)
+				{
+					if (const FWeaponFireModeConfigRow* FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(EquipComp->GetCurrentFireModeId()))
+					{
+						FireInterval = FireModeConfig->FireInterval;
+					}
+				}
+			}
+		}
+	}
+	const float FinalFireInterval = FMath::Max(FireInterval, 0.01f);
+	#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FireTrace] GA_Fire ApplyCooldown WeaponConfigId=%s FireInterval=%.4f"),
+		WeaponData ? *WeaponData->WeaponConfigId.ToString() : TEXT("None"), FinalFireInterval);
+	#endif
+
+	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+	if (!CooldownGE)
+	{
+		return;
+	}
+
+	FGameplayEffectSpecHandle CooldownSpec = MakeOutgoingGameplayEffectSpec(
+		Handle, ActorInfo, ActivationInfo, CooldownGE->GetClass(), GetAbilityLevel(Handle, ActorInfo));
+	if (CooldownSpec.IsValid())
+	{
+		CooldownSpec.Data->SetDuration(FinalFireInterval, true);
+		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, CooldownSpec);
+	}
 }
 
 const UWeaponDataAsset* UGA_Fire::GetWeaponData(const FGameplayAbilityActorInfo* ActorInfo) const
@@ -128,6 +243,26 @@ AWeaponBase* UGA_Fire::GetWeaponActor(const FGameplayAbilityActorInfo* ActorInfo
 
 void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo, const UWeaponDataAsset* WeaponData)
 {
+	const FWeaponFireModeConfigRow* FireModeConfig = nullptr;
+	const UWeaponEquipmentComponent* EquipComp = ActorInfo->AvatarActor.IsValid()
+		? ActorInfo->AvatarActor->FindComponentByClass<UWeaponEquipmentComponent>()
+		: nullptr;
+	const FName CurrentFireModeId = EquipComp ? EquipComp->GetCurrentFireModeId() : NAME_None;
+	if (!WeaponData->WeaponConfigId.IsNone())
+	{
+		if (UGameInstance* GameInstance = ActorInfo->AvatarActor.IsValid() ? ActorInfo->AvatarActor->GetGameInstance() : nullptr)
+		{
+			if (UGameDataSubsystem* DataSubsystem = GameInstance->GetSubsystem<UGameDataSubsystem>())
+			{
+				if (EquipComp)
+				{
+					FireModeConfig = DataSubsystem->GetWeaponFireModeConfig(CurrentFireModeId);
+				}
+			}
+		}
+	}
+
+	// 表中的类路径暂不接入：现有内容使用强类型 DataAsset 引用，避免猜测蓝图生成类路径。
 	if (!WeaponData->ProjectileClass)
 	{
 		return;
@@ -169,25 +304,72 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 		AimDirection.Rotation().Yaw, SpawnRotation.Yaw,
 		Avatar->GetActorForwardVector().X, Avatar->GetActorForwardVector().Y);
 
-	// Deferred Spawn 保证初始化状态在 BeginPlay 前写入。
-	const FTransform SpawnTransform(SpawnRotation, SpawnLocation);
-	AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActorDeferred<AWeaponProjectile>(
-		WeaponData->ProjectileClass,
-		FTransform::Identity,
-		Avatar,
-		Cast<APawn>(Avatar),
-		ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
-
-	if (Projectile)
+	FGameplayTagContainer DamageTags = WeaponData->DamageTags;
+	if (FireModeConfig && FireModeConfig->DamageTypeTag.IsValid())
 	{
-		// BeginPlay 前一次写入全部初始化参数，随后由服务器整体复制。
-		Projectile->InitializeProjectile(
-			WeaponData->DamageEffectClass,
-			WeaponData->BaseDamage,
+		const FGameplayTag DamageTypeRootTag = FGameplayTag::RequestGameplayTag(TEXT("Damage.Type"), false);
+		if (DamageTypeRootTag.IsValid())
+		{
+			DamageTags.RemoveTags(DamageTags.Filter(FGameplayTagContainer(DamageTypeRootTag)));
+		}
+		DamageTags.AddTag(FireModeConfig->DamageTypeTag);
+	}
+
+	const float BaseDamage = FireModeConfig ? FireModeConfig->BaseDamage : WeaponData->BaseDamage;
+	const float ProjectileSpeed = FireModeConfig ? FireModeConfig->ProjectileSpeed : WeaponData->ProjectileSpeed;
+	const int32 ProjectileCount = FMath::Max(FireModeConfig ? FireModeConfig->ProjectileCount : 1, 1);
+	const float HalfSpreadAngle = FMath::Max(FireModeConfig ? FireModeConfig->SpreadAngle : 0.0f, 0.0f) * 0.5f;
+	const float AreaDamage = FireModeConfig ? FireModeConfig->AreaDamage : 0.0f;
+	const float AreaRadius = FireModeConfig ? FireModeConfig->AreaRadius : 0.0f;
+	const float AreaFalloff = FireModeConfig ? FireModeConfig->AreaFalloff : 0.0f;
+	const float DamageFalloffStart = FireModeConfig ? FireModeConfig->DamageFalloffStart : 0.0f;
+	const float DamageFalloffEnd = FireModeConfig ? FireModeConfig->DamageFalloffEnd : 0.0f;
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] GA_Fire CurrentFireModeId=%s FireModeConfigFound=%s BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f"),
+		*CurrentFireModeId.ToString(),
+		FireModeConfig ? TEXT("true") : TEXT("false"),
+		BaseDamage,
+		DamageFalloffStart,
+		DamageFalloffEnd);
+#endif
+
+	for (int32 ProjectileIndex = 0; ProjectileIndex < ProjectileCount; ++ProjectileIndex)
+	{
+		FRotator ProjectileRotation = SpawnRotation;
+		if (HalfSpreadAngle > 0.0f)
+		{
+			ProjectileRotation.Yaw += FMath::FRandRange(-HalfSpreadAngle, HalfSpreadAngle);
+		}
+
+		const FTransform SpawnTransform(ProjectileRotation, SpawnLocation);
+		AWeaponProjectile* Projectile = Avatar->GetWorld()->SpawnActorDeferred<AWeaponProjectile>(
+			WeaponData->ProjectileClass,
+			FTransform::Identity,
 			Avatar,
-			WeaponData->DamageTags,
-			WeaponData->bProjectilePenetratesTerrain,
-			WeaponData->ProjectileSpeed);
-		Projectile->FinishSpawning(SpawnTransform);
+			Cast<APawn>(Avatar),
+			ESpawnActorCollisionHandlingMethod::AlwaysSpawn);
+
+		if (Projectile)
+		{
+			Projectile->InitializeProjectile(
+				WeaponData->DamageEffectClass,
+				BaseDamage,
+				Avatar,
+				DamageTags,
+				WeaponData->bProjectilePenetratesTerrain,
+				ProjectileSpeed,
+				DamageFalloffStart,
+				DamageFalloffEnd);
+			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
+			if (FireModeConfig)
+			{
+				Projectile->InitFlightParams(
+					FireModeConfig->ProjectileLifetime,
+					FireModeConfig->ProjectileGravityScale,
+					FireModeConfig->MaxHitTargets);
+			}
+			Projectile->FinishSpawning(SpawnTransform);
+		}
 	}
 }

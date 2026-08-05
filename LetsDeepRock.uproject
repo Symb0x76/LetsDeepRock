@@ -12,6 +12,11 @@
 				"UMG",
 				"AIModule"
 			]
+		},
+		{
+			"Name": "LetsDeepRockEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
 		}
 	],
 	"Plugins": [

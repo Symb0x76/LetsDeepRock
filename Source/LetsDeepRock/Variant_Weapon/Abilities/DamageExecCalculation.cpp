@@ -8,6 +8,9 @@
 #include "Attributes/WeaponResistanceSet.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponGameState.h"
+#include "EnemyCharacter.h"
+#include "WeaponPlayerController.h"
+#include "UI/WeaponDebugTypes.h"
 
 // ============================================================================
 // 属性捕获定义（标准 GAS ExecCalc 结构体模式）
@@ -93,6 +96,31 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();
 	const FGameplayTagContainer& DamageTags = Spec.GetDynamicAssetTags();
+	FName DamageTypeName = TAG_Damage_Type_Physical.GetTag().GetTagName();
+	if (DamageTags.HasTag(TAG_Damage_Type_True))
+	{
+		DamageTypeName = TAG_Damage_Type_True.GetTag().GetTagName();
+	}
+	else if (DamageTags.HasTag(TAG_Damage_Type_Fire))
+	{
+		DamageTypeName = TAG_Damage_Type_Fire.GetTag().GetTagName();
+	}
+	else if (DamageTags.HasTag(TAG_Damage_Type_Cold))
+	{
+		DamageTypeName = TAG_Damage_Type_Cold.GetTag().GetTagName();
+	}
+	else if (DamageTags.HasTag(TAG_Damage_Type_Poison))
+	{
+		DamageTypeName = TAG_Damage_Type_Poison.GetTag().GetTagName();
+	}
+	else if (DamageTags.HasTag(TAG_Damage_Type_Explosion))
+	{
+		DamageTypeName = TAG_Damage_Type_Explosion.GetTag().GetTagName();
+	}
+	else if (DamageTags.HasTag(TAG_Damage_Type_Electric))
+	{
+		DamageTypeName = TAG_Damage_Type_Electric.GetTag().GetTagName();
+	}
 
 	// ---------- ① 基础伤害（SetByCaller Data.Damage） ----------
 	const float BaseDamage = Spec.GetSetByCallerMagnitude(TAG_Data_Damage, false, 0.0f);
@@ -100,6 +128,30 @@ void UDamageExecCalculation::Execute_Implementation(
 	{
 		return;
 	}
+	const float DamageFalloffStart = Spec.GetSetByCallerMagnitude(TAG_Data_DamageFalloffStart, false, 0.0f);
+	const float DamageFalloffEnd = Spec.GetSetByCallerMagnitude(TAG_Data_DamageFalloffEnd, false, 0.0f);
+
+	UAbilitySystemComponent* SourceASC = ExecutionParams.GetSourceAbilitySystemComponent();
+	UAbilitySystemComponent* TargetASC = ExecutionParams.GetTargetAbilitySystemComponent();
+	AActor* SourceAvatar = SourceASC ? SourceASC->GetAvatarActor() : nullptr;
+	AActor* TargetAvatar = TargetASC ? TargetASC->GetAvatarActor() : nullptr;
+	const FVector SourceLocation = SourceAvatar ? SourceAvatar->GetActorLocation() : FVector::ZeroVector;
+	FVector TargetLocation = TargetAvatar ? TargetAvatar->GetActorLocation() : FVector::ZeroVector;
+	const FHitResult* HitResult = Spec.GetContext().GetHitResult();
+	if (HitResult)
+	{
+		if (!HitResult->ImpactPoint.IsNearlyZero())
+		{
+			TargetLocation = HitResult->ImpactPoint;
+		}
+		else if (!HitResult->Location.IsNearlyZero())
+		{
+			TargetLocation = HitResult->Location;
+		}
+	}
+	const float HitDistanceCm = SourceAvatar
+		? FVector::Distance(SourceLocation, TargetLocation)
+		: 0.0f;
 
 	// ---------- 捕获源方属性 ----------
 	const FAggregatorEvaluateParameters EvalParams;
@@ -122,6 +174,41 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	// ---------- ② 全局伤害加成 ----------
 	float Damage = BaseDamage * (1.0f + DmgBonus);
+	const float DamageBeforeFalloff = Damage;
+	float FalloffMultiplier = 1.0f;
+	const bool bFalloffEnabled = SourceAvatar && DamageFalloffEnd > DamageFalloffStart && DamageFalloffEnd > 0.0f;
+	if (bFalloffEnabled)
+	{
+		FalloffMultiplier = 1.0f - FMath::Clamp(
+			(HitDistanceCm - DamageFalloffStart) / (DamageFalloffEnd - DamageFalloffStart),
+			0.0f,
+			1.0f);
+		Damage *= FalloffMultiplier;
+	}
+
+#if !UE_BUILD_SHIPPING
+	const TCHAR* FalloffReason = bFalloffEnabled
+		? TEXT("Enabled")
+		: (!SourceAvatar
+			? TEXT("Disabled:NoSourceAvatar")
+			: (DamageFalloffEnd <= 0.0f
+				? TEXT("Disabled:FalloffEndNotPositive")
+				: TEXT("Disabled:FalloffEndNotGreaterThanStart")));
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] ExecCalculation BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f Source=%s Target=%s SourceLocation=%s TargetLocation=%s HasHitResult=%s HitDistanceCm=%.3f FalloffMultiplier=%.6f DamageBeforeFalloff=%.3f DamageAfterFalloff=%.3f Reason=%s"),
+		BaseDamage,
+		DamageFalloffStart,
+		DamageFalloffEnd,
+		*GetNameSafe(SourceAvatar),
+		*GetNameSafe(TargetAvatar),
+		*SourceLocation.ToCompactString(),
+		*TargetLocation.ToCompactString(),
+		HitResult ? TEXT("true") : TEXT("false"),
+		HitDistanceCm,
+		FalloffMultiplier,
+		DamageBeforeFalloff,
+		Damage,
+		FalloffReason);
+#endif
 
 	// ---------- ③ 伤害类型克制修正 ----------
 	// TODO: 后续通过 DataTable（FDamageTypeModifierRow）查询类型克制系数，
@@ -130,9 +217,8 @@ void UDamageExecCalculation::Execute_Implementation(
 	Damage *= TypeModifier;
 
 	// ---------- ④ 暴击判定 ----------
-	const float CritMult = (FMath::FRand() < FMath::Clamp(CritChance, 0.0f, 1.0f))
-		? FMath::Max(CritDamage, 1.0f)
-		: 1.0f;
+	const bool bCritical = FMath::FRand() < FMath::Clamp(CritChance, 0.0f, 1.0f);
+	const float CritMult = bCritical ? FMath::Max(CritDamage, 1.0f) : 1.0f;
 	Damage *= CritMult;
 
 	// ---------- ⑤ 弱点加成 ----------
@@ -189,6 +275,37 @@ void UDamageExecCalculation::Execute_Implementation(
 	// ---------- ⑧ 输出到 Damage Meta Attribute ----------
 	if (Damage > 0.0f)
 	{
+#if !UE_BUILD_SHIPPING
+		AWeaponPlayerController* SourceController = nullptr;
+		if (APawn* SourcePawn = Cast<APawn>(SourceAvatar))
+		{
+			SourceController = Cast<AWeaponPlayerController>(SourcePawn->GetController());
+		}
+
+		if (SourceController && TargetASC && IsWeaponDebugUIEnabled())
+		{
+			if (UWeaponHealthSet* TargetHealthSet = const_cast<UWeaponHealthSet*>(TargetASC->GetSet<UWeaponHealthSet>()))
+			{
+				FWeaponDamageDebugEvent DebugEvent;
+				DebugEvent.DamageType = DamageTypeName;
+				DebugEvent.bCritical = bCritical;
+				DebugEvent.bWeakpoint = false;
+				DebugEvent.TargetName = TargetAvatar ? TargetAvatar->GetName() : TEXT("Unknown");
+				if (const AEnemyCharacter* TargetNPC = Cast<AEnemyCharacter>(TargetAvatar))
+				{
+					if (!TargetNPC->GetEnemyConfigRowName().IsNone())
+					{
+						DebugEvent.TargetName = TargetNPC->GetEnemyConfigRowName().ToString();
+					}
+				}
+
+				DebugEvent.TargetLocation = TargetLocation;
+				DebugEvent.HitDistanceMeters = HitDistanceCm / 100.0f;
+				TargetHealthSet->SetPendingWeaponDamageDebug(DebugEvent, SourceController);
+			}
+		}
+#endif
+
 		OutExecutionOutput.AddOutputModifier(
 			FGameplayModifierEvaluatedData(UWeaponHealthSet::GetDamageAttribute(), EGameplayModOp::Additive, Damage)
 		);

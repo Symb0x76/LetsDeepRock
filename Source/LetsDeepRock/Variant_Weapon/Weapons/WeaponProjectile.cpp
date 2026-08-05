@@ -16,6 +16,7 @@
 #include "GameFramework/PlayerState.h"
 #include "GridMap/GridDamageHelper.h"
 #include "Net/UnrealNetwork.h"
+#include "Engine/OverlapResult.h"
 
 namespace
 {
@@ -72,15 +73,11 @@ AWeaponProjectile::AWeaponProjectile()
 	ProjectileMovement->ProjectileGravityScale = 0.0f;
 	ProjectileMovement->bShouldBounce = false;
 
-	// DamageTag 在 BeginPlay 中从 Native Tag 初始化
 }
 
 void AWeaponProjectile::BeginPlay()
 {
 	Super::BeginPlay();
-
-	// 使用 Native Tag 代替字符串查找
-	DamageTag = TAG_Data_Damage;
 
 	ApplyInitializationState();
 
@@ -121,6 +118,7 @@ void AWeaponProjectile::EndPlay(const EEndPlayReason::Type EndPlayReason)
 void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 	bool bInPenetratesTerrain, float InProjectileSpeed,
+	float InDamageFalloffStart, float InDamageFalloffEnd,
 	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!HasAuthority())
@@ -137,7 +135,18 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	InitializationState.DamageTags = InDamageTags;
 	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
+	InitializationState.DamageFalloffStart = InDamageFalloffStart;
+	InitializationState.DamageFalloffEnd = InDamageFalloffEnd;
 	InitializationState.bInitialized = true;
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] Projectile InitDamageParams Projectile=%s Target=None AppliedDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f PendingHitResult=%s"),
+		*GetNameSafe(this),
+		InDamage,
+		InDamageFalloffStart,
+		InDamageFalloffEnd,
+		PendingHitResult.IsSet() ? TEXT("true") : TEXT("false"));
+#endif
 
 	// 设置 Actor 的 Instigator 用于引擎层面的忽略判定
 	SetInstigator(Cast<APawn>(InInstigator));
@@ -240,12 +249,45 @@ void AWeaponProjectile::ApplyInitializationState()
 		UE_LOG(LogTemp, Warning, TEXT("[Projectile] SpawnForward=(%.2f, %.2f) Vel=(%.2f, %.2f) RotYaw=%.1f"),
 			SpawnForward.X, SpawnForward.Y, ProjectileMovement->Velocity.X, ProjectileMovement->Velocity.Y, GetActorRotation().Yaw);
 	}
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->ProjectileGravityScale = InitializationState.ProjectileGravityScale;
+	}
+	AreaDamage = InitializationState.AreaDamage;
+	AreaRadius = InitializationState.AreaRadius;
+	AreaFalloff = InitializationState.AreaFalloff;
+	MaxHitTargets = FMath::Max(1, InitializationState.MaxHitTargets);
 }
 
 void AWeaponProjectile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponProjectile, InitializationState);
+}
+
+void AWeaponProjectile::InitFlightParams(float InLifetime, float InGravityScale, int32 InMaxHitTargets)
+{
+	if (InLifetime > 0.0f)
+	{
+		SetLifeSpan(InLifetime);
+	}
+	if (ProjectileMovement)
+	{
+		ProjectileMovement->ProjectileGravityScale = InGravityScale;
+	}
+	InitializationState.ProjectileGravityScale = InGravityScale;
+	InitializationState.MaxHitTargets = FMath::Max(1, InMaxHitTargets);
+	MaxHitTargets = InitializationState.MaxHitTargets;
+}
+
+void AWeaponProjectile::InitAreaDamageParams(float InAreaDamage, float InAreaRadius, float InAreaFalloff)
+{
+	AreaDamage = InAreaDamage;
+	AreaRadius = InAreaRadius;
+	AreaFalloff = InAreaFalloff;
+	InitializationState.AreaDamage = InAreaDamage;
+	InitializationState.AreaRadius = InAreaRadius;
+	InitializationState.AreaFalloff = InAreaFalloff;
 }
 
 void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -268,9 +310,37 @@ void AWeaponProjectile::OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp
 		return;
 	}
 
-	// Overlap 只对 Pawn 生效（敌人命中）
-	ApplyDamageToTarget(OtherActor);
-	Destroy();
+	APawn* HitPawn = Cast<APawn>(OtherActor);
+	if (!HitPawn || HitPawns.Contains(HitPawn))
+	{
+		return;
+	}
+
+	if (bFromSweep)
+	{
+		PendingHitResult = SweepResult;
+	}
+	const bool bDamageApplied = ApplyDamageToTarget(HitPawn);
+	PendingHitResult.Reset();
+
+	if (AreaDamage > 0.0f && AreaRadius > 0.0f)
+	{
+		const FVector ExplosionCenter = bFromSweep && !SweepResult.ImpactPoint.IsZero()
+			? FVector(SweepResult.ImpactPoint)
+			: GetActorLocation();
+		Explode(ExplosionCenter, bFromSweep ? &SweepResult : nullptr, HitPawn);
+		Destroy();
+		return;
+	}
+
+	if (bDamageApplied)
+	{
+		HitPawns.Add(HitPawn);
+		if (HitPawns.Num() >= MaxHitTargets)
+		{
+			Destroy();
+		}
+	}
 }
 
 void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
@@ -282,6 +352,16 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	// 只在服务端处理
 	if (!HasAuthority())
 	{
+		return;
+	}
+
+	const bool bIsWorldStatic = ImpactResult.GetComponent()
+		&& ImpactResult.GetComponent()->GetCollisionObjectType() == ECC_WorldStatic;
+	if (AreaDamage > 0.0f && AreaRadius > 0.0f && bIsWorldStatic)
+	{
+		const FVector ExplosionCenter = ImpactResult.ImpactPoint.IsZero() ? GetActorLocation() : FVector(ImpactResult.ImpactPoint);
+		Explode(ExplosionCenter, &ImpactResult);
+		Destroy();
 		return;
 	}
 
@@ -308,25 +388,26 @@ void AWeaponProjectile::OnProjectileStop(const FHitResult& ImpactResult)
 	}
 }
 
-void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
+bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> DamageOverride)
 {
+	const float AppliedDamage = DamageOverride.IsSet() ? DamageOverride.GetValue() : InitializationState.DamageValue;
 	if (bGameplayRecoveryBlocked || AWeaponGameState::IsGameplayRecoveryBlockedFor(this) ||
-		!InitializationState.DamageEffectClass || InitializationState.DamageValue <= 0.0f)
+		!InitializationState.DamageEffectClass || AppliedDamage <= 0.0f)
 	{
-		return;
+		return false;
 	}
 
 	// 通过 IAbilitySystemInterface 获取目标 ASC（统一入口，不 Cast 具体类）
-	IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(TargetActor);
+	IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(TargetPawn);
 	if (!TargetASCInterface)
 	{
-		return;
+		return false;
 	}
 
 	UAbilitySystemComponent* TargetASC = TargetASCInterface->GetAbilitySystemComponent();
 	if (!TargetASC)
 	{
-		return;
+		return false;
 	}
 
 	// 获取射击者（Source）的 ASC，用于正确伤害归因
@@ -346,19 +427,106 @@ void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
 	// 构建 EffectContext：携带因果信息（谁射的、用什么射的）
 	FGameplayEffectContextHandle Context = SpecOwnerASC->MakeEffectContext();
 	Context.AddInstigator(InitializationState.InstigatorActor, this);
+	if (PendingHitResult.IsSet())
+	{
+		Context.AddHitResult(PendingHitResult.GetValue());
+	}
 
 	// 创建 GE Spec
 	FGameplayEffectSpecHandle SpecHandle = SpecOwnerASC->MakeOutgoingSpec(
 		InitializationState.DamageEffectClass, 1.0f, Context);
 	if (!SpecHandle.IsValid())
 	{
-		return;
+		return false;
 	}
 
 	// 注入 SetByCaller 伤害值
-	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
-		SpecHandle, DamageTag, InitializationState.DamageValue);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_Damage, AppliedDamage);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffStart, InitializationState.DamageFalloffStart);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffEnd, InitializationState.DamageFalloffEnd);
+	SpecHandle.Data->AppendDynamicAssetTags(InitializationState.DamageTags);
+
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] Projectile ApplyGE Projectile=%s Target=%s AppliedDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f PendingHitResult=%s"),
+		*GetNameSafe(this),
+		*GetNameSafe(TargetPawn),
+		AppliedDamage,
+		InitializationState.DamageFalloffStart,
+		InitializationState.DamageFalloffEnd,
+		PendingHitResult.IsSet() ? TEXT("true") : TEXT("false"));
+#endif
 
 	// 对目标应用伤害（从 Source 施加到 Target）
-	SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+	return SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC).IsValid();
+}
+
+void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)
+{
+	ApplyDamageToTarget(Cast<APawn>(TargetActor));
+}
+
+void AWeaponProjectile::Explode(const FVector& ExplosionCenter, const FHitResult* SourceHitResult, APawn* DirectHitPawn)
+{
+	if (!HasAuthority() || bHasExploded || AreaDamage <= 0.0f || AreaRadius <= 0.0f)
+	{
+		return;
+	}
+	bHasExploded = true;
+
+	FCollisionObjectQueryParams ObjectQueryParams;
+	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(WeaponProjectileExplosion), false, this);
+	QueryParams.AddIgnoredActor(this);
+	QueryParams.AddIgnoredActor(GetOwner());
+	QueryParams.AddIgnoredActor(GetInstigator());
+	if (InitializationState.InstigatorActor)
+	{
+		QueryParams.AddIgnoredActor(InitializationState.InstigatorActor);
+	}
+
+	TArray<FOverlapResult> Overlaps;
+	GetWorld()->OverlapMultiByObjectType(
+		Overlaps,
+		ExplosionCenter,
+		FQuat::Identity,
+		ObjectQueryParams,
+		FCollisionShape::MakeSphere(AreaRadius),
+		QueryParams);
+
+	FHitResult ExplosionHit = SourceHitResult ? *SourceHitResult : FHitResult();
+	ExplosionHit.Location = ExplosionCenter;
+	ExplosionHit.ImpactPoint = ExplosionCenter;
+	PendingHitResult = ExplosionHit;
+
+	TSet<TWeakObjectPtr<APawn>> DamagedPawns;
+	const float EdgeMultiplier = FMath::Clamp(AreaFalloff, 0.0f, 1.0f);
+	for (const FOverlapResult& Overlap : Overlaps)
+	{
+		APawn* TargetPawn = Cast<APawn>(Overlap.GetActor());
+		if (!TargetPawn || DamagedPawns.Contains(TargetPawn))
+		{
+			continue;
+		}
+		DamagedPawns.Add(TargetPawn);
+
+		const float DistanceAlpha = FMath::Clamp(FVector::Distance(ExplosionCenter, TargetPawn->GetActorLocation()) / AreaRadius, 0.0f, 1.0f);
+		const float DamageMultiplier = FMath::Lerp(1.0f, EdgeMultiplier, DistanceAlpha);
+		ApplyDamageToTarget(TargetPawn, AreaDamage * DamageMultiplier);
+	}
+
+	AActor* DirectHitActor = DirectHitPawn;
+	if (DirectHitPawn
+		&& DirectHitActor != this
+		&& DirectHitActor != GetOwner()
+		&& DirectHitActor != GetInstigator()
+		&& DirectHitActor != InitializationState.InstigatorActor
+		&& !DamagedPawns.Contains(DirectHitPawn))
+	{
+		DamagedPawns.Add(DirectHitPawn);
+		const float DistanceAlpha = FMath::Clamp(FVector::Distance(ExplosionCenter, DirectHitPawn->GetActorLocation()) / AreaRadius, 0.0f, 1.0f);
+		const float DamageMultiplier = FMath::Lerp(1.0f, EdgeMultiplier, DistanceAlpha);
+		ApplyDamageToTarget(DirectHitPawn, AreaDamage * DamageMultiplier);
+	}
+
+	PendingHitResult.Reset();
 }

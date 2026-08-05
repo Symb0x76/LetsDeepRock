@@ -56,8 +56,11 @@ void AGrenadeProjectile::InitFromGrenadeData(
 		GrenadeData->DamageTags,
 		false,
 		GrenadeData->ThrowSpeed,
+		0.0f,
+		0.0f,
 		ExplicitPlayerId
 	);
+	InitFlightParams(0.0f, GrenadeData->GravityScale, 1);
 
 	// 手雷专属弹道配置
 	FuseSeconds = GrenadeData->FuseSeconds;
@@ -261,7 +264,7 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 
 	// 注入 SetByCaller 伤害值
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(
-		SpecHandle, DamageTag, InitializationState.DamageValue);
+		SpecHandle, TAG_Data_Damage, InitializationState.DamageValue);
 
 	// ★ 关键：注入 DynamicAssetTags，使 ExecCalc 能从 Spec.GetDynamicAssetTags() 读取伤害类型 Tag
 	// 用于 ⑦ 抗性减免：Damage.Type.Explosion → Resist.Explosion

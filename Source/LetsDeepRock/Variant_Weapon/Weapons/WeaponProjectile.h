@@ -38,7 +38,28 @@ struct FWeaponProjectileInitializationState
 	UPROPERTY()
 	float ProjectileSpeed = 3000.0f;
 
-	UPROPERTY()
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float DamageFalloffStart = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float DamageFalloffEnd = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaDamage = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaRadius = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float AreaFalloff = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	float ProjectileGravityScale = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	int32 MaxHitTargets = 1;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
 	bool bPenetratesTerrain = false;
 
 	UPROPERTY()
@@ -68,6 +89,7 @@ public:
 	void InitializeProjectile(TSubclassOf<UGameplayEffect> InDamageGE, float InDamage,
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed,
+		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f,
 		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
 	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
@@ -78,6 +100,12 @@ public:
 	virtual void SetGameplayRecoveryBlocked(bool bBlocked);
 
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	/** 设置表驱动的生命期、重力和最大不同 Pawn 命中数 */
+	void InitFlightParams(float InLifetime, float InGravityScale, int32 InMaxHitTargets);
+
+	/** 设置范围伤害参数（由 GA_Fire 从开火模式配置传入） */
+	void InitAreaDamageParams(float InAreaDamage, float InAreaRadius, float InAreaFalloff);
 
 protected:
 
@@ -100,8 +128,13 @@ protected:
 	UPROPERTY(ReplicatedUsing = OnRep_InitializationState)
 	FWeaponProjectileInitializationState InitializationState;
 
-	/** SetByCaller 伤害 Tag */
-	FGameplayTag DamageTag;
+	int32 MaxHitTargets = 1;
+	TSet<TWeakObjectPtr<APawn>> HitPawns;
+	TOptional<FHitResult> PendingHitResult;
+	float AreaDamage = 0.0f;
+	float AreaRadius = 0.0f;
+	float AreaFalloff = 0.0f;
+	bool bHasExploded = false;
 
 	bool bGameplayRecoveryBlocked = false;
 	bool bMovementWasActiveBeforeRecovery = false;
@@ -114,7 +147,6 @@ protected:
 
 	/** 将初始化快照应用到本地移动组件和碰撞忽略列表。 */
 	void ApplyInitializationState();
-
 	/** 命中处理（碰撞回调），子类可覆写以改变命中行为（如手雷弹跳过而不引爆） */
 	UFUNCTION()
 	virtual void OnSphereBeginOverlap(UPrimitiveComponent* OverlappedComp, AActor* OtherActor,
@@ -126,5 +158,9 @@ protected:
 	virtual void OnProjectileStop(const FHitResult& ImpactResult);
 
 	/** 对目标施加伤害 GE（可用于手雷等子类的爆炸伤害） */
+	bool ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> DamageOverride = TOptional<float>());
 	virtual void ApplyDamageToTarget(AActor* TargetActor);
+
+	/** 在指定命中点对范围内 Pawn 施加一次 GAS 伤害 */
+	void Explode(const FVector& ExplosionCenter, const FHitResult* SourceHitResult = nullptr, APawn* DirectHitPawn = nullptr);
 };

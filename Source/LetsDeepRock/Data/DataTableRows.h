@@ -28,10 +28,13 @@ struct FProfessionConfigRow : public FTableRowBase
 	FName PrimaryWeaponId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
-	FName SecondarySlotType = TEXT("Weapon");
+	FName SecondaryWeaponId;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
-	FName SecondaryItemId;
+	FName SkillItemId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
+	FName ClassEquipmentId;
 
 	/** 可供玩家选择的手雷配置行，英文逗号分隔 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
@@ -42,6 +45,33 @@ struct FProfessionConfigRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Loadout")
 	FName DefaultGrenadeId;
+
+	/** 可供玩家选择的护甲词条，英文逗号分隔，当前允许为空 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Armor")
+	FString ArmorPerkIds;
+};
+
+/**
+ * 职业武器池配置表行
+ * 对应 DataTable: DT_ProfessionWeaponPool
+ */
+USTRUCT(BlueprintType)
+struct FProfessionWeaponPoolRow : public FTableRowBase
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName ProfessionId;
+
+	/** Primary 或 Secondary */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName SlotType;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	FName WeaponId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "ProfessionWeaponPool")
+	bool bDefaultEquipped = false;
 };
 
 /**
@@ -129,6 +159,16 @@ struct FWeaponFireModeConfigRow : public FTableRowBase
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
 	float ProjectileLifetime = 0.0f;
+
+	/** 后续状态效果机制使用的配置行 ID；阶段1仅保证可读取 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Effect")
+	FName StatusEffectId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 0))
+	float ProjectileGravityScale = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1))
+	int32 MaxHitTargets = 1;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Projectile", meta = (ClampMin = 1))
 	int32 ProjectileCount = 1;

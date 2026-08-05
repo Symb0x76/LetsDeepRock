@@ -21,9 +21,11 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
+#include "UI/WeaponHUD.h"
 
 AWeaponGameMode::AWeaponGameMode()
 {
+	HUDClass = AWeaponHUD::StaticClass();
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
 }
@@ -1132,6 +1134,23 @@ void AWeaponGameMode::ResetAllPlayerReadyStates()
 void AWeaponGameMode::HandlePlayerReadyChanged()
 {
 	RefreshMatchPhase();
+}
+
+void AWeaponGameMode::RespawnPlayerImmediately(AController* PlayerController)
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+
+	// 若当前存在挂起的死亡重生计时器，先清除，避免稍后重复触发一次 RespawnPlayer
+	if (FTimerHandle* RespawnTimer = RespawnTimers.Find(PlayerController))
+	{
+		GetWorldTimerManager().ClearTimer(*RespawnTimer);
+		RespawnTimers.Remove(PlayerController);
+	}
+
+	RespawnPlayer(PlayerController);
 }
 
 void AWeaponGameMode::RespawnPlayer(AController* PlayerController)

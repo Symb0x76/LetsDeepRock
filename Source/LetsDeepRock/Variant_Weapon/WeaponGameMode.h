@@ -88,6 +88,17 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Match")
 	bool CanStartWeaponMatch() const;
 
+	/**
+	 *  立即重生入口（供职业选择 UI 调用）
+	 *
+	 *  与 PlayerDied 走的延迟重生流程不同：这里跳过 RespawnDelay 倒计时，
+	 *  取消任何挂起的死亡重生计时器后立即执行 RespawnPlayer，
+	 *  用于"选择职业后立即重生并应用新配置"的场景。
+	 *  职业本身的存档写入由调用方（WeaponPlayerController）在此之前完成，
+	 *  RespawnPlayer 内部会重新读取存档并应用到新 Pawn。
+	 */
+	void RespawnPlayerImmediately(AController* PlayerController);
+
 protected:
 
 	/** 重生延迟（秒），可在蓝图子类中配置 */
