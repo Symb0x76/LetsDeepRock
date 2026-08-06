@@ -36,9 +36,8 @@ public:
 
 	virtual void PreLogin(const FString& Options, const FString& Address, const FUniqueNetIdRepl& UniqueId, FString& ErrorMessage) override;
 
-	virtual void PostLogin(APlayerController* NewPlayer) override;
-
 	virtual void Logout(AController* ExitingController) override;
+	virtual void RestartPlayer(AController* NewPlayer) override;
 
 	/** Import one complete recovery roster after validating every entry and connected identity. */
 	bool SetRecoveryRoster(const TArray<FWeaponRecoveryRosterSnapshot>& NewRoster, uint64 RestoredRevision);
@@ -89,6 +88,11 @@ public:
 	bool CanStartWeaponMatch() const;
 
 protected:
+	/** Last pre-spawn hook: reserve the stable slot before HandleStartingNewPlayer runs. */
+	virtual void OnPostLogin(AController* NewPlayer) override;
+	virtual APawn* SpawnDefaultPawnAtTransform_Implementation(
+		AController* NewPlayer,
+		const FTransform& SpawnTransform) override;
 
 	/** 重生延迟（秒），可在蓝图子类中配置 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Respawn")

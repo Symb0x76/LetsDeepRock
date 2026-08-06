@@ -26,9 +26,13 @@ public:
 
 	AWeaponPlayerController();
 
-	/** Server -> owning Backup: one paced chunk of an immutable migration payload. */
+	/**
+	 * Server -> owning Backup: one paced chunk of an immutable migration payload.
+	 * ReceiverPlayerId is supplied by authority because PlayerState identity replication may lag this RPC.
+	 */
 	UFUNCTION(Client, Reliable)
 	void ClientReceiveMigrationPayloadChunk(
+		const FUniqueNetIdRepl& ReceiverPlayerId,
 		const FWeaponMigrationPayloadEnvelope& Envelope,
 		const TArray<uint8>& ChunkBytes);
 
@@ -36,9 +40,14 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientUpdateMigrationRoleAssignment(const FWeaponMigrationRoleAssignment& Assignment);
 
-	/** Server -> every client: A and B both ACKed this exact recovery payload. */
+	/**
+	 * Server -> every client: A and B both ACKed this exact recovery payload.
+	 * ReceiverPlayerId keeps role resolution independent of local PlayerState replication timing.
+	 */
 	UFUNCTION(Client, Reliable)
-	void ClientConfirmMigrationCommonCommitted(const FWeaponMigrationPayloadAck& Ack);
+	void ClientConfirmMigrationCommonCommitted(
+		const FUniqueNetIdRepl& ReceiverPlayerId,
+		const FWeaponMigrationPayloadAck& Ack);
 
 	/** Candidate -> owning survivor: the restored World is ready for presentation acknowledgement. */
 	UFUNCTION(Client, Reliable)

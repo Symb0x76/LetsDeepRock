@@ -657,6 +657,7 @@ bool FWeaponMigrationCommonAnnouncementAutomationTest::RunTest(const FString& Pa
 	const FUniqueNetIdRepl HostId = MakePlayerId(TEXT("1111111111111111"));
 	const FUniqueNetIdRepl BackupAId = MakePlayerId(TEXT("2222222222222222"));
 	const FUniqueNetIdRepl BackupBId = MakePlayerId(TEXT("3333333333333333"));
+	const FUniqueNetIdRepl ObserverId = MakePlayerId(TEXT("4444444444444444"));
 	const FGuid MatchId = FGuid::NewGuid();
 	FWeaponMigrationRoleAssignment Assignment;
 	Assignment.MatchId = MatchId;
@@ -710,6 +711,18 @@ bool FWeaponMigrationCommonAnnouncementAutomationTest::RunTest(const FString& Pa
 	TestFalse(
 		TEXT("A Backup cannot accept CommonCommitted without identical local bytes"),
 		EmptyBackup->AcceptCommonCommittedAnnouncement(BackupAId, Ack, Error));
+
+	UWeaponHostMigrationSubsystem* ObserverSubsystem =
+		NewObject<UWeaponHostMigrationSubsystem>(GameInstance);
+	TestTrue(TEXT("An observer accepts the fenced assignment"),
+		ObserverSubsystem->AcceptRoleAssignment(Assignment, Error));
+	TestTrue(TEXT("An observer accepts CommonCommitted metadata without payload bytes"),
+		ObserverSubsystem->AcceptCommonCommittedAnnouncement(ObserverId, Ack, Error));
+	TestTrue(TEXT("The observer remains outside the confirming Backup A/B roles"),
+		ObserverSubsystem->GetRoleForPlayer(ObserverId) == EWeaponMigrationRole::None);
+	TArray<uint8> ObserverBytes;
+	TestFalse(TEXT("An observer does not gain recovery payload authority"),
+		ObserverSubsystem->CopyCommonCommittedPayload(ObserverBytes));
 
 	if (!TestTrue(
 		TEXT("A Backup accepts CommonCommitted with identical local bytes"),

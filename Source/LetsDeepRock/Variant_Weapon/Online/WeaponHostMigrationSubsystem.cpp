@@ -2722,7 +2722,13 @@ void UWeaponHostMigrationSubsystem::BroadcastCommonCommittedAck()
 	{
 		if (AWeaponPlayerController* PlayerController = Cast<AWeaponPlayerController>(It->Get()))
 		{
-			PlayerController->ClientConfirmMigrationCommonCommitted(CommonCommittedAck);
+			const APlayerState* PlayerState = PlayerController->GetPlayerState<APlayerState>();
+			const FUniqueNetIdRepl ReceiverPlayerId = PlayerState
+				? PlayerState->GetUniqueId()
+				: FUniqueNetIdRepl();
+			PlayerController->ClientConfirmMigrationCommonCommitted(
+				ReceiverPlayerId,
+				CommonCommittedAck);
 		}
 	}
 }
@@ -2842,8 +2848,14 @@ void UWeaponHostMigrationSubsystem::SendNextOutgoingChunk()
 	TArray<uint8> ChunkBytes;
 	ChunkBytes.Append(OutgoingTransfer.Bytes.GetData() + ChunkOffset, ChunkByteCount);
 
-	HostBackupA->ClientReceiveMigrationPayloadChunk(ChunkEnvelope, ChunkBytes);
-	HostBackupB->ClientReceiveMigrationPayloadChunk(ChunkEnvelope, ChunkBytes);
+	HostBackupA->ClientReceiveMigrationPayloadChunk(
+		CurrentRoleAssignment.BackupA.PlayerId,
+		ChunkEnvelope,
+		ChunkBytes);
+	HostBackupB->ClientReceiveMigrationPayloadChunk(
+		CurrentRoleAssignment.BackupB.PlayerId,
+		ChunkEnvelope,
+		ChunkBytes);
 	++OutgoingTransfer.NextChunkIndex;
 
 	if (UWorld* World = HostWorld.Get())
