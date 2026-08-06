@@ -12,6 +12,7 @@ class UAbilitySystemComponent;
 class UWeaponHealthSet;
 class UWeaponResistanceSet;
 class UWeaponMovementSet;
+class UStatusEffectComponent;
 
 /**
  *  GAS 自持 NPC 基类
@@ -41,6 +42,7 @@ public:
 protected:
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** 能力系统组件（NPC 自持） */
 	UPROPERTY(VisibleAnywhere, Category = "GAS")
@@ -57,6 +59,9 @@ protected:
 	/** 移动属性集 */
 	UPROPERTY()
 	TObjectPtr<UWeaponMovementSet> MovementSet;
+
+	UPROPERTY(VisibleAnywhere, Category = "StatusEffect")
+	TObjectPtr<UStatusEffectComponent> StatusEffectComponent;
 
 	/** 初始生命值（无 DataTable 配置时作为 fallback） */
 	UPROPERTY(EditAnywhere, Category = "Attributes", meta = (ClampMin = 1))

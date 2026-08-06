@@ -72,6 +72,10 @@ void FAttributeInitHelper::InitializePlayerAttributes(UAbilitySystemComponent* A
 void FAttributeInitHelper::InitializeNPCAttributes(UAbilitySystemComponent* ASC, const FEnemyConfigRow& Row)
 {
 	if (!ASC) return;
+	if (Row.ArmorTypeTag.IsValid())
+	{
+		ASC->AddLooseGameplayTag(Row.ArmorTypeTag);
+	}
 
 	// HealthSet
 	if (UWeaponHealthSet* HS = const_cast<UWeaponHealthSet*>(ASC->GetSet<UWeaponHealthSet>()))

@@ -744,6 +744,7 @@ bool UWeaponSnapshotCoordinator::StageRestoreActors(
 			SavedProjectile.ProjectileSpeed,
 			SavedProjectile.DamageFalloffStart,
 			SavedProjectile.DamageFalloffEnd,
+			SavedProjectile.StatusEffectId,
 			SavedProjectile.InstigatorPlayerId);
 		Projectile->InitFlightParams(
 			SavedProjectile.RemainingLifeSeconds,
@@ -1387,6 +1388,7 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		SavedProjectile.Rotation = Projectile->GetActorRotation();
 		SavedProjectile.Velocity = Projectile->GetProjectileVelocity();
 		SavedProjectile.DamageTags = Initialization.DamageTags;
+		SavedProjectile.StatusEffectId = Initialization.StatusEffectId;
 		SavedProjectile.DamageValue = Initialization.DamageValue;
 		SavedProjectile.ProjectileSpeed = Initialization.ProjectileSpeed;
 		SavedProjectile.DamageFalloffStart = Initialization.DamageFalloffStart;
