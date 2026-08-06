@@ -234,6 +234,19 @@ struct FWeaponMigrationBackendSelection
 	bool bReady = false;
 };
 
+/** Match-scoped backend latch. Once committed, connectivity changes cannot silently change policy. */
+struct FWeaponMigrationBackendState
+{
+	FWeaponMigrationBackendReadiness Readiness;
+	EWeaponMigrationBackend Backend = EWeaponMigrationBackend::LocalP2P;
+	bool bCommitted = false;
+
+	bool ApplyReadiness(
+		const FWeaponMigrationBackendReadiness& NewReadiness,
+		FString& OutError);
+	void Reset();
+};
+
 struct FWeaponRecoveryCheckpointSelection
 {
 	EWeaponRecoveryCheckpointSource Source = EWeaponRecoveryCheckpointSource::None;
