@@ -786,6 +786,29 @@ bool FWeaponMigrationBackendPolicyAutomationTest::RunTest(const FString& Paramet
 		BackendSelection.bReady &&
 		BackendSelection.Backend == EWeaponMigrationBackend::CentralAssisted);
 
+	FWeaponMigrationBackendState BackendState;
+	FString BackendError;
+	TestTrue(TEXT("A completed central handshake commits the Match backend"),
+		BackendState.ApplyReadiness(Readiness, BackendError));
+	TestTrue(TEXT("The committed backend is Central-assisted"),
+		BackendState.bCommitted &&
+		BackendState.Backend == EWeaponMigrationBackend::CentralAssisted);
+
+	FWeaponMigrationBackendReadiness LostCentralReadiness;
+	LostCentralReadiness.bLocalTransportReady = true;
+	TestFalse(TEXT("A central connectivity loss cannot silently downgrade the Match"),
+		BackendState.ApplyReadiness(LostCentralReadiness, BackendError));
+	TestTrue(TEXT("A rejected downgrade preserves the committed central backend"),
+		BackendState.bCommitted &&
+		BackendState.Backend == EWeaponMigrationBackend::CentralAssisted);
+
+	BackendState.Reset();
+	TestFalse(TEXT("Reset clears the Match-scoped backend latch"), BackendState.bCommitted);
+	TestTrue(TEXT("A new Match can commit Local P2P fallback"),
+		BackendState.ApplyReadiness(LostCentralReadiness, BackendError));
+	TestTrue(TEXT("The new Match remains on its Local P2P backend"),
+		BackendState.Backend == EWeaponMigrationBackend::LocalP2P);
+
 	const FUniqueNetIdRepl HostId = MakePlayerId(TEXT("1111111111111111"));
 	FWeaponCentralHostLease Lease;
 	Lease.MatchId = FGuid::NewGuid();

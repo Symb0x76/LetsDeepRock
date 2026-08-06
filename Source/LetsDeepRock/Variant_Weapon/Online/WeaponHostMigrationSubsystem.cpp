@@ -165,6 +165,39 @@ FWeaponMigrationBackendSelection WeaponMigrationBackendPolicy::SelectMatchBacken
 	return Selection;
 }
 
+bool FWeaponMigrationBackendState::ApplyReadiness(
+	const FWeaponMigrationBackendReadiness& NewReadiness,
+	FString& OutError)
+{
+	OutError.Reset();
+	Readiness = NewReadiness;
+	const FWeaponMigrationBackendSelection Selection =
+		WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	if (!Selection.bReady)
+	{
+		OutError = bCommitted
+			? TEXT("The committed migration backend is not currently ready")
+			: TEXT("Neither the central handshake nor the local transport is ready");
+		return false;
+	}
+	if (bCommitted && Selection.Backend != Backend)
+	{
+		OutError = TEXT("The Match migration backend is locked until a new MatchId begins");
+		return false;
+	}
+
+	Backend = Selection.Backend;
+	bCommitted = true;
+	return true;
+}
+
+void FWeaponMigrationBackendState::Reset()
+{
+	Readiness = FWeaponMigrationBackendReadiness();
+	Backend = EWeaponMigrationBackend::LocalP2P;
+	bCommitted = false;
+}
+
 FWeaponRecoveryCheckpointSelection WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
 	const FGuid& ExpectedMatchId,
 	const uint64 ExpectedAuthorityEpoch,
@@ -373,6 +406,43 @@ void UWeaponHostMigrationSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
+bool UWeaponHostMigrationSubsystem::ApplyMigrationBackendReadiness(
+	const FWeaponMigrationBackendReadiness& Readiness,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!MigrationBackendState.bCommitted &&
+		MigrationState != EWeaponHostMigrationState::Idle &&
+		MigrationState != EWeaponHostMigrationState::Monitoring)
+	{
+		OutError = TEXT("A migration backend cannot be committed during an active recovery attempt");
+		return false;
+	}
+
+	const bool bWasCommitted = MigrationBackendState.bCommitted;
+	if (!MigrationBackendState.ApplyReadiness(Readiness, OutError))
+	{
+		return false;
+	}
+
+	if (!bWasCommitted)
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Log,
+			TEXT("HostMigration backend committed: %s"),
+			MigrationBackendState.Backend == EWeaponMigrationBackend::CentralAssisted
+				? TEXT("CentralAssisted")
+				: TEXT("LocalP2P"));
+	}
+	return true;
+}
+
+void UWeaponHostMigrationSubsystem::ResetMigrationBackendSelection()
+{
+	MigrationBackendState.Reset();
+}
+
 bool UWeaponHostMigrationSubsystem::PrepareAuthorityTerm(
 	const FGuid& MatchId,
 	const FWeaponMigrationRoleMember& ActiveHost,
@@ -396,6 +466,7 @@ bool UWeaponHostMigrationSubsystem::PrepareAuthorityTerm(
 	if (!bHasCurrentRoleAssignment || CurrentRoleAssignment.MatchId != MatchId)
 	{
 		StopHostSnapshotTransport();
+		ResetMigrationBackendSelection();
 		ResetPayloadBuffers();
 		CommonCommittedAck = FWeaponMigrationPayloadAck();
 		CommonCommittedRoleAssignment = FWeaponMigrationRoleAssignment();
