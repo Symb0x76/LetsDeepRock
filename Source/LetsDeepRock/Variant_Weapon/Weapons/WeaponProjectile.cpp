@@ -17,6 +17,7 @@
 #include "GridMap/GridDamageHelper.h"
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
+#include "Attributes/StatusEffectComponent.h"
 
 namespace
 {
@@ -119,6 +120,7 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 	bool bInPenetratesTerrain, float InProjectileSpeed,
 	float InDamageFalloffStart, float InDamageFalloffEnd,
+	FName InStatusEffectId,
 	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
 	if (!HasAuthority())
@@ -133,6 +135,7 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 		? ExplicitPlayerId
 		: ResolveInstigatorPlayerId(InInstigator);
 	InitializationState.DamageTags = InDamageTags;
+	InitializationState.StatusEffectId = InStatusEffectId;
 	InitializationState.bPenetratesTerrain = bInPenetratesTerrain;
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
 	InitializationState.DamageFalloffStart = InDamageFalloffStart;
@@ -457,7 +460,17 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> 
 #endif
 
 	// 对目标应用伤害（从 Source 施加到 Target）
-	return SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC).IsValid();
+	SpecOwnerASC->ApplyGameplayEffectSpecToTarget(*SpecHandle.Data.Get(), TargetASC);
+	const bool bApplied = true;
+	if (bApplied && !InitializationState.StatusEffectId.IsNone() && !StatusAppliedPawns.Contains(TargetPawn))
+	{
+		if (UStatusEffectComponent* StatusComponent = TargetPawn->FindComponentByClass<UStatusEffectComponent>())
+		{
+			StatusComponent->TryApply(InitializationState.StatusEffectId, InitializationState.DamageEffectClass);
+			StatusAppliedPawns.Add(TargetPawn);
+		}
+	}
+	return bApplied;
 }
 
 void AWeaponProjectile::ApplyDamageToTarget(AActor* TargetActor)

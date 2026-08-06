@@ -39,6 +39,10 @@ UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Cooldown_Weapon_Grenade);
 // 状态
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Dead);
 
+// 状态伤害内部分类
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Damage_Status_Burning);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Damage_Status_Bleeding);
+
 // 伤害类型
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Damage_Terrain);
 

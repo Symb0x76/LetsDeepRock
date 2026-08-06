@@ -360,7 +360,8 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 				WeaponData->bProjectilePenetratesTerrain,
 				ProjectileSpeed,
 				DamageFalloffStart,
-				DamageFalloffEnd);
+				DamageFalloffEnd,
+				FireModeConfig ? FireModeConfig->StatusEffectId : NAME_None);
 			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
 			if (FireModeConfig)
 			{

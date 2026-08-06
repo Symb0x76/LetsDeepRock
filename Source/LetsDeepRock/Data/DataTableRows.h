@@ -289,6 +289,12 @@ struct FStatusEffectConfigRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 1))
 	int32 MaxStacks = 1;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 0, ClampMax = 1))
+	float ApplyChance = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect", meta = (ClampMin = 1))
+	int32 HitsPerStack = 1;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "StatusEffect")
 	FName RefreshPolicy;
 };

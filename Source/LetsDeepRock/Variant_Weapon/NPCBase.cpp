@@ -7,6 +7,7 @@
 #include "Attributes/WeaponHealthSet.h"
 #include "Attributes/WeaponResistanceSet.h"
 #include "Attributes/WeaponMovementSet.h"
+#include "Attributes/StatusEffectComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameplayTagContainer.h"
@@ -25,6 +26,16 @@ ANPCBase::ANPCBase()
 	HealthSet = CreateDefaultSubobject<UWeaponHealthSet>(TEXT("HealthSet"));
 	ResistanceSet = CreateDefaultSubobject<UWeaponResistanceSet>(TEXT("ResistanceSet"));
 	MovementSet = CreateDefaultSubobject<UWeaponMovementSet>(TEXT("MovementSet"));
+	StatusEffectComponent = CreateDefaultSubobject<UStatusEffectComponent>(TEXT("StatusEffectComponent"));
+}
+
+void ANPCBase::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (StatusEffectComponent)
+	{
+		StatusEffectComponent->ClearAllEffects();
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 UAbilitySystemComponent* ANPCBase::GetAbilitySystemComponent() const
@@ -69,6 +80,10 @@ void ANPCBase::SetGameplayRecoveryBlocked(const bool bBlocked)
 		return;
 	}
 	bGameplayRecoveryBlocked = bBlocked;
+	if (StatusEffectComponent)
+	{
+		StatusEffectComponent->SetGameplayRecoveryBlocked(bBlocked);
+	}
 
 	const FGameplayTagContainer WeaponAbilityTags(TAG_Ability_Weapon);
 	if (AbilitySystemComponent)
@@ -110,6 +125,10 @@ void ANPCBase::SetGameplayRecoveryBlocked(const bool bBlocked)
 
 void ANPCBase::HandleHealthDepleted(AActor* OwningActor)
 {
+	if (StatusEffectComponent)
+	{
+		StatusEffectComponent->ClearAllEffects();
+	}
 	if (AbilitySystemComponent)
 	{
 		AbilitySystemComponent->AddLooseGameplayTag(TAG_State_Dead);
