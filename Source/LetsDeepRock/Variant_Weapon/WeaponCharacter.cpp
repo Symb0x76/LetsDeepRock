@@ -92,6 +92,29 @@ void AWeaponCharacter::PossessedBy(AController* NewController)
 	SetGameplayRecoveryBlocked(AWeaponGameState::IsGameplayRecoveryBlockedFor(this));
 }
 
+void AWeaponCharacter::Restart()
+{
+	Super::Restart();
+
+	// GameMode possesses a freshly spawned Character before Restart() installs the default
+	// walking/falling mode. If recovery is already blocked, PossessedBy() may therefore have
+	// seen MOVE_None. Re-capture the post-Restart mode and keep the barrier authoritative.
+	if (HasAuthority() && bGameplayRecoveryBlocked)
+	{
+		if (UCharacterMovementComponent* Movement = GetCharacterMovement())
+		{
+			if (Movement->MovementMode != MOVE_None)
+			{
+				SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
+				SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
+				bSavedMovementModeForRecovery = true;
+			}
+			Movement->DisableMovement();
+			Movement->StopMovementImmediately();
+		}
+	}
+}
+
 void AWeaponCharacter::OnRep_PlayerState()
 {
 	Super::OnRep_PlayerState();
@@ -314,17 +337,31 @@ void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
 	{
 		if (bBlocked)
 		{
-			SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
-			SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
-			bSavedMovementModeForRecovery = true;
+			// MOVE_None is the pre-Restart state of a newly spawned Character, not a
+			// usable mode to restore after migration.
+			if (Movement->MovementMode != MOVE_None)
+			{
+				SavedRecoveryMovementMode = static_cast<uint8>(Movement->MovementMode);
+				SavedRecoveryCustomMovementMode = Movement->CustomMovementMode;
+				bSavedMovementModeForRecovery = true;
+			}
 			Movement->DisableMovement();
 			Movement->StopMovementImmediately();
 		}
-		else if (bSavedMovementModeForRecovery && !IsDead())
+		else if (!IsDead())
 		{
-			Movement->SetMovementMode(
-				static_cast<EMovementMode>(SavedRecoveryMovementMode),
-				SavedRecoveryCustomMovementMode);
+			if (bSavedMovementModeForRecovery)
+			{
+				Movement->SetMovementMode(
+					static_cast<EMovementMode>(SavedRecoveryMovementMode),
+					SavedRecoveryCustomMovementMode);
+			}
+			else if (Movement->MovementMode == MOVE_None)
+			{
+				// Covers deferred/restored Characters that never received the normal
+				// GameMode Restart() lifecycle before the barrier opened.
+				Movement->SetDefaultMovementMode();
+			}
 		}
 	}
 	if (bBlocked)
@@ -334,6 +371,7 @@ void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
 	else
 	{
 		bSavedMovementModeForRecovery = false;
+		ForceNetUpdate();
 	}
 }
 
@@ -344,6 +382,17 @@ void AWeaponCharacter::Tick(float DeltaTime)
 	{
 		HideGrenadePreview();
 		return;
+	}
+
+	// Recovery blocking is server-owned, so the client-side Character does not run
+	// SetGameplayRecoveryBlocked(). A newly replicated Pawn can consequently remain
+	// at MOVE_None until the first unrelated movement update (often a fire RPC).
+	// Once the replicated barrier is open, initialize the local movement component
+	// immediately so WASD does not depend on another gameplay RPC as a kick-start.
+	if (UCharacterMovementComponent* Movement = GetCharacterMovement();
+		Movement && Movement->MovementMode == MOVE_None && !IsDead())
+	{
+		Movement->SetDefaultMovementMode();
 	}
 
 	// TeamId 可能在 PlayerState 到达后继续复制变化，保持本地视野来源同步。

@@ -131,6 +131,9 @@ protected:
 	/** 恢复俯视角玩法输入：保留可见光标，同时让未被 UI 处理的输入进入游戏。 */
 	void ApplyGameplayInputMode();
 
+	/** Recovery travel 后移除启动阶段的模态 UI，并在发送 RecoveryReady ACK 前恢复玩法输入。 */
+	void RestoreGameplayInputAfterMigration();
+
 	/** 服务端：写入当前玩家的权威职业状态并立即重生当前 Pawn */
 	UFUNCTION(Server, Reliable)
 	void ServerSelectProfessionAndRespawn(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId);

@@ -1,11 +1,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "GameFramework/OnlineReplStructs.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "WeaponSnapshotCoordinator.generated.h"
 
 class UAbilitySystemComponent;
 class APlayerState;
+class AWeaponPlayerController;
 class UWeaponMatchSaveGame;
 struct FUniqueNetIdRepl;
 struct FGameplayTag;
@@ -25,6 +27,8 @@ public:
 	bool CaptureSaveGame(const UWorld* World, UWeaponMatchSaveGame*& OutSaveGame, FString& OutError);
 	static bool ValidateSaveGame(const UWeaponMatchSaveGame* SaveGame, FString& OutError);
 	bool RestoreSaveGame(const UWeaponMatchSaveGame* SaveGame, FString& OutError);
+	/** Apply the saved state for a survivor that reconnects after the candidate World was restored. */
+	bool RestoreReconnectedPlayer(AWeaponPlayerController* PlayerController, FString& OutError);
 
 	/** SaveGame 序列化/反序列化 */
 	static bool SerializeSaveGame(UWeaponMatchSaveGame* SaveGame, TArray<uint8>& OutBytes, FString& OutError);
@@ -72,4 +76,8 @@ private:
 	/** 保持最近捕获或反序列化的 SaveGame 存活，直到调用方接管或下一包替换它。 */
 	UPROPERTY(Transient)
 	TObjectPtr<UWeaponMatchSaveGame> RetainedSaveGame;
+
+	/** Player identities already applied by the complete candidate-world restore. */
+	TSet<FUniqueNetIdRepl> SnapshotAppliedPlayerIds;
+	bool bHasActiveRecoverySnapshot = false;
 };

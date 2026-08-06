@@ -577,7 +577,12 @@ void UWeaponEquipmentComponent::AddWeaponToInventory(UWeaponDataAsset* WeaponDat
 	// 如果是第一把武器，自动装备
 	if (EquipmentState.CurrentWeaponIndex == INDEX_NONE)
 	{
-		SwitchWeapon(0);
+		// This is authority-owned initialization, not a player switching intent.
+		// SwitchWeapon() is correctly rejected by the recovery barrier, but that
+		// used to leave reconnecting Characters with inventory and no equipped
+		// weapon/Fire Ability. Equip directly; the Character barrier still blocks
+		// Ability activation until RecoveryReady is complete.
+		EquipWeapon(EquipmentState.WeaponInventory[0]);
 	}
 }
 
