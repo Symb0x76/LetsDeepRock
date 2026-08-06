@@ -156,6 +156,7 @@ void AWeaponPlayerController::PawnLeavingGame()
 }
 
 void AWeaponPlayerController::ClientReceiveMigrationPayloadChunk_Implementation(
+	const FUniqueNetIdRepl& ReceiverPlayerId,
 	const FWeaponMigrationPayloadEnvelope& Envelope,
 	const TArray<uint8>& ChunkBytes)
 {
@@ -170,10 +171,6 @@ void AWeaponPlayerController::ClientReceiveMigrationPayloadChunk_Implementation(
 	bool bAckReady = false;
 	FWeaponMigrationPayloadAck Ack;
 	FString Error;
-	const APlayerState* LocalPlayerState = GetPlayerState<APlayerState>();
-	const FUniqueNetIdRepl ReceiverPlayerId = LocalPlayerState
-		? LocalPlayerState->GetUniqueId()
-		: FUniqueNetIdRepl();
 	if (!MigrationSubsystem->ReceivePayloadChunk(
 		ReceiverPlayerId,
 		Envelope,
@@ -216,14 +213,11 @@ void AWeaponPlayerController::ClientUpdateMigrationRoleAssignment_Implementation
 }
 
 void AWeaponPlayerController::ClientConfirmMigrationCommonCommitted_Implementation(
+	const FUniqueNetIdRepl& ReceiverPlayerId,
 	const FWeaponMigrationPayloadAck& Ack)
 {
 	UWeaponHostMigrationSubsystem* MigrationSubsystem =
 		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
-	const APlayerState* LocalPlayerState = GetPlayerState<APlayerState>();
-	const FUniqueNetIdRepl ReceiverPlayerId = LocalPlayerState
-		? LocalPlayerState->GetUniqueId()
-		: FUniqueNetIdRepl();
 	FString Error;
 	if (!MigrationSubsystem ||
 		!MigrationSubsystem->AcceptCommonCommittedAnnouncement(ReceiverPlayerId, Ack, Error))
@@ -236,7 +230,12 @@ void AWeaponPlayerController::ClientConfirmMigrationCommonCommitted_Implementati
 			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
 		return;
 	}
-	ServerConfirmMigrationCommonCommitted(Ack);
+	const EWeaponMigrationRole ReceiverRole = MigrationSubsystem->GetRoleForPlayer(ReceiverPlayerId);
+	if (ReceiverRole == EWeaponMigrationRole::BackupA ||
+		ReceiverRole == EWeaponMigrationRole::BackupB)
+	{
+		ServerConfirmMigrationCommonCommitted(Ack);
+	}
 }
 
 void AWeaponPlayerController::ClientRequestRecoveryReadyAcknowledgement_Implementation(

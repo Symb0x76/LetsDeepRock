@@ -23,6 +23,11 @@
 #include "Kismet/GameplayStatics.h"
 #include "UI/WeaponHUD.h"
 
+namespace
+{
+constexpr float WeaponFallbackSpawnSpacing = 250.0f;
+}
+
 AWeaponGameMode::AWeaponGameMode()
 {
 	HUDClass = AWeaponHUD::StaticClass();
@@ -887,21 +892,23 @@ void AWeaponGameMode::PreLogin(const FString& Options, const FString& Address, c
 	}
 }
 
-void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
+void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 {
-	Super::PostLogin(NewPlayer);
-	
-	if (!NewPlayer)
+	APlayerController* NewPlayerController = Cast<APlayerController>(NewPlayer);
+	if (!NewPlayerController)
 	{
+		Super::OnPostLogin(NewPlayer);
 		return;
 	}
 	
-	AWeaponPlayerState* WeaponPlayerState = NewPlayer->GetPlayerState<AWeaponPlayerState>();
+	AWeaponPlayerState* WeaponPlayerState = NewPlayerController->GetPlayerState<AWeaponPlayerState>();
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 
 	if (!WeaponPlayerState || !WeaponGameState)
 	{
-		UE_LOG(LogTemp, Error, TEXT("Failed to initialize player lobby state for %s."), *GetNameSafe(NewPlayer));
+		UE_LOG(LogTemp, Error, TEXT("Failed to initialize player lobby state for %s."),
+			*GetNameSafe(NewPlayerController));
+		Super::OnPostLogin(NewPlayer);
 		return;
 	}
 	
@@ -912,7 +919,8 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 	if (AvailableSlot == INDEX_NONE)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("No available player slot for %s (%s)."),
-			*GetNameSafe(NewPlayer), *PlayerId.ToDebugString());
+			*GetNameSafe(NewPlayerController), *PlayerId.ToDebugString());
+		Super::OnPostLogin(NewPlayer);
 		return;
 	}
 	
@@ -926,6 +934,85 @@ void AWeaponGameMode::PostLogin(APlayerController* NewPlayer)
 	{
 		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after login: %s"), *MigrationError);
 	}
+
+	// AGameModeBase calls HandleStartingNewPlayer immediately after this virtual hook returns.
+	// The slot must therefore be installed before forwarding the Blueprint OnPostLogin event.
+	Super::OnPostLogin(NewPlayer);
+}
+
+void AWeaponGameMode::RestartPlayer(AController* NewPlayer)
+{
+	if (!NewPlayer || NewPlayer->IsPendingKillPending())
+	{
+		return;
+	}
+
+	if (AActor* StartSpot = ChoosePlayerStart(NewPlayer))
+	{
+		RestartPlayerAtPlayerStart(NewPlayer, StartSpot);
+		return;
+	}
+
+	const AWeaponPlayerState* WeaponPlayerState = NewPlayer->GetPlayerState<AWeaponPlayerState>();
+	const int32 PlayerSlot = WeaponPlayerState ? WeaponPlayerState->GetPlayerSlotIndex() : INDEX_NONE;
+	FVector2D Direction(-1.0f, -1.0f);
+	switch (PlayerSlot)
+	{
+	case 1:
+		Direction = FVector2D(1.0f, -1.0f);
+		break;
+	case 2:
+		Direction = FVector2D(-1.0f, 1.0f);
+		break;
+	case 3:
+		Direction = FVector2D(1.0f, 1.0f);
+		break;
+	default:
+		break;
+	}
+	const FVector SpawnLocation(
+		Direction.X * WeaponFallbackSpawnSpacing,
+		Direction.Y * WeaponFallbackSpawnSpacing,
+		0.0f);
+	const FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
+
+	UE_LOG(
+		LogLetsDeepRock,
+		Warning,
+		TEXT("No usable PlayerStart for %s; using Slot %d fallback at %s"),
+		*GetNameSafe(NewPlayer),
+		PlayerSlot,
+		*SpawnLocation.ToCompactString());
+	RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+}
+
+APawn* AWeaponGameMode::SpawnDefaultPawnAtTransform_Implementation(
+	AController* NewPlayer,
+	const FTransform& SpawnTransform)
+{
+	UClass* PawnClass = GetDefaultPawnClassForController(NewPlayer);
+	if (!PawnClass || !GetWorld())
+	{
+		return nullptr;
+	}
+
+	FActorSpawnParameters SpawnInfo;
+	SpawnInfo.Instigator = GetInstigator();
+	SpawnInfo.ObjectFlags |= RF_Transient;
+	SpawnInfo.SpawnCollisionHandlingOverride =
+		ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
+	APawn* ResultPawn = GetWorld()->SpawnActor<APawn>(PawnClass, SpawnTransform, SpawnInfo);
+	if (!ResultPawn)
+	{
+		UE_LOG(
+			LogLetsDeepRock,
+			Error,
+			TEXT("Failed to spawn Pawn %s for %s at %s"),
+			*GetNameSafe(PawnClass),
+			*GetNameSafe(NewPlayer),
+			*SpawnTransform.ToHumanReadableString());
+	}
+	return ResultPawn;
 }
 
 void AWeaponGameMode::Logout(AController* ExitingController)
@@ -1166,21 +1253,15 @@ void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 		OldPawn->Destroy();
 	}
 
-	// 2. 寻找重生点
-	AActor* StartSpot = FindPlayerStart(PlayerController);
-
-	// 3. 生成新 Pawn（使用 GameMode 配置的 DefaultPawnClass）
-	APawn* NewPawn = SpawnDefaultPawnFor(PlayerController, StartSpot);
+	// 2. 通过统一的 RestartPlayer 路径选择 PlayerStart 或按 Slot 使用安全 fallback。
+	RestartPlayer(PlayerController);
+	APawn* NewPawn = PlayerController->GetPawn();
 	if (!NewPawn)
 	{
 		return;
 	}
 
-	// 4. 让 Controller 持有新 Pawn
-	// Possess 会触发 WeaponCharacter::PossessedBy → InitAbilitySystem → 装备武器
-	PlayerController->Possess(NewPawn);
-
-	// 5. 恢复玩家状态（Possess 之后，ASC ActorInfo 已更新到新 Pawn）
+	// 3. 恢复玩家状态（RestartPlayer 已 Possess，ASC ActorInfo 已更新到新 Pawn）
 	if (const AWeaponPlayerState* PS = PlayerController->GetPlayerState<AWeaponPlayerState>())
 	{
 		// 先移除死亡 Tag（在恢复血量之前，避免触发死亡时有 Tag 残留问题）
