@@ -219,3 +219,41 @@ struct FWeaponRecoveryCheckpointCandidate
 
 	bool IsStructurallyValid() const;
 };
+
+/** Connection and first-commit gates used to choose one backend at Match bootstrap. */
+struct FWeaponMigrationBackendReadiness
+{
+	bool bCentralControlReady = false;
+	bool bCentralCheckpointReady = false;
+	bool bLocalTransportReady = false;
+};
+
+struct FWeaponMigrationBackendSelection
+{
+	EWeaponMigrationBackend Backend = EWeaponMigrationBackend::LocalP2P;
+	bool bReady = false;
+};
+
+struct FWeaponRecoveryCheckpointSelection
+{
+	EWeaponRecoveryCheckpointSource Source = EWeaponRecoveryCheckpointSource::None;
+	FWeaponMigrationPayloadAck Ack;
+	bool bConflict = false;
+
+	bool IsUsable() const
+	{
+		return !bConflict && Source != EWeaponRecoveryCheckpointSource::None;
+	}
+};
+
+namespace WeaponMigrationBackendPolicy
+{
+	FWeaponMigrationBackendSelection SelectMatchBackend(
+		const FWeaponMigrationBackendReadiness& Readiness);
+
+	FWeaponRecoveryCheckpointSelection SelectRecoveryCheckpoint(
+		const FGuid& ExpectedMatchId,
+		uint64 ExpectedAuthorityEpoch,
+		const FWeaponRecoveryCheckpointCandidate& CentralCandidate,
+		const FWeaponRecoveryCheckpointCandidate& LocalCandidate);
+}

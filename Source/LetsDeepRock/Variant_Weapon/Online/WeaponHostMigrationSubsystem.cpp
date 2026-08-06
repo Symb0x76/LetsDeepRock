@@ -148,6 +148,92 @@ bool FWeaponRecoveryCheckpointCandidate::IsStructurallyValid() const
 		Ack.RosterRevision > 0 && Ack.PayloadHash.Num() == WeaponMigrationSHA256Bytes;
 }
 
+FWeaponMigrationBackendSelection WeaponMigrationBackendPolicy::SelectMatchBackend(
+	const FWeaponMigrationBackendReadiness& Readiness)
+{
+	FWeaponMigrationBackendSelection Selection;
+	if (Readiness.bCentralControlReady && Readiness.bCentralCheckpointReady)
+	{
+		Selection.Backend = EWeaponMigrationBackend::CentralAssisted;
+		Selection.bReady = true;
+	}
+	else if (Readiness.bLocalTransportReady)
+	{
+		Selection.Backend = EWeaponMigrationBackend::LocalP2P;
+		Selection.bReady = true;
+	}
+	return Selection;
+}
+
+FWeaponRecoveryCheckpointSelection WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+	const FGuid& ExpectedMatchId,
+	const uint64 ExpectedAuthorityEpoch,
+	const FWeaponRecoveryCheckpointCandidate& CentralCandidate,
+	const FWeaponRecoveryCheckpointCandidate& LocalCandidate)
+{
+	FWeaponRecoveryCheckpointSelection Selection;
+	const auto IsUsableCandidate = [&ExpectedMatchId, ExpectedAuthorityEpoch](
+		const FWeaponRecoveryCheckpointCandidate& Candidate,
+		const EWeaponRecoveryCheckpointSource ExpectedSource)
+	{
+		return Candidate.Source == ExpectedSource && Candidate.IsStructurallyValid() &&
+			ExpectedMatchId.IsValid() && ExpectedAuthorityEpoch > 0 &&
+			Candidate.Ack.MatchId == ExpectedMatchId &&
+			Candidate.Ack.AuthorityEpoch == ExpectedAuthorityEpoch;
+	};
+
+	const bool bCentralUsable = IsUsableCandidate(
+		CentralCandidate,
+		EWeaponRecoveryCheckpointSource::CentralCommitted);
+	const bool bLocalUsable = IsUsableCandidate(
+		LocalCandidate,
+		EWeaponRecoveryCheckpointSource::LocalCommonCommitted);
+	if (!bCentralUsable && !bLocalUsable)
+	{
+		return Selection;
+	}
+	if (!bCentralUsable)
+	{
+		Selection.Source = LocalCandidate.Source;
+		Selection.Ack = LocalCandidate.Ack;
+		return Selection;
+	}
+	if (!bLocalUsable)
+	{
+		Selection.Source = CentralCandidate.Source;
+		Selection.Ack = CentralCandidate.Ack;
+		return Selection;
+	}
+
+	if (CentralCandidate.Ack.SnapshotRevision == LocalCandidate.Ack.SnapshotRevision)
+	{
+		if (!CentralCandidate.Ack.IdentifiesSamePayload(LocalCandidate.Ack))
+		{
+			Selection.bConflict = true;
+			return Selection;
+		}
+		Selection.Source = CentralCandidate.Source;
+		Selection.Ack = CentralCandidate.Ack;
+		return Selection;
+	}
+
+	const FWeaponRecoveryCheckpointCandidate& NewerCandidate =
+		CentralCandidate.Ack.SnapshotRevision > LocalCandidate.Ack.SnapshotRevision
+			? CentralCandidate
+			: LocalCandidate;
+	const FWeaponRecoveryCheckpointCandidate& OlderCandidate =
+		&NewerCandidate == &CentralCandidate ? LocalCandidate : CentralCandidate;
+	if (NewerCandidate.Ack.RosterRevision < OlderCandidate.Ack.RosterRevision)
+	{
+		Selection.bConflict = true;
+		return Selection;
+	}
+
+	Selection.Source = NewerCandidate.Source;
+	Selection.Ack = NewerCandidate.Ack;
+	return Selection;
+}
+
 const TCHAR* UWeaponHostMigrationSubsystem::LexMigrationState(
 	const EWeaponHostMigrationState State)
 {
