@@ -48,6 +48,9 @@ struct FWeaponProjectileInitializationState
 	float DamageFalloffEnd = 0.0f;
 
 	UPROPERTY()
+	float ArmorPenetration = 0.0f;
+
+	UPROPERTY()
 	float AreaDamage = 0.0f;
 
 	UPROPERTY()
@@ -93,6 +96,7 @@ public:
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed,
 		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f,
+		float InArmorPenetration = 0.0f,
 		FName InStatusEffectId = NAME_None,
 		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
