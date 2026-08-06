@@ -65,6 +65,21 @@ bool FWeaponMigrationRoleAssignment::IdentifiesSameAssignment(
 		BackupB.IdentifiesSameMember(Other.BackupB);
 }
 
+bool FWeaponCentralHostLease::IsStructurallyValid() const
+{
+	return MatchId.IsValid() && AuthorityEpoch > 0 && RosterRevision > 0 &&
+		ActiveHost.IsAssigned() && LeaseId.IsValid() &&
+		FMath::IsFinite(LeaseTtlSeconds) && LeaseTtlSeconds > 0.0 &&
+		BaseSnapshotRevision > 0;
+}
+
+bool FWeaponCentralHostLease::IdentifiesSameTerm(
+	const FWeaponCentralHostLease& Other) const
+{
+	return MatchId == Other.MatchId && AuthorityEpoch == Other.AuthorityEpoch &&
+		ActiveHost.IdentifiesSameMember(Other.ActiveHost) && LeaseId == Other.LeaseId;
+}
+
 bool FWeaponRecoverySessionDescriptor::IsValid(const bool bRequireAttemptId) const
 {
 	return MatchId.IsValid() && AuthorityEpoch > 0 &&
@@ -124,6 +139,13 @@ bool FWeaponMigrationPayloadAck::IdentifiesSamePayload(
 		SnapshotRevision == Other.SnapshotRevision &&
 		RosterRevision == Other.RosterRevision &&
 		PayloadHash == Other.PayloadHash;
+}
+
+bool FWeaponRecoveryCheckpointCandidate::IsStructurallyValid() const
+{
+	return Source != EWeaponRecoveryCheckpointSource::None &&
+		Ack.MatchId.IsValid() && Ack.AuthorityEpoch > 0 && Ack.SnapshotRevision > 0 &&
+		Ack.RosterRevision > 0 && Ack.PayloadHash.Num() == WeaponMigrationSHA256Bytes;
 }
 
 const TCHAR* UWeaponHostMigrationSubsystem::LexMigrationState(

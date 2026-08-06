@@ -173,3 +173,49 @@ struct FWeaponMigrationPayloadAck
 	bool IdentifiesPayload(const FWeaponMigrationPayloadEnvelope& Envelope) const;
 	bool IdentifiesSamePayload(const FWeaponMigrationPayloadAck& Other) const;
 };
+
+/** Match-scoped recovery backend selected before one authority term begins. */
+enum class EWeaponMigrationBackend : uint8
+{
+	LocalP2P,
+	CentralAssisted,
+};
+
+/** Proof source that authorizes one Active Host to publish a new authority term. */
+enum class EWeaponAuthorityTermSource : uint8
+{
+	LocalDeterministic,
+	CentralLease,
+};
+
+/** Durable source from which a successor can obtain one committed recovery checkpoint. */
+enum class EWeaponRecoveryCheckpointSource : uint8
+{
+	None,
+	LocalCommonCommitted,
+	CentralCommitted,
+};
+
+/** Transport-neutral center-issued proof for one time-bounded Active Host term. */
+struct FWeaponCentralHostLease
+{
+	FGuid MatchId;
+	uint64 AuthorityEpoch = 0;
+	uint64 RosterRevision = 0;
+	FWeaponMigrationRoleMember ActiveHost;
+	FGuid LeaseId;
+	double LeaseTtlSeconds = 0.0;
+	int64 BaseSnapshotRevision = 0;
+
+	bool IsStructurallyValid() const;
+	bool IdentifiesSameTerm(const FWeaponCentralHostLease& Other) const;
+};
+
+/** One validated committed checkpoint plus the durable backend that can supply its bytes. */
+struct FWeaponRecoveryCheckpointCandidate
+{
+	EWeaponRecoveryCheckpointSource Source = EWeaponRecoveryCheckpointSource::None;
+	FWeaponMigrationPayloadAck Ack;
+
+	bool IsStructurallyValid() const;
+};
