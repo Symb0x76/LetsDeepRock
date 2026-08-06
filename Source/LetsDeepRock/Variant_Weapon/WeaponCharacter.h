@@ -109,6 +109,7 @@ public:
 	//~ 阶段 1 GAS 挂载点
 	/** 服务端：Pawn 被 Possess 时初始化 ASC ActorInfo */
 	virtual void PossessedBy(AController* NewController) override;
+	virtual void Restart() override;
 
 	/** 客户端：PlayerState 复制到达时初始化 ASC ActorInfo */
 	virtual void OnRep_PlayerState() override;

@@ -18,6 +18,21 @@
 #include "Data/ProfessionSaveGame.h"
 #include "Blueprint/UserWidget.h"
 
+namespace
+{
+	bool IsMigrationTravelInProgress(const UWeaponHostMigrationSubsystem* MigrationSubsystem)
+	{
+		if (!MigrationSubsystem)
+		{
+			return false;
+		}
+
+		const EWeaponHostMigrationState State = MigrationSubsystem->GetMigrationState();
+		return State != EWeaponHostMigrationState::Idle &&
+			State != EWeaponHostMigrationState::Monitoring;
+	}
+}
+
 AWeaponPlayerController::AWeaponPlayerController()
 {
 	// 俯视角鼠标瞄准：显示鼠标光标
@@ -40,7 +55,12 @@ void AWeaponPlayerController::BeginPlay()
 	if (IsLocalController())
 	{
 		ApplyGameplayInputMode();
-		ShowClassSelectUI();
+		const UWeaponHostMigrationSubsystem* MigrationSubsystem =
+			GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
+		if (!IsMigrationTravelInProgress(MigrationSubsystem))
+		{
+			ShowClassSelectUI();
+		}
 	}
 }
 
@@ -68,6 +88,21 @@ void AWeaponPlayerController::ApplyGameplayInputMode()
 	InputMode.SetLockMouseToViewportBehavior(EMouseLockMode::LockAlways);
 	SetInputMode(InputMode);
 	bShowMouseCursor = true;
+}
+
+void AWeaponPlayerController::RestoreGameplayInputAfterMigration()
+{
+	if (!IsLocalController())
+	{
+		return;
+	}
+
+	if (ClassSelectWidget)
+	{
+		ClassSelectWidget->RemoveFromParent();
+		ClassSelectWidget = nullptr;
+	}
+	ApplyGameplayInputMode();
 }
 
 void AWeaponPlayerController::SetupInputComponent()
@@ -230,6 +265,9 @@ void AWeaponPlayerController::ClientConfirmMigrationCommonCommitted_Implementati
 			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
 		return;
 	}
+
+	// Every survivor needs the CommonCommitted metadata for recovery discovery, but only
+	// the two fenced backups participate in the convergence confirmation handshake.
 	const EWeaponMigrationRole ReceiverRole = MigrationSubsystem->GetRoleForPlayer(ReceiverPlayerId);
 	if (ReceiverRole == EWeaponMigrationRole::BackupA ||
 		ReceiverRole == EWeaponMigrationRole::BackupB)
@@ -265,6 +303,11 @@ void AWeaponPlayerController::ClientRequestRecoveryReadyAcknowledgement_Implemen
 			MigrationSubsystem ? *Error : TEXT("HostMigrationSubsystem is unavailable"));
 		return;
 	}
+
+	// RecoveryReady means this travel is resuming an existing match. Clear any modal
+	// class-selection input left by PlayerController startup before acknowledging that
+	// the local survivor is presentation-ready.
+	RestoreGameplayInputAfterMigration();
 
 	PendingRecoveryReadyMatchId = MatchId;
 	PendingRecoveryReadyEpoch = AuthorityEpoch;

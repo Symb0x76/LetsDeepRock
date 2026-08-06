@@ -950,40 +950,58 @@ void AWeaponGameMode::RestartPlayer(AController* NewPlayer)
 	if (AActor* StartSpot = ChoosePlayerStart(NewPlayer))
 	{
 		RestartPlayerAtPlayerStart(NewPlayer, StartSpot);
-		return;
 	}
-
-	const AWeaponPlayerState* WeaponPlayerState = NewPlayer->GetPlayerState<AWeaponPlayerState>();
-	const int32 PlayerSlot = WeaponPlayerState ? WeaponPlayerState->GetPlayerSlotIndex() : INDEX_NONE;
-	FVector2D Direction(-1.0f, -1.0f);
-	switch (PlayerSlot)
+	else
 	{
-	case 1:
-		Direction = FVector2D(1.0f, -1.0f);
-		break;
-	case 2:
-		Direction = FVector2D(-1.0f, 1.0f);
-		break;
-	case 3:
-		Direction = FVector2D(1.0f, 1.0f);
-		break;
-	default:
-		break;
-	}
-	const FVector SpawnLocation(
-		Direction.X * WeaponFallbackSpawnSpacing,
-		Direction.Y * WeaponFallbackSpawnSpacing,
-		0.0f);
-	const FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
+		const AWeaponPlayerState* WeaponPlayerState = NewPlayer->GetPlayerState<AWeaponPlayerState>();
+		const int32 PlayerSlot = WeaponPlayerState ? WeaponPlayerState->GetPlayerSlotIndex() : INDEX_NONE;
+		FVector2D Direction(-1.0f, -1.0f);
+		switch (PlayerSlot)
+		{
+		case 1:
+			Direction = FVector2D(1.0f, -1.0f);
+			break;
+		case 2:
+			Direction = FVector2D(-1.0f, 1.0f);
+			break;
+		case 3:
+			Direction = FVector2D(1.0f, 1.0f);
+			break;
+		default:
+			break;
+		}
+		const FVector SpawnLocation(
+			Direction.X * WeaponFallbackSpawnSpacing,
+			Direction.Y * WeaponFallbackSpawnSpacing,
+			0.0f);
+		const FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
 
-	UE_LOG(
-		LogLetsDeepRock,
-		Warning,
-		TEXT("No usable PlayerStart for %s; using Slot %d fallback at %s"),
-		*GetNameSafe(NewPlayer),
-		PlayerSlot,
-		*SpawnLocation.ToCompactString());
-	RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+		UE_LOG(
+			LogLetsDeepRock,
+			Warning,
+			TEXT("No usable PlayerStart for %s; using Slot %d fallback at %s"),
+			*GetNameSafe(NewPlayer),
+			PlayerSlot,
+			*SpawnLocation.ToCompactString());
+		RestartPlayerAtTransform(NewPlayer, SpawnTransform);
+	}
+
+	if (AWeaponPlayerController* WeaponPlayerController = Cast<AWeaponPlayerController>(NewPlayer))
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UWeaponSnapshotCoordinator* Coordinator = GI->GetSubsystem<UWeaponSnapshotCoordinator>())
+			{
+				FString RestoreError;
+				if (!Coordinator->RestoreReconnectedPlayer(WeaponPlayerController, RestoreError) &&
+					AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+				{
+					UE_LOG(LogLetsDeepRock, Warning, TEXT("Reconnect Snapshot apply skipped for %s: %s"),
+						*GetNameSafe(WeaponPlayerController), *RestoreError);
+				}
+			}
+		}
+	}
 }
 
 APawn* AWeaponGameMode::SpawnDefaultPawnAtTransform_Implementation(

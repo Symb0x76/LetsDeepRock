@@ -1,4 +1,5 @@
 #include "WeaponSnapshotCoordinator.h"
+#include "LetsDeepRock.h"
 #include "AbilitySystemComponent.h"
 #include "AttributeModifierManager.h"
 #include "EnemyCharacter.h"
@@ -18,6 +19,7 @@
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
 #include "WeaponMatchSaveGame.h"
+#include "WeaponPlayerController.h"
 #include "WeaponPlayerState.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponSnapshot.h"
@@ -91,6 +93,8 @@ bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 {
 	OutSaveGame = nullptr;
 	OutError.Reset();
+	bHasActiveRecoverySnapshot = false;
+	SnapshotAppliedPlayerIds.Reset();
 
 	if (!World || World->GetNetMode() == NM_Client)
 	{
@@ -154,6 +158,8 @@ bool UWeaponSnapshotCoordinator::RestoreSaveGame(
 	const UWeaponMatchSaveGame* SaveGame,
 	FString& OutError)
 {
+	bHasActiveRecoverySnapshot = false;
+	SnapshotAppliedPlayerIds.Reset();
 	FRestoreContext Context;
 	if (!ValidateRestore(SaveGame, Context, OutError))
 	{
@@ -176,6 +182,113 @@ bool UWeaponSnapshotCoordinator::RestoreSaveGame(
 	}
 
 	ApplySnapshot(SaveGame, Context);
+	bHasActiveRecoverySnapshot = true;
+	return true;
+}
+
+bool UWeaponSnapshotCoordinator::RestoreReconnectedPlayer(
+	AWeaponPlayerController* PlayerController,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!PlayerController || !PlayerController->HasAuthority() || !RetainedSaveGame ||
+		!bHasActiveRecoverySnapshot || !AWeaponGameState::IsGameplayRecoveryBlockedFor(PlayerController))
+	{
+		OutError = TEXT("Reconnect restore requires an active gated recovery Snapshot");
+		return false;
+	}
+
+	AWeaponPlayerState* PlayerState = PlayerController->GetPlayerState<AWeaponPlayerState>();
+	AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerController->GetPawn());
+	if (!PlayerState || !Character || !PlayerState->GetUniqueId().IsValid())
+	{
+		OutError = TEXT("Reconnect restore requires a valid PlayerState and possessed WeaponCharacter");
+		return false;
+	}
+
+	const FUniqueNetIdRepl PlayerId = PlayerState->GetUniqueId();
+	if (SnapshotAppliedPlayerIds.Contains(PlayerId))
+	{
+		return true;
+	}
+
+	const FWeaponPlayerSnapshot* PlayerSnapshot = RetainedSaveGame->Snapshot.Players.FindByPredicate(
+		[&PlayerId](const FWeaponPlayerSnapshot& Candidate)
+		{
+			return Candidate.PlayerId == PlayerId;
+		});
+	if (!PlayerSnapshot)
+	{
+		OutError = FString::Printf(TEXT("Reconnect restore has no Snapshot player for %s"), *PlayerId.ToDebugString());
+		return false;
+	}
+	if (!PlayerSnapshot->bHasPawn)
+	{
+		SnapshotAppliedPlayerIds.Add(PlayerId);
+		return true;
+	}
+
+	if (!PlayerState->SetProfessionLoadout(
+		PlayerSnapshot->ProfessionId,
+		PlayerSnapshot->PrimaryWeaponId,
+		PlayerSnapshot->SecondaryWeaponId))
+	{
+		OutError = FString::Printf(TEXT("Failed to apply reconnect profession loadout for %s"), *PlayerId.ToDebugString());
+		return false;
+	}
+	PlayerState->SetPlayerName(PlayerSnapshot->PlayerName);
+	PlayerState->SetPlayerReady(PlayerSnapshot->bIsReady);
+	PlayerState->SetTeamId(PlayerSnapshot->TeamId);
+	Character->RefreshProfessionLoadout();
+
+	UWeaponEquipmentComponent* Equipment = Character->FindComponentByClass<UWeaponEquipmentComponent>();
+	if (!Equipment || PlayerSnapshot->WeaponInventory.Num() != PlayerSnapshot->WeaponAmmoStates.Num())
+	{
+		OutError = FString::Printf(TEXT("Reconnect equipment state is invalid for %s"), *PlayerId.ToDebugString());
+		return false;
+	}
+	FWeaponEquipmentSnapshotState EquipmentSnapshot;
+	EquipmentSnapshot.CurrentWeaponIndex = PlayerSnapshot->CurrentWeaponIndex;
+	EquipmentSnapshot.bWasReloading = PlayerSnapshot->bWasReloading;
+	for (const FSoftObjectPath& WeaponPath : PlayerSnapshot->WeaponInventory)
+	{
+		UWeaponDataAsset* Weapon = Cast<UWeaponDataAsset>(WeaponPath.TryLoad());
+		if (!Weapon)
+		{
+			OutError = FString::Printf(TEXT("Failed to load reconnect weapon %s for %s"), *WeaponPath.ToString(), *PlayerId.ToDebugString());
+			return false;
+		}
+		EquipmentSnapshot.WeaponInventory.Add(Weapon);
+	}
+	for (const FWeaponAmmoSnapshot& SavedAmmo : PlayerSnapshot->WeaponAmmoStates)
+	{
+		FWeaponAmmoState& Ammo = EquipmentSnapshot.WeaponAmmoStates.AddDefaulted_GetRef();
+		Ammo.MagazineAmmo = SavedAmmo.MagazineAmmo;
+		Ammo.ReserveAmmo = SavedAmmo.ReserveAmmo;
+	}
+	if (!Equipment->RestoreSnapshotState(EquipmentSnapshot) ||
+		!Character->RestoreEquipmentSlot(PlayerSnapshot->CurrentEquipmentSlot))
+	{
+		OutError = FString::Printf(TEXT("Failed to apply reconnect equipment for %s"), *PlayerId.ToDebugString());
+		return false;
+	}
+
+	Character->SetActorLocationAndRotation(
+		PlayerSnapshot->Location,
+		PlayerSnapshot->Rotation,
+		false,
+		nullptr,
+		ETeleportType::TeleportPhysics);
+	Character->SetAimDirectionAuthoritative(PlayerSnapshot->Rotation.Vector());
+	Character->GetCharacterMovement()->Velocity = PlayerSnapshot->Velocity;
+	RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), PlayerSnapshot->AttributeState.Values);
+	Character->ForceNetUpdate();
+	SnapshotAppliedPlayerIds.Add(PlayerId);
+	UE_LOG(LogLetsDeepRock, Log, TEXT("Applied reconnect Snapshot Player=%s Location=%s Yaw=%.1f WeaponIndex=%d"),
+		*PlayerId.ToDebugString(),
+		*PlayerSnapshot->Location.ToCompactString(),
+		PlayerSnapshot->Rotation.Yaw,
+		PlayerSnapshot->CurrentWeaponIndex);
 	return true;
 }
 
@@ -881,6 +994,7 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 				Target.PlayerState);
 			continue;
 		}
+		SnapshotAppliedPlayerIds.Add(Player.PlayerId);
 		if (!Player.bHasPawn)
 		{
 			if (Target.ExistingPawn)

@@ -1077,6 +1077,22 @@ bool UWeaponHostMigrationSubsystem::RestoreCandidateWorld(FString& OutError)
 	{
 		return false;
 	}
+
+	// The previous Active Host is the connection whose loss triggered this recovery attempt.
+	// It must not remain Pending behind the RecoveryReady barrier like an ordinary survivor,
+	// otherwise every connected survivor stays movement/ability blocked for the full grace period.
+	const FUniqueNetIdRepl& LostAuthorityPlayerId = RecoveryOriginAssignment.ActiveHost.PlayerId;
+	if (!LostAuthorityPlayerId.IsValid() || !GameMode->MarkPlayerDeparted(LostAuthorityPlayerId))
+	{
+		OutError = TEXT("Restored recovery roster could not fence the lost Active Host as Departed");
+		return false;
+	}
+	UE_LOG(
+		LogLetsDeepRock,
+		Log,
+		TEXT("Recovery roster marked lost Active Host %s Departed before RecoveryReady publication"),
+		*LostAuthorityPlayerId.ToDebugString());
+
 	if (!GameState->IsGameplayRecoveryBlocked() ||
 		Coordinator->GetOrCreateActiveMatchId() != RecoveryBaselineAck.MatchId)
 	{
