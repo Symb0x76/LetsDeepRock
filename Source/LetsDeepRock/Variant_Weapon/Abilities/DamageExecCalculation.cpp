@@ -170,6 +170,8 @@ void UDamageExecCalculation::Execute_Implementation(
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().CritChanceDef, EvalParams, CritChance);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().CritDamageDef, EvalParams, CritDamage);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().ArmorPenetrationDef, EvalParams, ArmorPen);
+	const float WeaponArmorPen = Spec.GetSetByCallerMagnitude(TAG_Data_ArmorPenetration, false, 0.0f);
+	const float FinalArmorPen = FMath::Clamp(ArmorPen + WeaponArmorPen, 0.0f, 1.0f);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().DamageBonusDef, EvalParams, DmgBonus);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().WeakpointBonusDef, EvalParams, WeakpointBonus);
 
@@ -259,13 +261,38 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	// ---------- ⑥ 护甲减伤 ----------
 	const bool bIsTrueDamage = DamageTags.HasTag(TAG_Damage_Type_True);
+	float EffectiveArmor = 0.0f;
+	float ArmorDR = 0.0f;
 	if (!bIsTrueDamage && !bBleedingDamage)
 	{
 		// 有效护甲 = 目标护甲 × (1 - 破甲率)，破甲率 clamp [0, 1]
-		const float EffectiveArmor = TargetArmor * (1.0f - FMath::Clamp(bBurningDamage ? 0.0f : ArmorPen, 0.0f, 1.0f));
+		EffectiveArmor = TargetArmor * (1.0f - (bBurningDamage ? 0.0f : FinalArmorPen));
 		// DR = Armor / (Armor + K)，K = 200
-		const float ArmorDR = EffectiveArmor / (EffectiveArmor + 200.0f);
+		ArmorDR = EffectiveArmor / (EffectiveArmor + 200.0f);
 		Damage *= (1.0f - ArmorDR);
+	}
+	const float DamageAfterArmor = Damage;
+
+	if (TargetAvatar && TargetAvatar->ActorHasTag(TEXT("WeaponDamageTestTarget")))
+	{
+		const AEnemyCharacter* TargetEnemy = Cast<AEnemyCharacter>(TargetAvatar);
+		const FName TargetRow = TargetEnemy ? TargetEnemy->GetEnemyConfigRowName() : NAME_None;
+		UE_LOG(LogTemp, Warning, TEXT("[ArmorDiag] Hit Target=%s Row=%s BaseDamage=%.3f CapturedArmor=%.3f CharacterArmorPen=%.6f WeaponArmorPen=%.6f FinalArmorPen=%.6f TypeModifier=%.6f EffectiveArmor=%.3f ArmorDR=%.6f DamageAfterArmor=%.3f DamageType=%s Unarmored=%s Light=%s Heavy=%s"),
+			*GetNameSafe(TargetAvatar),
+			*TargetRow.ToString(),
+			BaseDamage,
+			TargetArmor,
+			ArmorPen,
+			WeaponArmorPen,
+			FinalArmorPen,
+			TypeModifier,
+			EffectiveArmor,
+			ArmorDR,
+			DamageAfterArmor,
+			*DamageTypeName.ToString(),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Unarmored) ? TEXT("true") : TEXT("false"),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Light) ? TEXT("true") : TEXT("false"),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Heavy) ? TEXT("true") : TEXT("false"));
 	}
 
 	// ---------- ⑦ 抗性减免 ----------

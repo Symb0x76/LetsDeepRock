@@ -857,6 +857,7 @@ bool UWeaponSnapshotCoordinator::StageRestoreActors(
 			SavedProjectile.ProjectileSpeed,
 			SavedProjectile.DamageFalloffStart,
 			SavedProjectile.DamageFalloffEnd,
+			SavedProjectile.ArmorPenetration,
 			SavedProjectile.StatusEffectId,
 			SavedProjectile.InstigatorPlayerId);
 		Projectile->InitFlightParams(
@@ -1507,6 +1508,7 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		SavedProjectile.ProjectileSpeed = Initialization.ProjectileSpeed;
 		SavedProjectile.DamageFalloffStart = Initialization.DamageFalloffStart;
 		SavedProjectile.DamageFalloffEnd = Initialization.DamageFalloffEnd;
+		SavedProjectile.ArmorPenetration = Initialization.ArmorPenetration;
 		SavedProjectile.AreaDamage = Initialization.AreaDamage;
 		SavedProjectile.AreaRadius = Initialization.AreaRadius;
 		SavedProjectile.AreaFalloff = Initialization.AreaFalloff;
