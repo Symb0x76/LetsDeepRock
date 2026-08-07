@@ -780,9 +780,14 @@ bool FWeaponMigrationBackendPolicyAutomationTest::RunTest(const FString& Paramet
 	TestTrue(TEXT("Incomplete central readiness falls back to Local P2P"),
 		BackendSelection.bReady && BackendSelection.Backend == EWeaponMigrationBackend::LocalP2P);
 
+	Readiness.bCentralLeaseReady = true;
+	BackendSelection = WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	TestTrue(TEXT("Control and Lease without a committed checkpoint still fall back to Local P2P"),
+		BackendSelection.bReady && BackendSelection.Backend == EWeaponMigrationBackend::LocalP2P);
+
 	Readiness.bCentralCheckpointReady = true;
 	BackendSelection = WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
-	TestTrue(TEXT("Control plus first checkpoint commit selects Central-assisted"),
+	TestTrue(TEXT("Control, Lease and first checkpoint commit select Central-assisted"),
 		BackendSelection.bReady &&
 		BackendSelection.Backend == EWeaponMigrationBackend::CentralAssisted);
 

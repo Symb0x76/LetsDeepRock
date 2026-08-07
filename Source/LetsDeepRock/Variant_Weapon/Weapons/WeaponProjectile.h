@@ -14,7 +14,7 @@ class UProjectileMovementComponent;
 class UGameplayEffect;
 
 /** 投射物生成时由服务器确定、随后整体复制的内部 C++ 协议状态。 */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FWeaponProjectileInitializationState
 {
 	GENERATED_BODY()

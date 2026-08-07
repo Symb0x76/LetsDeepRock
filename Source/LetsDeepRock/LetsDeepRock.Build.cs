@@ -32,12 +32,17 @@ public class LetsDeepRock : ModuleRules
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
+			"HTTP",
+			"Json",
+			"JsonUtilities",
 			"Networking",
 			"PlatformCrypto",
 			"PlatformCryptoContext",
 			"Sockets",
-			"SlateCore"
+			"SlateCore",
+			"WebSockets"
 		});
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 
 		// 阶段 1 起会用到 GameplayAbilities 类型的头文件，保持公共依赖即可
 

@@ -152,7 +152,8 @@ FWeaponMigrationBackendSelection WeaponMigrationBackendPolicy::SelectMatchBacken
 	const FWeaponMigrationBackendReadiness& Readiness)
 {
 	FWeaponMigrationBackendSelection Selection;
-	if (Readiness.bCentralControlReady && Readiness.bCentralCheckpointReady)
+	if (Readiness.bCentralControlReady && Readiness.bCentralLeaseReady &&
+		Readiness.bCentralCheckpointReady)
 	{
 		Selection.Backend = EWeaponMigrationBackend::CentralAssisted;
 		Selection.bReady = true;
