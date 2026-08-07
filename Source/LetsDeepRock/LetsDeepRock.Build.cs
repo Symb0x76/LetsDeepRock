@@ -40,7 +40,8 @@ public class LetsDeepRock : ModuleRules
 			"PlatformCryptoContext",
 			"Sockets",
 			"SlateCore",
-			"WebSockets"
+			"WebSockets",
+			"EventLoop"
 		});
 		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 

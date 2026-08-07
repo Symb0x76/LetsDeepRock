@@ -6,11 +6,15 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "WeaponCentralConnectivityTypes.h"
 #include "WeaponHostMigrationTypes.h"
+#include "Engine/TimerHandle.h"
+#include "EventLoop/EventLoopTimer.h"
 #include "WeaponCentralConnectivitySubsystem.generated.h"
 
 class UWeaponHostMigrationSubsystem;
 class UWeaponSessionSubsystem;
 class UWeaponSnapshotCoordinator;
+class IWebSocket;
+class FJsonObject;
 struct FWeaponMigrationBackendReadiness;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
@@ -57,21 +61,51 @@ public:
 	/** Host: 用中心已确认的 direct endpoint 触发客户端 reconnect。 */
 	bool TriggerDirectReconnect(const FString& Address, FString& OutError);
 
+	/** Host: 创建 Match(中心分配 MatchId + JoinCode)。 */
+	bool CreateCentralMatch(FString& OutError);
+
+	/** Client: 用 JoinCode 加入 Match。 */
+	bool JoinCentralMatch(const FString& JoinCode, FString& OutError);
+
 private:
-	// —— 事实输入管线(第 2 课:HTTP 设备身份) ——
+	// 事实输入管线
 	void RunAuthPipeline();                 // challenge → register → session
 	void SendChallengeRequest();            // POST /v1/devices/challenge
 	void SendRegisterRequest(const FString& Nonce); // POST /v1/devices/register
 	void SendSessionRequest(const FString& Nonce, const TArray<uint8>& Signature); // POST /v1/devices/session
 	void HandleSessionSuccess(const FString& Token);
 	void FailAuthPipeline(const FString& Message);
-	void OpenEventChannel();                // WebSocket(第 3 课)
+
+	// Match 生命周期(中心分配 MatchId)
+	void SendCreateMatchRequest();
+	void SendJoinMatchRequest(const FString& JoinCode);
+	void HandleMatchCreated(const FGuid& InMatchId, const FString& JoinCode);
+	void HandleMatchJoined(const FGuid& InMatchId, const FString& Role);
+
+	// 向现有系统交付事实
+	void PublishBackendReadiness();
+
+	// WebSocket 事件通道
+	void OpenEventChannel();
+	void HandleEventMessage(const FString& Message);
+	void HandleEventDispatch(const TSharedPtr<FJsonObject>& Json, const FString& EventType, const FGuid& EventMatchId, uint64 EventEpoch);
 	void HandleLeaseGranted(const FWeaponCentralHostLease& Lease);
 	void HandleHostEndpointNominated(const FWeaponCentralEndpointCandidate& Endpoint);
-	void HandleCheckpointCommitted(const FGuid& MatchId, uint64 Epoch, int64 Revision);
+	void HandleCheckpointCommitted(const FGuid& InMatchId, uint64 Epoch, int64 Revision);
+	void ScheduleReconnect();
+	void HandleReconnectTimeout();
+	bool ValidateEventFence(const FGuid& EventMatchId, uint64 EventEpoch);
+	void HandleEventStashed(const FString& RawEvent);
+	void ReplayStashedEvents();
 
-	// —— 向现有系统交付事实(第 1 课) ——
-	void PublishBackendReadiness();
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Reconnect")
+	float ReconnectBaseDelaySeconds = 1.0f;
+
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Reconnect")
+	float ReconnectMaxDelaySeconds = 30.0f;
+
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Reconnect")
+	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
 	FString CoordinatorBaseUrl = TEXT("https://coordinator.example.com");
@@ -94,6 +128,16 @@ private:
 	UPROPERTY()
 	FString AccessToken;
 
+	// 非 UObject 智能指针成员:不能是 UPROPERTY(UHT 不认模板),纯 C++ 成员即可
+	TSharedPtr<IWebSocket> EventSocket;
+
+	FTimerHandle ReconnectTimerHandle;
+	int32 ReconnectAttempt = 0;
+	double ReconnectDeadlineSeconds = 0.0;
+
+	// 暂存缓冲区:只存事件原文,不存判断结论;MatchId 建立后重放时走完整 fence
+	TArray<FString> StashedEvents;
+
 	UPROPERTY()
 	FGuid MatchId;
 
@@ -102,6 +146,11 @@ private:
 
 	UPROPERTY()
 	uint64 RosterRevision = 0;
+
+	// 当前 Lease 的 Host 设备身份(来自 LeaseGranted 事件顶层 peerId);
+	// 用于校验 HostEndpointPublished 事件的身份一致性。
+	UPROPERTY()
+	FString ExpectedHostPeerId;
 
 	EWeaponCentralConnectivityState ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
 	EWeaponCentralAuthState AuthState = EWeaponCentralAuthState::None;
