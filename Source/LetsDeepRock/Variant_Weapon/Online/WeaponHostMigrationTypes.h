@@ -224,6 +224,7 @@ struct FWeaponRecoveryCheckpointCandidate
 struct FWeaponMigrationBackendReadiness
 {
 	bool bCentralControlReady = false;
+	bool bCentralLeaseReady = false;
 	bool bCentralCheckpointReady = false;
 	bool bLocalTransportReady = false;
 };
