@@ -1,0 +1,185 @@
+:root {
+  --gray-1: oklch(12% 0 0);
+  --gray-2: oklch(18% 0 0);
+  --gray-3: oklch(24% 0 0);
+  --gray-4: oklch(30% 0 0);
+  --gray-5: oklch(40% 0 0);
+  --gray-6: oklch(50% 0 0);
+  --gray-7: oklch(65% 0 0);
+  --gray-8: oklch(80% 0 0);
+  --gray-9: oklch(92% 0 0);
+  --gray-10: oklch(97% 0 0);
+
+  --accent-1: oklch(35% 0.12 270);
+  --accent-2: oklch(45% 0.14 270);
+  --accent-3: oklch(55% 0.16 270);
+  --accent-4: oklch(65% 0.18 270);
+  --accent-5: oklch(75% 0.16 270);
+
+  --success: oklch(60% 0.14 145);
+  --warning: oklch(70% 0.14 85);
+  --danger: oklch(58% 0.18 25);
+
+  --surface: var(--gray-2);
+  --surface-raised: var(--gray-3);
+  --border: var(--gray-4);
+  --text: var(--gray-9);
+  --text-muted: var(--gray-7);
+  --text-dim: var(--gray-6);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 24px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--gray-1);
+  overflow: hidden;
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: background 140ms, border-color 140ms;
+}
+
+button:hover:not(:disabled) {
+  background: var(--gray-4);
+  border-color: var(--gray-5);
+}
+
+button:active:not(:disabled) {
+  background: var(--gray-5);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent-4);
+  outline-offset: 2px;
+}
+
+input, select {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  transition: border-color 140ms;
+}
+
+input:focus, select:focus {
+  outline: none;
+  border-color: var(--accent-4);
+}
+
+.button-primary {
+  background: var(--accent-3);
+  border-color: var(--accent-4);
+  color: var(--gray-10);
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--accent-4);
+  border-color: var(--accent-5);
+}
+
+.button-danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--gray-10);
+}
+
+.button-small {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.problems {
+  height: 120px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.problems-header {
+  padding: var(--gap-sm) var(--gap-md);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.problems-count {
+  color: var(--text-muted);
+}
+
+.problems-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gap-xs);
+}
+
+.problem-item {
+  padding: var(--gap-xs) var(--gap-sm);
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+}
+
+.problem-icon {
+  color: var(--warning);
+}
