@@ -4,6 +4,7 @@
 
 #include "Variant_Weapon/UI/WeaponNetTestWidget.h"
 
+#include "Variant_Weapon/Online/WeaponCentralConnectivitySubsystem.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
 #include "Components/Button.h"
@@ -19,6 +20,7 @@
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "InputCoreTypes.h"
+#include "Kismet/GameplayStatics.h"
 #include "Online/WeaponHostMigrationSubsystem.h"
 #include "Online/WeaponSessionSubsystem.h"
 #include "Styling/AppStyle.h"
@@ -93,7 +95,7 @@ namespace
 	}
 
 	static FAutoConsoleCommand CmdWeaponNetTestUI(
-		TEXT("WeaponTestUI"),
+		TEXT("NetTestUI"),
 		TEXT("Toggle the network test UI overlay (non-shipping builds only)."),
 		FConsoleCommandDelegate::CreateStatic(&UWeaponNetTestWidget::ToggleViaConsole));
 }
@@ -117,7 +119,7 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 	}
 	if (!World)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("[NetTestUI] 没有运行中的 Play 会话:请先打开地图并 Play,再输入 WeaponTestUI"));
+		UE_LOG(LogTemp, Warning, TEXT("[NetTestUI] 没有运行中的 Play 会话:请先打开地图并 Play,再输入 NetTestUI"));
 		return;
 	}
 #else
@@ -136,11 +138,20 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 		return;
 	}
 
-	// 优先用 PlayerController 创建:AddToViewport 依赖 OwningPlayer 的 viewport client。
+	// 优先用 Local Player Controller 创建:AddToViewport 依赖 OwningPlayer 的 viewport client。
+	// 用 GameInstance 的 LocalPlayer(绝对本地)而不是 GetFirstPlayerController(PIE 可能返回服务器端)。
 	UWeaponNetTestWidget* Widget = nullptr;
-	if (APlayerController* PC = World->GetFirstPlayerController())
+	APlayerController* LocalPC = nullptr;
+	if (UGameInstance* GI = World->GetGameInstance())
 	{
-		Widget = CreateWidget<UWeaponNetTestWidget>(PC, UWeaponNetTestWidget::StaticClass());
+		if (ULocalPlayer* LP = GI->GetFirstGamePlayer())
+		{
+			LocalPC = LP->GetPlayerController(World);
+		}
+	}
+	if (LocalPC && LocalPC->IsLocalPlayerController())
+	{
+		Widget = CreateWidget<UWeaponNetTestWidget>(LocalPC, UWeaponNetTestWidget::StaticClass());
 	}
 	if (!Widget)
 	{
@@ -151,10 +162,14 @@ void UWeaponNetTestWidget::ToggleViaConsole()
 		UE_LOG(LogTemp, Error, TEXT("[NetTestUI] Widget 创建失败"));
 		return;
 	}
+	if (LocalPC)
+	{
+		Widget->SetOwningPlayer(LocalPC);
+	}
 
 	Widget->AddToViewport(100);
 	GNetTestWidget = Widget;
-	UE_LOG(LogTemp, Log, TEXT("[NetTestUI] 面板已创建(再输入 WeaponTestUI 或按 F2 关闭)"));
+	UE_LOG(LogTemp, Log, TEXT("[NetTestUI] 面板已创建(再输入 NetTestUI 关闭)"));
 }
 
 void UWeaponNetTestWidget::ToggleSelf()
@@ -173,15 +188,6 @@ void UWeaponNetTestWidget::NativeOnInitialized()
 void UWeaponNetTestWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
-
-	if (APlayerController* PC = GetOwningPlayer())
-	{
-		if (PC->WasInputKeyJustPressed(EKeys::F2))
-		{
-			ToggleSelf();
-			return;
-		}
-	}
 
 	RefreshTimer += InDeltaTime;
 	if (RefreshTimer >= 0.25f)
@@ -206,7 +212,7 @@ void UWeaponNetTestWidget::BuildLayout()
 	Background->AddChild(RootBox);
 	WidgetTree->RootWidget = SizeBox;
 
-	AddText(RootBox, TEXT("Net Test (F2)"), FLinearColor(1.0f, 0.85f, 0.3f));
+	AddText(RootBox, TEXT("Net Test (NetTestUI 命令开关)"), FLinearColor(1.0f, 0.85f, 0.3f));
 	SessionOpText = AddText(RootBox, TEXT("操作: Idle"));
 
 	// ---- Session ----
@@ -241,6 +247,7 @@ void UWeaponNetTestWidget::BuildLayout()
 
 	DirectJoinButton = AddButton(AddressRow, TEXT("直连 Join"));
 	ReconnectButton = AddButton(AddressRow, TEXT("重连迁移"));
+	JoinCentralButton = AddButton(AddressRow, TEXT("中心加入"));
 
 	DestroyButton = AddButton(RootBox, TEXT("Destroy Session"));
 
@@ -281,6 +288,7 @@ void UWeaponNetTestWidget::BuildLayout()
 	FindButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleFindClicked);
 	DirectJoinButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleDirectJoinClicked);
 	ReconnectButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleReconnectMigratedClicked);
+	JoinCentralButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleJoinCentralClicked);
 	DestroyButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleDestroyClicked);
 	ReadyButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleReadyClicked);
 	StartMatchButton->OnClicked.AddDynamic(this, &UWeaponNetTestWidget::HandleStartMatchClicked);
@@ -513,12 +521,29 @@ void UWeaponNetTestWidget::HandleHostClicked()
 		ServerName = TEXT("TestHost");
 	}
 	const int32 MaxPlayers = FMath::Clamp(FCString::Atoi(*MaxPlayersBox->GetText().ToString()), 1, 4);
+
+	// 中心接入(异步,不阻塞 LAN session 建立):
+	// Host 启动中心认证 + 创建 Central Match(拿到 joinCode 供 Client 加入)。
+	if (UWeaponCentralConnectivitySubsystem* Central = GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>())
+	{
+		Central->StartCentralConnect();
+		FString Error;
+		Central->CreateCentralMatch(Error);
+	}
+
 	Session->HostLanGame(MaxPlayers, ServerName);
 }
 
 void UWeaponNetTestWidget::HandleFindClicked()
 {
 	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
+
+	// Client 侧:启动中心认证 + 打开事件通道(中心事件带 MatchId 后暂存重放)。
+	if (UWeaponCentralConnectivitySubsystem* Central = GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>())
+	{
+		Central->StartCentralConnect();
+	}
+
 	Session->FindLanGames(50);
 }
 
@@ -526,6 +551,30 @@ void UWeaponNetTestWidget::HandleDirectJoinClicked()
 {
 	UWeaponSessionSubsystem* Session = GetGameInstance()->GetSubsystem<UWeaponSessionSubsystem>();
 	Session->JoinDirectAddress(AddressBox->GetText().ToString());
+}
+
+void UWeaponNetTestWidget::HandleJoinCentralClicked()
+{
+	// 中心加入:从 AddressBox 读 joinCode → JoinCentralMatch(异步)
+	UWeaponCentralConnectivitySubsystem* Central = GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
+	if (!Central)
+	{
+		return;
+	}
+
+	const FString JoinCode = AddressBox->GetText().ToString();
+	if (JoinCode.IsEmpty())
+	{
+		SessionOpText->SetText(FText::FromString(TEXT("中心加入:joinCode 为空")));
+		return;
+	}
+
+	Central->StartCentralConnect();
+	FString Error;
+	if (!Central->JoinCentralMatch(JoinCode, Error))
+	{
+		SessionOpText->SetText(FText::FromString(TEXT("中心加入失败: ") + Error));
+	}
 }
 
 void UWeaponNetTestWidget::HandleReconnectMigratedClicked()

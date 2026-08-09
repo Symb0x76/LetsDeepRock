@@ -59,12 +59,12 @@ void UWeaponCentralConnectivitySubsystem::StartCentralConnect()
 	AuthState = EWeaponCentralAuthState::None;
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Starting central authentication"));
 
-	// 第 2 课实现:RunAuthPipeline() 发起 challenge → register → session。
-	// 第 1 课只建立边界:适配器不在这里做任何决策,只把事实交给 HostMigration。
+	// RunAuthPipeline() 发起 challenge → register → session。
+	// 适配器不在这里做任何决策,只把事实交给 HostMigration。
 	RunAuthPipeline();
 }
 
-bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError)
+bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError) const
 {
 	if (!MatchId.IsValid())
 	{
@@ -84,6 +84,7 @@ bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEn
 		*CoordinatorBaseUrl, *MatchId.ToString(), *Candidate.PeerId));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 
 	const FString Body = FString::Printf(
@@ -112,8 +113,10 @@ bool UWeaponCentralConnectivitySubsystem::CreateCentralMatch(FString& OutError)
 {
 	if (AccessToken.IsEmpty())
 	{
-		OutError = TEXT("Not authenticated");
-		return false;
+		// 认证尚未完成:排队,HandleSessionSuccess 后执行
+		PendingMatchAction = EPendingMatchAction::Create;
+		PendingJoinCode.Reset();
+		return true;
 	}
 	SendCreateMatchRequest();
 	return true;
@@ -121,18 +124,41 @@ bool UWeaponCentralConnectivitySubsystem::CreateCentralMatch(FString& OutError)
 
 bool UWeaponCentralConnectivitySubsystem::JoinCentralMatch(const FString& JoinCode, FString& OutError)
 {
-	if (AccessToken.IsEmpty())
-	{
-		OutError = TEXT("Not authenticated");
-		return false;
-	}
 	if (JoinCode.IsEmpty())
 	{
 		OutError = TEXT("Empty join code");
 		return false;
 	}
+	if (AccessToken.IsEmpty())
+	{
+		// 认证尚未完成:排队,HandleSessionSuccess 后执行
+		PendingMatchAction = EPendingMatchAction::Join;
+		PendingJoinCode = JoinCode;
+		return true;
+	}
 	SendJoinMatchRequest(JoinCode);
 	return true;
+}
+
+void UWeaponCentralConnectivitySubsystem::ExecutePendingMatchAction()
+{
+	switch (PendingMatchAction)
+	{
+	case EPendingMatchAction::Create:
+		PendingMatchAction = EPendingMatchAction::None;
+		SendCreateMatchRequest();
+		break;
+	case EPendingMatchAction::Join:
+	{
+		const FString JoinCode = PendingJoinCode;
+		PendingMatchAction = EPendingMatchAction::None;
+		PendingJoinCode.Reset();
+		SendJoinMatchRequest(JoinCode);
+		break;
+	}
+	default:
+		break;
+	}
 }
 
 void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
@@ -142,6 +168,7 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 	Request->SetURL(CoordinatorBaseUrl + TEXT("/v1/matches"));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 	Request->SetContentAsString(TEXT("{}"));
 
@@ -162,9 +189,10 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 			return;
 		}
 
-		const FGuid CreatedMatchId(Json->GetStringField(TEXT("matchId")));
+		const FString RawMatchId = Json->GetStringField(TEXT("matchId"));
+		const FGuid CreatedMatchId(RawMatchId);
 		const FString JoinCode = Json->GetStringField(TEXT("joinCode"));
-		HandleMatchCreated(CreatedMatchId, JoinCode);
+		HandleMatchCreated(CreatedMatchId, RawMatchId, JoinCode);
 	});
 	Request->ProcessRequest();
 }
@@ -176,6 +204,7 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 	Request->SetURL(CoordinatorBaseUrl + TEXT("/v1/matches/join"));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 	Request->SetContentAsString(FString::Printf(TEXT("{\"joinCode\":\"%s\"}"), *JoinCode));
 
@@ -183,8 +212,9 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 	{
 		if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch failed (HTTP %d)"),
-				Resp.IsValid() ? Resp->GetResponseCode() : 0);
+			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch failed (HTTP %d): %s"),
+				Resp.IsValid() ? Resp->GetResponseCode() : 0,
+				Resp.IsValid() ? *Resp->GetContentAsString() : TEXT("(no response)"));
 			return;
 		}
 
@@ -203,14 +233,16 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 			return;
 		}
 
-		const FGuid JoinedMatchId((*MatchObj)->GetStringField(TEXT("matchId")));
+		// 保留原始 matchId 字符串(Go uuid 格式),不经 FGuid 往返
+		const FString RawMatchId = (*MatchObj)->GetStringField(TEXT("matchId"));
+		const FGuid JoinedMatchId(RawMatchId);
 		const FString Role = Json->GetStringField(TEXT("role"));
-		HandleMatchJoined(JoinedMatchId, Role);
+		HandleMatchJoined(JoinedMatchId, RawMatchId, Role);
 	});
 	Request->ProcessRequest();
 }
 
-void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatchId, const FString& JoinCode)
+void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode)
 {
 	if (!InMatchId.IsValid())
 	{
@@ -219,15 +251,16 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatc
 	}
 
 	MatchId = InMatchId;
+	CentralMatchIdString = RawMatchId;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central match created: %s (join code %s)"),
-		*MatchId.ToString(), *JoinCode);
+		*CentralMatchIdString, *JoinCode);
 
 	// MatchId 建立 → 重放暂存事件 + 打开事件通道
 	ReplayStashedEvents();
 	OpenEventChannel();
 }
 
-void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(const FGuid& InMatchId, const FString& Role)
+void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role)
 {
 	if (!InMatchId.IsValid())
 	{
@@ -236,8 +269,9 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(const FGuid& InMatch
 	}
 
 	MatchId = InMatchId;
+	CentralMatchIdString = RawMatchId;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central match joined: %s (role %s)"),
-		*MatchId.ToString(), *Role);
+		*CentralMatchIdString, *Role);
 
 	// MatchId 建立 → 重放暂存事件 + 打开事件通道
 	ReplayStashedEvents();
@@ -271,7 +305,7 @@ bool UWeaponCentralConnectivitySubsystem::TriggerDirectReconnect(const FString& 
 	return true;
 }
 
-// —— 第 1 课核心:向现有系统交付事实 ——
+// 向现有系统交付事实
 
 void UWeaponCentralConnectivitySubsystem::PublishBackendReadiness()
 {
@@ -303,7 +337,7 @@ void UWeaponCentralConnectivitySubsystem::PublishBackendReadiness()
 		bReady ? TEXT("CentralAssisted") : TEXT("LocalP2P"));
 }
 
-// 第 2 课:HTTP 设备身份管线(challenge → register → session)
+// HTTP 设备身份管线(challenge → register → session)
 
 namespace
 {
@@ -415,6 +449,7 @@ void UWeaponCentralConnectivitySubsystem::SendChallengeRequest()
 	Request->SetURL(CoordinatorBaseUrl + TEXT("/v1/devices/challenge"));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 
 	const FString PublicKeyB64 = FWeaponCentralDeviceCrypto::EncodePublicKeyBase64Url(DevicePublicKey);
 	const FString Body = FString::Printf(TEXT("{\"publicKey\":\"%s\"}"), *PublicKeyB64);
@@ -425,6 +460,12 @@ void UWeaponCentralConnectivitySubsystem::SendChallengeRequest()
 		if (!bWasSuccessful || !Resp.IsValid())
 		{
 			FailAuthPipeline(TEXT("Challenge request failed"));
+			return;
+		}
+		if (Resp->GetResponseCode() != 200)
+		{
+			FailAuthPipeline(FString::Printf(TEXT("Challenge failed (HTTP %d): %s"),
+				Resp->GetResponseCode(), *Resp->GetContentAsString()));
 			return;
 		}
 
@@ -465,6 +506,7 @@ void UWeaponCentralConnectivitySubsystem::SendRegisterRequest(const FString& Non
 	Request->SetURL(CoordinatorBaseUrl + TEXT("/v1/devices/register"));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 	Request->SetContentAsString(Body);
 
 	Request->OnProcessRequestComplete().BindLambda([this, Nonce](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, bool bWasSuccessful)
@@ -476,7 +518,7 @@ void UWeaponCentralConnectivitySubsystem::SendRegisterRequest(const FString& Non
 		}
 
 		const int32 StatusCode = Resp->GetResponseCode();
-		// 200(已存在)/201(新注册)都是成功;其他(如 400/409 非幂等路径)失败
+		// 200(已存在) / 201(新注册)都是成功;其他(如 400 / 409 非幂等路径)失败
 		if (StatusCode != 200 && StatusCode != 201)
 		{
 			FailAuthPipeline(FString::Printf(TEXT("Register failed (HTTP %d)"), StatusCode));
@@ -513,7 +555,8 @@ void UWeaponCentralConnectivitySubsystem::SendRegisterRequest(const FString& Non
 
 void UWeaponCentralConnectivitySubsystem::SendSessionRequest(const FString& Nonce, const TArray<uint8>& Signature)
 {
-	const FString SignatureB64 = FBase64::Encode(Signature, EBase64Mode::UrlSafe);
+	// 签名也走 base64url 无 padding(Go 侧 RawURLEncoding)
+	const FString SignatureB64 = FWeaponCentralDeviceCrypto::EncodeBase64UrlNoPad(Signature);
 	const FString Body = FString::Printf(
 		TEXT("{\"nonce\":\"%s\",\"signature\":\"%s\"}"),
 		*Nonce, *SignatureB64);
@@ -523,6 +566,7 @@ void UWeaponCentralConnectivitySubsystem::SendSessionRequest(const FString& Nonc
 	Request->SetURL(CoordinatorBaseUrl + TEXT("/v1/devices/session"));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 	Request->SetContentAsString(Body);
 
 	Request->OnProcessRequestComplete().BindLambda([this](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, bool bWasSuccessful)
@@ -530,6 +574,12 @@ void UWeaponCentralConnectivitySubsystem::SendSessionRequest(const FString& Nonc
 		if (!bWasSuccessful || !Resp.IsValid())
 		{
 			FailAuthPipeline(TEXT("Session request failed"));
+			return;
+		}
+		if (Resp->GetResponseCode() != 200)
+		{
+			FailAuthPipeline(FString::Printf(TEXT("Session failed (HTTP %d): %s"),
+				Resp->GetResponseCode(), *Resp->GetContentAsString()));
 			return;
 		}
 
@@ -565,11 +615,14 @@ void UWeaponCentralConnectivitySubsystem::HandleSessionSuccess(const FString& To
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central control ready (token acquired)"));
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Central control ready"));
 
-	// 第 1 课:把"控制连接就绪"事实交给状态机
+	// 把"控制连接就绪"事实交给状态机
 	PublishBackendReadiness();
 
-	// 第 3 课:打开 WebSocket 事件通道
+	// 打开 WebSocket 事件通道
 	OpenEventChannel();
+
+	// 执行认证期间排队的 Match 动作(创建/加入)
+	ExecutePendingMatchAction();
 }
 
 void UWeaponCentralConnectivitySubsystem::FailAuthPipeline(const FString& Message)
@@ -580,13 +633,14 @@ void UWeaponCentralConnectivitySubsystem::FailAuthPipeline(const FString& Messag
 	OnConnectivityChanged.Broadcast(ConnectivityState, Message);
 }
 
-// —— 第 3 课:WebSocket 事件通道 + Epoch fencing + 指数退避重连(选项 C) ——
+// WebSocket 事件通道 + Epoch fencing + 指数退避重连
 
 void UWeaponCentralConnectivitySubsystem::OpenEventChannel()
 {
+	// 防重入:已有活跃 socket 时跳过(避免多调用点反复断开重连)
 	if (EventSocket.IsValid())
 	{
-		EventSocket.Reset();
+		return;
 	}
 
 	// 从 CoordinatorBaseUrl 推导 WS URL:https → wss,http → ws
@@ -601,16 +655,24 @@ void UWeaponCentralConnectivitySubsystem::OpenEventChannel()
 	}
 
 	// 事件通道需要 MatchId(Go 侧路由 GET /v1/matches/{matchId}/events)。
-	// MatchId 由 HostMigration 提供(第 3 课):无 Match 时不连。
-	if (!MatchId.IsValid())
+	// 无 Match 时不连。URL 用原始 matchId 字符串(Go uuid 格式),
+	// 不能经 FGuid::ToString()(会变大写无连字符,Go 查库 404)。
+	if (CentralMatchIdString.IsEmpty())
 	{
 		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("OpenEventChannel skipped: no active MatchId"));
 		return;
 	}
-	WsUrl += FString::Printf(TEXT("/v1/matches/%s/events"), *MatchId.ToString());
+	WsUrl += FString::Printf(TEXT("/v1/matches/%s/events"), *CentralMatchIdString);
+	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Opening event channel: %s"), *WsUrl);
 
 	FWebSocketsModule& WsModule = FModuleManager::GetModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
-	EventSocket = WsModule.CreateWebSocket(WsUrl, TEXT(""));
+	// WS 握手 = HTTP 升级,必须带 Bearer token(Go 侧 events 路由 RequireDevice)
+	TMap<FString, FString> UpgradeHeaders;
+	if (!AccessToken.IsEmpty())
+	{
+		UpgradeHeaders.Add(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	}
+	EventSocket = WsModule.CreateWebSocket(WsUrl, TEXT(""), UpgradeHeaders);
 
 	EventSocket->OnConnected().AddLambda([this]()
 	{
@@ -675,7 +737,7 @@ void UWeaponCentralConnectivitySubsystem::HandleEventDispatch(
 	const TSharedPtr<FJsonObject>& Json,
 	const FString& EventType,
 	const FGuid& EventMatchId,
-	uint64 EventEpoch)
+	const uint64 EventEpoch)
 {
 	// Epoch fencing:任何缺少 Match/Epoch fencing 的事件都被拒绝
 	if (!ValidateEventFence(EventMatchId, EventEpoch))
@@ -763,7 +825,7 @@ void UWeaponCentralConnectivitySubsystem::ReplayStashedEvents()
 
 bool UWeaponCentralConnectivitySubsystem::ValidateEventFence(const FGuid& EventMatchId, uint64 EventEpoch)
 {
-	// 1. MatchId 必须匹配本地战局
+	// MatchId 必须匹配本地战局
 	if (!MatchId.IsValid())
 	{
 		// 本地尚未进入 Match;事件可暂存或拒绝。这里拒绝(保守)。
@@ -774,7 +836,7 @@ bool UWeaponCentralConnectivitySubsystem::ValidateEventFence(const FGuid& EventM
 		return false;
 	}
 
-	// 2. 旧 Epoch 拒绝;新 Epoch 接受并更新
+	// 旧 Epoch 拒绝;新 Epoch 接受并更新
 	if (EventEpoch < AuthorityEpoch)
 	{
 		return false;
@@ -819,7 +881,7 @@ void UWeaponCentralConnectivitySubsystem::HandleCheckpointCommitted(const FGuid&
 
 void UWeaponCentralConnectivitySubsystem::ScheduleReconnect()
 {
-	// 选项 C:指数退避 + 超时放弃
+	// 指数退避 + 超时放弃
 	if (EventSocket.IsValid())
 	{
 		EventSocket.Reset();
