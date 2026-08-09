@@ -54,6 +54,13 @@ FWeaponMigrationRoleMember MakeRoleMember(const FUniqueNetIdRepl& PlayerId, cons
 	return Member;
 }
 
+TArray<uint8> MakePayloadHash(const uint8 FillByte)
+{
+	TArray<uint8> Hash;
+	Hash.Init(FillByte, WeaponMigrationSHA256Bytes);
+	return Hash;
+}
+
 UWeaponMatchSaveGame* MakeSaveGame(
 	const FGuid& MatchId,
 	const int64 SnapshotRevision,
@@ -749,6 +756,162 @@ bool FWeaponMigrationCommonAnnouncementAutomationTest::RunTest(const FString& Pa
 	--StaleRosterAck.RosterRevision;
 	TestFalse(TEXT("A stale RosterRevision announcement is rejected"),
 		BackupSubsystem->AcceptCommonCommittedAnnouncement(BackupAId, StaleRosterAck, Error));
+
+	return !HasAnyErrors();
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FWeaponMigrationBackendPolicyAutomationTest,
+	"LetsDeepRock.Weapon.HostMigration.BackendPolicy",
+	EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
+
+bool FWeaponMigrationBackendPolicyAutomationTest::RunTest(const FString& Parameters)
+{
+	using namespace WeaponHostMigrationTests;
+
+	FWeaponMigrationBackendReadiness Readiness;
+	FWeaponMigrationBackendSelection BackendSelection =
+		WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	TestFalse(TEXT("No ready backend keeps Match bootstrap blocked"), BackendSelection.bReady);
+
+	Readiness.bCentralControlReady = true;
+	Readiness.bLocalTransportReady = true;
+	BackendSelection = WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	TestTrue(TEXT("Incomplete central readiness falls back to Local P2P"),
+		BackendSelection.bReady && BackendSelection.Backend == EWeaponMigrationBackend::LocalP2P);
+
+	Readiness.bCentralLeaseReady = true;
+	BackendSelection = WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	TestTrue(TEXT("Control and Lease without a committed checkpoint still fall back to Local P2P"),
+		BackendSelection.bReady && BackendSelection.Backend == EWeaponMigrationBackend::LocalP2P);
+
+	Readiness.bCentralCheckpointReady = true;
+	BackendSelection = WeaponMigrationBackendPolicy::SelectMatchBackend(Readiness);
+	TestTrue(TEXT("Control, Lease and first checkpoint commit select Central-assisted"),
+		BackendSelection.bReady &&
+		BackendSelection.Backend == EWeaponMigrationBackend::CentralAssisted);
+
+	FWeaponMigrationBackendState BackendState;
+	FString BackendError;
+	TestTrue(TEXT("A completed central handshake commits the Match backend"),
+		BackendState.ApplyReadiness(Readiness, BackendError));
+	TestTrue(TEXT("The committed backend is Central-assisted"),
+		BackendState.bCommitted &&
+		BackendState.Backend == EWeaponMigrationBackend::CentralAssisted);
+
+	FWeaponMigrationBackendReadiness LostCentralReadiness;
+	LostCentralReadiness.bLocalTransportReady = true;
+	TestFalse(TEXT("A central connectivity loss cannot silently downgrade the Match"),
+		BackendState.ApplyReadiness(LostCentralReadiness, BackendError));
+	TestTrue(TEXT("A rejected downgrade preserves the committed central backend"),
+		BackendState.bCommitted &&
+		BackendState.Backend == EWeaponMigrationBackend::CentralAssisted);
+
+	BackendState.Reset();
+	TestFalse(TEXT("Reset clears the Match-scoped backend latch"), BackendState.bCommitted);
+	TestTrue(TEXT("A new Match can commit Local P2P fallback"),
+		BackendState.ApplyReadiness(LostCentralReadiness, BackendError));
+	TestTrue(TEXT("The new Match remains on its Local P2P backend"),
+		BackendState.Backend == EWeaponMigrationBackend::LocalP2P);
+
+	const FUniqueNetIdRepl HostId = MakePlayerId(TEXT("1111111111111111"));
+	FWeaponCentralHostLease Lease;
+	Lease.MatchId = FGuid::NewGuid();
+	Lease.AuthorityEpoch = 7;
+	Lease.RosterRevision = 12;
+	Lease.ActiveHost = MakeRoleMember(HostId, 0);
+	Lease.LeaseId = FGuid::NewGuid();
+	Lease.LeaseTtlSeconds = 10.0;
+	Lease.BaseSnapshotRevision = 40;
+	TestTrue(TEXT("A complete center Lease is structurally valid"), Lease.IsStructurallyValid());
+	FWeaponCentralHostLease RenewedLease = Lease;
+	RenewedLease.LeaseTtlSeconds = 20.0;
+	RenewedLease.BaseSnapshotRevision = 41;
+	TestTrue(TEXT("Lease renewal metadata retains the same authority term"),
+		Lease.IdentifiesSameTerm(RenewedLease));
+	FWeaponCentralHostLease InvalidLease = Lease;
+	InvalidLease.LeaseTtlSeconds = 0.0;
+	TestFalse(TEXT("A non-positive Lease TTL is invalid"), InvalidLease.IsStructurallyValid());
+
+	const auto MakeCandidate = [&Lease](
+		const EWeaponRecoveryCheckpointSource Source,
+		const int64 SnapshotRevision,
+		const uint64 RosterRevision,
+		const uint8 HashByte)
+	{
+		FWeaponRecoveryCheckpointCandidate Candidate;
+		Candidate.Source = Source;
+		Candidate.Ack.MatchId = Lease.MatchId;
+		Candidate.Ack.AuthorityEpoch = Lease.AuthorityEpoch;
+		Candidate.Ack.SnapshotRevision = SnapshotRevision;
+		Candidate.Ack.RosterRevision = RosterRevision;
+		Candidate.Ack.PayloadHash = MakePayloadHash(HashByte);
+		return Candidate;
+	};
+
+	FWeaponRecoveryCheckpointCandidate CentralCandidate = MakeCandidate(
+		EWeaponRecoveryCheckpointSource::CentralCommitted,
+		42,
+		12,
+		0x42);
+	FWeaponRecoveryCheckpointCandidate LocalCandidate = MakeCandidate(
+		EWeaponRecoveryCheckpointSource::LocalCommonCommitted,
+		41,
+		12,
+		0x41);
+	FWeaponRecoveryCheckpointSelection CheckpointSelection =
+		WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+			Lease.MatchId,
+			Lease.AuthorityEpoch,
+			CentralCandidate,
+			LocalCandidate);
+	TestTrue(TEXT("The newer compatible central checkpoint is selected"),
+		CheckpointSelection.IsUsable() &&
+		CheckpointSelection.Source == EWeaponRecoveryCheckpointSource::CentralCommitted &&
+		CheckpointSelection.Ack.SnapshotRevision == 42);
+
+	CentralCandidate.Ack.SnapshotRevision = LocalCandidate.Ack.SnapshotRevision;
+	CentralCandidate.Ack.PayloadHash = LocalCandidate.Ack.PayloadHash;
+	CheckpointSelection = WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+		Lease.MatchId,
+		Lease.AuthorityEpoch,
+		CentralCandidate,
+		LocalCandidate);
+	TestTrue(TEXT("An identical tie prefers the central durable source"),
+		CheckpointSelection.IsUsable() &&
+		CheckpointSelection.Source == EWeaponRecoveryCheckpointSource::CentralCommitted);
+
+	CentralCandidate.Ack.PayloadHash = MakePayloadHash(0x99);
+	CheckpointSelection = WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+		Lease.MatchId,
+		Lease.AuthorityEpoch,
+		CentralCandidate,
+		LocalCandidate);
+	TestTrue(TEXT("The same revision with different bytes fails closed"),
+		CheckpointSelection.bConflict && !CheckpointSelection.IsUsable());
+
+	CentralCandidate = MakeCandidate(
+		EWeaponRecoveryCheckpointSource::CentralCommitted,
+		43,
+		11,
+		0x43);
+	CheckpointSelection = WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+		Lease.MatchId,
+		Lease.AuthorityEpoch,
+		CentralCandidate,
+		LocalCandidate);
+	TestTrue(TEXT("A newer Snapshot cannot move RosterRevision backwards"),
+		CheckpointSelection.bConflict && !CheckpointSelection.IsUsable());
+
+	CentralCandidate.Ack.AuthorityEpoch = Lease.AuthorityEpoch - 1;
+	CheckpointSelection = WeaponMigrationBackendPolicy::SelectRecoveryCheckpoint(
+		Lease.MatchId,
+		Lease.AuthorityEpoch,
+		CentralCandidate,
+		LocalCandidate);
+	TestTrue(TEXT("A stale central candidate falls back to Local CommonCommitted"),
+		CheckpointSelection.IsUsable() &&
+		CheckpointSelection.Source == EWeaponRecoveryCheckpointSource::LocalCommonCommitted);
 
 	return !HasAnyErrors();
 }

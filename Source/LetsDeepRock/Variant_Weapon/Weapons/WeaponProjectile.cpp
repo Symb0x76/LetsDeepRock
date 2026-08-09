@@ -120,6 +120,7 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 	bool bInPenetratesTerrain, float InProjectileSpeed,
 	float InDamageFalloffStart, float InDamageFalloffEnd,
+	float InArmorPenetration,
 	FName InStatusEffectId,
 	const FUniqueNetIdRepl& ExplicitPlayerId)
 {
@@ -140,6 +141,7 @@ void AWeaponProjectile::InitializeProjectile(TSubclassOf<UGameplayEffect> InDama
 	InitializationState.ProjectileSpeed = InProjectileSpeed > 0.0f ? InProjectileSpeed : 3000.0f;
 	InitializationState.DamageFalloffStart = InDamageFalloffStart;
 	InitializationState.DamageFalloffEnd = InDamageFalloffEnd;
+	InitializationState.ArmorPenetration = FMath::Clamp(InArmorPenetration, 0.0f, 1.0f);
 	InitializationState.bInitialized = true;
 
 #if !UE_BUILD_SHIPPING
@@ -447,6 +449,7 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> 
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_Damage, AppliedDamage);
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffStart, InitializationState.DamageFalloffStart);
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_DamageFalloffEnd, InitializationState.DamageFalloffEnd);
+	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(SpecHandle, TAG_Data_ArmorPenetration, InitializationState.ArmorPenetration);
 	SpecHandle.Data->AppendDynamicAssetTags(InitializationState.DamageTags);
 
 #if !UE_BUILD_SHIPPING

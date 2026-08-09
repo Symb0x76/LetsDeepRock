@@ -161,6 +161,7 @@ struct LETSDEEPROCK_API FWeaponProjectileSnapshot
 
 	UPROPERTY(SaveGame) float DamageFalloffStart = 0.0f;
 	UPROPERTY(SaveGame) float DamageFalloffEnd = 0.0f;
+	UPROPERTY(SaveGame) float ArmorPenetration = 0.0f;
 
 	UPROPERTY(SaveGame) float AreaDamage = 0.0f;
 	UPROPERTY(SaveGame) float AreaRadius = 0.0f;

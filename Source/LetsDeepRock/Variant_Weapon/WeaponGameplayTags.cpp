@@ -6,6 +6,7 @@
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_Damage, "Data.Damage");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffStart, "Data.DamageFalloffStart");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffEnd, "Data.DamageFalloffEnd");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Data_ArmorPenetration, "Data.ArmorPenetration");
 
 // Ability 标识
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon, "Ability.Weapon");

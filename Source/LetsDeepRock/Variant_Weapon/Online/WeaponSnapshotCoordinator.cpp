@@ -86,6 +86,31 @@ FGuid UWeaponSnapshotCoordinator::GetOrCreateActiveMatchId()
 	return ActiveMatchId;
 }
 
+bool UWeaponSnapshotCoordinator::AdoptActiveMatchId(
+	const FGuid& MatchId,
+	FString& OutError)
+{
+	OutError.Reset();
+	if (!MatchId.IsValid())
+	{
+		OutError = TEXT("Coordinator MatchId is invalid");
+		return false;
+	}
+	if (ActiveMatchId.IsValid() && ActiveMatchId != MatchId)
+	{
+		OutError = TEXT("A different logical MatchId is already active");
+		return false;
+	}
+	if (NextSnapshotRevision != 1)
+	{
+		OutError = TEXT("Coordinator MatchId must be adopted before the first Snapshot capture");
+		return false;
+	}
+
+	ActiveMatchId = MatchId;
+	return true;
+}
+
 bool UWeaponSnapshotCoordinator::CaptureSaveGame(
 	const UWorld* World,
 	UWeaponMatchSaveGame*& OutSaveGame,
@@ -857,6 +882,7 @@ bool UWeaponSnapshotCoordinator::StageRestoreActors(
 			SavedProjectile.ProjectileSpeed,
 			SavedProjectile.DamageFalloffStart,
 			SavedProjectile.DamageFalloffEnd,
+			SavedProjectile.ArmorPenetration,
 			SavedProjectile.StatusEffectId,
 			SavedProjectile.InstigatorPlayerId);
 		Projectile->InitFlightParams(
@@ -1507,6 +1533,7 @@ bool UWeaponSnapshotCoordinator::CaptureProjectiles(
 		SavedProjectile.ProjectileSpeed = Initialization.ProjectileSpeed;
 		SavedProjectile.DamageFalloffStart = Initialization.DamageFalloffStart;
 		SavedProjectile.DamageFalloffEnd = Initialization.DamageFalloffEnd;
+		SavedProjectile.ArmorPenetration = Initialization.ArmorPenetration;
 		SavedProjectile.AreaDamage = Initialization.AreaDamage;
 		SavedProjectile.AreaRadius = Initialization.AreaRadius;
 		SavedProjectile.AreaFalloff = Initialization.AreaFalloff;

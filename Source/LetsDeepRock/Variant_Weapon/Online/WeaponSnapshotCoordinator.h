@@ -22,6 +22,8 @@ class LETSDEEPROCK_API UWeaponSnapshotCoordinator : public UGameInstanceSubsyste
 public:
 	/** Stable logical match identity shared by Snapshot capture and migration role fencing. */
 	FGuid GetOrCreateActiveMatchId();
+	/** Adopt the Coordinator-issued MatchId before the first local Snapshot is captured. */
+	bool AdoptActiveMatchId(const FGuid& MatchId, FString& OutError);
 
 	/** 捕获服务器权威状态以及恢复 World/Session 所需的固定配置 */
 	bool CaptureSaveGame(const UWorld* World, UWeaponMatchSaveGame*& OutSaveGame, FString& OutError);

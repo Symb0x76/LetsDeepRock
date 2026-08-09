@@ -40,6 +40,16 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	EWeaponHostMigrationState GetMigrationState() const { return MigrationState; }
+	EWeaponMigrationBackend GetMigrationBackend() const { return MigrationBackendState.Backend; }
+	bool IsMigrationBackendCommitted() const { return MigrationBackendState.bCommitted; }
+
+	/** Commit the Match backend after central handshake/first ACK or an explicit local fallback. */
+	bool ApplyMigrationBackendReadiness(
+		const FWeaponMigrationBackendReadiness& Readiness,
+		FString& OutError);
+
+	/** Clear the backend latch only when beginning a different MatchId. */
+	void ResetMigrationBackendSelection();
 
 	/** Freeze the current listen match, commit one final payload to A/B, then join the successor. */
 	UFUNCTION(BlueprintCallable, Category = "Host Migration")
@@ -335,6 +345,7 @@ private:
 	bool bBackupBConfirmedCommonCommitted = false;
 	bool bHasCurrentRoleAssignment = false;
 	bool bCurrentRoleAssignmentIsProvisional = false;
+	FWeaponMigrationBackendState MigrationBackendState;
 	EWeaponHostMigrationState MigrationState = EWeaponHostMigrationState::Idle;
 	EWeaponMigrationRole RecoveryCandidateRole = EWeaponMigrationRole::None;
 	FWeaponMigrationRoleAssignment RecoveryOriginAssignment;

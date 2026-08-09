@@ -14,7 +14,7 @@ class UProjectileMovementComponent;
 class UGameplayEffect;
 
 /** 投射物生成时由服务器确定、随后整体复制的内部 C++ 协议状态。 */
-USTRUCT()
+USTRUCT(BlueprintType)
 struct FWeaponProjectileInitializationState
 {
 	GENERATED_BODY()
@@ -46,6 +46,9 @@ struct FWeaponProjectileInitializationState
 
 	UPROPERTY()
 	float DamageFalloffEnd = 0.0f;
+
+	UPROPERTY()
+	float ArmorPenetration = 0.0f;
 
 	UPROPERTY()
 	float AreaDamage = 0.0f;
@@ -93,6 +96,7 @@ public:
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed,
 		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f,
+		float InArmorPenetration = 0.0f,
 		FName InStatusEffectId = NAME_None,
 		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 

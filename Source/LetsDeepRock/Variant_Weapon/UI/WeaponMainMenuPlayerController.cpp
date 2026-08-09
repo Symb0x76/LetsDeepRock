@@ -1,12 +1,13 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
-#include "WeaponMainMenuPlayerController.h"
+#include "Variant_Weapon/UI/WeaponMainMenuPlayerController.h"
 
 #include "Blueprint/UserWidget.h"
-#include "UI/WeaponMainMenuWidget.h"
+#include "Variant_Weapon/UI/WeaponMainMenuWidget.h"
 
 AWeaponMainMenuPlayerController::AWeaponMainMenuPlayerController()
 {
+	// 菜单界面全程需要鼠标
 	bShowMouseCursor = true;
 	DefaultMouseCursor = EMouseCursor::Default;
 	bEnableClickEvents = true;
@@ -19,7 +20,15 @@ void AWeaponMainMenuPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
 
-	if (!IsLocalController() || !MainMenuWidgetClass || MainMenuWidget)
+	if (IsLocalController())
+	{
+		ShowMainMenu();
+	}
+}
+
+void AWeaponMainMenuPlayerController::ShowMainMenu()
+{
+	if (!MainMenuWidgetClass || MainMenuWidget)
 	{
 		return;
 	}
@@ -29,7 +38,7 @@ void AWeaponMainMenuPlayerController::BeginPlay()
 	{
 		MainMenuWidget->AddToViewport();
 
-		// 主菜单是纯 UI 场景，输入全部交给 UMG。
+		// 主菜单是模态界面：只接收 UI 输入，并把焦点交给菜单本体，键盘导航才能生效
 		SetInputMode(FInputModeUIOnly().SetWidgetToFocus(MainMenuWidget->TakeWidget()));
 		bShowMouseCursor = true;
 	}
