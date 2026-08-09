@@ -13,6 +13,7 @@
 #include "UI/WeaponDebugTypes.h"
 #include "UI/WeaponHUD.h"
 #include "UI/WeaponClassSelectWidget.h"
+#include "UI/WeaponLobbyWidget.h"
 #include "WeaponGameMode.h"
 #include "WeaponPlayerState.h"
 #include "Data/ProfessionSaveGame.h"
@@ -45,6 +46,9 @@ AWeaponPlayerController::AWeaponPlayerController()
 
 	// 默认职业选择 UI 类（可由蓝图子类替换）
 	ClassSelectWidgetClass = UWeaponClassSelectWidget::StaticClass();
+
+	// 默认房间 UI 类（可由蓝图子类替换）
+	LobbyWidgetClass = UWeaponLobbyWidget::StaticClass();
 }
 
 void AWeaponPlayerController::BeginPlay()
@@ -55,12 +59,33 @@ void AWeaponPlayerController::BeginPlay()
 	if (IsLocalController())
 	{
 		ApplyGameplayInputMode();
+
+		// 房间 UI 先于职业选择创建，保证职业选择模态层始终盖在它上面。
+		ShowLobbyUI();
+
 		const UWeaponHostMigrationSubsystem* MigrationSubsystem =
 			GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;
 		if (!IsMigrationTravelInProgress(MigrationSubsystem))
 		{
 			ShowClassSelectUI();
 		}
+	}
+}
+
+void AWeaponPlayerController::ShowLobbyUI()
+{
+	if (!LobbyWidgetClass || LobbyWidget)
+	{
+		return;
+	}
+
+	LobbyWidget = CreateWidget<UWeaponLobbyWidget>(this, LobbyWidgetClass);
+	if (LobbyWidget)
+	{
+		// 房间 UI 常驻显示，默认是屏幕正左的小窗；不改变输入模式，
+		// 玩法输入仍由 ApplyGameplayInputMode 的 GameAndUI 负责。
+		// ZOrder 10 保证在职业选择 UI（ZOrder 100）之下。
+		LobbyWidget->AddToViewport(10);
 	}
 }
 
@@ -74,7 +99,15 @@ void AWeaponPlayerController::ShowClassSelectUI()
 	ClassSelectWidget = CreateWidget<UWeaponClassSelectWidget>(this, ClassSelectWidgetClass);
 	if (ClassSelectWidget)
 	{
-		ClassSelectWidget->AddToViewport();
+		// ZOrder 100 保证职业选择在房间 UI（ZOrder 10）之上。
+		ClassSelectWidget->AddToViewport(100);
+
+		// 职业选择期间隐藏房间 UI，避免信息冗余和交互干扰。
+		if (LobbyWidget)
+		{
+			LobbyWidget->SetVisibility(ESlateVisibility::Hidden);
+		}
+
 		// 职业选择是模态界面，选择完成前只接收 UI 输入。
 		SetInputMode(FInputModeUIOnly().SetWidgetToFocus(ClassSelectWidget->TakeWidget()));
 		bShowMouseCursor = true;
@@ -102,6 +135,13 @@ void AWeaponPlayerController::RestoreGameplayInputAfterMigration()
 		ClassSelectWidget->RemoveFromParent();
 		ClassSelectWidget = nullptr;
 	}
+
+	// 迁移后恢复房间 UI 的可见性
+	if (LobbyWidget)
+	{
+		LobbyWidget->SetVisibility(ESlateVisibility::Visible);
+	}
+
 	ApplyGameplayInputMode();
 }
 
@@ -153,12 +193,18 @@ void AWeaponPlayerController::RequestSelectProfession(FName ProfessionId, FName 
 		return;
 	}
 
-	// 本地立即隐藏 UI，避免等待服务端往返造成的操作滞后感；
+	// 本地立即隐藏职业选择 UI，避免等待服务端往返造成的操作滞后感；
 	// 服务端仍会重复校验并执行权威重生。
 	if (ClassSelectWidget)
 	{
 		ClassSelectWidget->RemoveFromParent();
 		ClassSelectWidget = nullptr;
+
+		// 恢复房间 UI 的可见性（职业选择期间被隐藏）
+		if (LobbyWidget)
+		{
+			LobbyWidget->SetVisibility(ESlateVisibility::Visible);
+		}
 
 		ApplyGameplayInputMode();
 	}

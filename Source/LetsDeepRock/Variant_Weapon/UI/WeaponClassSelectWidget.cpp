@@ -1,38 +1,87 @@
-// Copyright Epic Games, Inc. All Rights Reserved.
+﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponClassSelectWidget.h"
-#include "GameFramework/PlayerController.h"
-#include "WeaponPlayerController.h"
+
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
+#include "Components/BorderSlot.h"
+#include "Components/Button.h"
+#include "Components/ButtonSlot.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
-#include "Components/Button.h"
-#include "Components/TextBlock.h"
-#include "Components/Border.h"
-#include "Components/VerticalBox.h"
-#include "Components/VerticalBoxSlot.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
+#include "Components/Overlay.h"
+#include "Components/OverlaySlot.h"
 #include "Components/SafeZone.h"
-#include "Components/SafeZoneSlot.h"
 #include "Components/ScaleBox.h"
-#include "Components/ScaleBoxSlot.h"
 #include "Components/SizeBox.h"
-#include "Components/SizeBoxSlot.h"
 #include "Components/Spacer.h"
-#include "Components/WidgetSwitcher.h"
-#include "Components/WidgetSwitcherSlot.h"
-#include "Styling/CoreStyle.h"
+#include "Components/TextBlock.h"
+#include "Components/VerticalBox.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Data/GameDataSubsystem.h"
 #include "Engine/GameInstance.h"
+#include "Styling/CoreStyle.h"
+#include "Styling/SlateBrush.h"
+#include "Styling/SlateTypes.h"
+#include "WeaponPlayerController.h"
 
-namespace WeaponClassSelectWidgetPrivate
+namespace WeaponClassSelectStyle
 {
-	// 选中态 / 未选中态卡片边框颜色（沿用现有矿业终端配色语言）
-	static const FLinearColor CardColorDefault(0.15f, 0.2f, 0.25f, 0.95f);
-	static const FLinearColor CardColorSelected(0.35f, 0.55f, 0.35f, 0.95f); // 选中：偏绿高亮，与职业卡片琥珀色文字区分
-	static const FLinearColor AccentColor(1.0f, 0.85f, 0.3f, 1.0f);
-	static const FLinearColor TextSecondaryColor(0.7f, 0.75f, 0.8f, 1.0f);
+	/** 全屏遮罩：接近黑的冷调 */
+	static const FLinearColor ScrimColor(0.05f, 0.1f, 0.12f, 0.92f);
+
+	/** 面板：舱室金属板 */
+	static const FLinearColor PanelColor(0.043f, 0.052f, 0.063f, 0.96f);
+
+	/** 凹槽 */
+	static const FLinearColor PanelDeepColor(0.024f, 0.030f, 0.038f, 0.98f);
+
+	/** 卡片默认 */
+	static const FLinearColor CardDefault(0.15f, 0.2f, 0.25f, 0.95f);
+
+	/** 卡片选中：橙黄描边 + 抬起底色 */
+	static const FLinearColor CardSelected(0.070f, 0.082f, 0.098f, 0.96f);
+
+	/** 主强调色：安全帽橙黄 */
+	static const FLinearColor Amber(1.000f, 0.686f, 0.145f, 1.0f);
+
+	static const FLinearColor AmberDim(1.000f, 0.686f, 0.145f, 0.32f);
+
+	static const FLinearColor AmberFaint(1.000f, 0.686f, 0.145f, 0.14f);
+
+	static const FLinearColor TextPrimary(0.925f, 0.941f, 0.957f, 1.0f);
+
+	static const FLinearColor TextSecondary(0.573f, 0.616f, 0.667f, 1.0f);
+
+	static const FLinearColor TextMuted(0.353f, 0.388f, 0.435f, 1.0f);
+
+	static constexpr float DesignWidth = 1280.0f;
+	static constexpr float DesignHeight = 800.0f;
+
+	FSlateBrush MakeFlatBrush(const FLinearColor& Color)
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
+		Brush.TintColor = FSlateColor(Color);
+		Brush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+		Brush.OutlineSettings.CornerRadii = FVector4(0.0f, 0.0f, 0.0f, 0.0f);
+		Brush.OutlineSettings.Width = 0.0f;
+		return Brush;
+	}
+
+	FSlateBrush MakeOutlinedBrush(const FLinearColor& Fill, const FLinearColor& Outline, float Width)
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
+		Brush.TintColor = FSlateColor(Fill);
+		Brush.OutlineSettings.Color = FSlateColor(Outline);
+		Brush.OutlineSettings.Width = Width;
+		Brush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+		Brush.OutlineSettings.CornerRadii = FVector4(2.0f, 2.0f, 2.0f, 2.0f);
+		return Brush;
+	}
 }
 
 void UWeaponClassSelectWidget::NativeOnInitialized()
@@ -44,464 +93,401 @@ void UWeaponClassSelectWidget::NativeOnInitialized()
 		WidgetTree = NewObject<UWidgetTree>(this, TEXT("WidgetTree"));
 	}
 
-	// 根画布
 	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(GetRootWidget());
 	if (!RootCanvas)
 	{
-		RootCanvas = NewObject<UCanvasPanel>(this);
+		RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
 		WidgetTree->RootWidget = RootCanvas;
 	}
 
-	// 全屏半透明遮罩（矿业科幻终端深色背景）
-	UBorder* FullScreenOverlay = WidgetTree->ConstructWidget<UBorder>();
-	FullScreenOverlay->SetBrushColor(FLinearColor(0.05f, 0.1f, 0.12f, 0.92f));
-	UCanvasPanelSlot* OverlayCanvasSlot = RootCanvas->AddChildToCanvas(FullScreenOverlay);
-	OverlayCanvasSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
-	OverlayCanvasSlot->SetOffsets(FMargin(0.f));
+	BuildLayout(RootCanvas);
+}
 
-	// SafeZone 确保内容不被屏幕边缘或异形屏裁切
-	USafeZone* SafeArea = WidgetTree->ConstructWidget<USafeZone>();
-	UCanvasPanelSlot* SafeCanvasSlot = RootCanvas->AddChildToCanvas(SafeArea);
-	SafeCanvasSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
-	SafeCanvasSlot->SetOffsets(FMargin(20.f, 20.f, -20.f, -20.f)); // 额外保留 20px 屏幕边距
+void UWeaponClassSelectWidget::BuildLayout(UPanelWidget* RootCanvas)
+{
+	using namespace WeaponClassSelectStyle;
 
-	// 两页切换容器：Page0 职业选择，Page1 武器选择
-	PageSwitcher = WidgetTree->ConstructWidget<UWidgetSwitcher>();
-	SafeArea->AddChild(PageSwitcher);
-	PageSwitcher->SetActiveWidgetIndex(ProfessionPageIndex);
-
-	// ================= Page 0：职业选择（沿用原有布局与视觉） =================
-
-	UVerticalBox* ProfessionPageLayout = WidgetTree->ConstructWidget<UVerticalBox>();
-	PageSwitcher->AddChild(ProfessionPageLayout);
-
-	// 上部 Spacer（占 30% 垂直空间，标题区域）
-	USpacer* TopSpacer = WidgetTree->ConstructWidget<USpacer>();
-	UVerticalBoxSlot* TopSpacerVBoxSlot = ProfessionPageLayout->AddChildToVerticalBox(TopSpacer);
-	TopSpacerVBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	TopSpacerVBoxSlot->SetVerticalAlignment(VAlign_Fill);
-
-	// 中文标题
-	UTextBlock* TitleText = WidgetTree->ConstructWidget<UTextBlock>();
-	TitleText->SetText(FText::FromString(TEXT("选择职业")));
-	TitleText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 42));
-	TitleText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.95f, 1.0f, 1.0f)));
-	TitleText->SetJustification(ETextJustify::Center);
-	UVerticalBoxSlot* TitleVBoxSlot = ProfessionPageLayout->AddChildToVerticalBox(TitleText);
-	TitleVBoxSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 40.f));
-	TitleVBoxSlot->SetHorizontalAlignment(HAlign_Center);
-
-	// 卡片容器：ScaleBox 自适应缩放 + SizeBox 限定设计尺寸
-	UScaleBox* ScaleContainer = WidgetTree->ConstructWidget<UScaleBox>();
-	ScaleContainer->SetStretch(EStretch::ScaleToFit); // 同时受可用宽高约束，避免窄屏或低分辨率裁切
-	UVerticalBoxSlot* ScaleVBoxSlot = ProfessionPageLayout->AddChildToVerticalBox(ScaleContainer);
-	ScaleVBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	ScaleVBoxSlot->SetHorizontalAlignment(HAlign_Center);
-	ScaleVBoxSlot->SetVerticalAlignment(VAlign_Center);
-
-	// SizeBox 定义卡片面板的设计尺寸（1200x350 作为基准，ScaleBox 会按可用空间等比缩放）
-	USizeBox* DesignSizeBox = WidgetTree->ConstructWidget<USizeBox>();
-	DesignSizeBox->SetWidthOverride(1200.f);
-	DesignSizeBox->SetHeightOverride(350.f);
-	ScaleContainer->AddChild(DesignSizeBox);
-
-	// 横向三个职业卡片容器
-	UHorizontalBox* CardsContainer = WidgetTree->ConstructWidget<UHorizontalBox>();
-	DesignSizeBox->AddChild(CardsContainer);
-
-	// 职业数据（ProfessionId 必须与 DT_ProfessionConfig 的 RowName 一致）
-	struct FProfessionCardData
+	UOverlay* ShellOverlay = WidgetTree->ConstructWidget<UOverlay>();
 	{
-		FName ProfessionID;
-		FText DisplayName;
-		FText Description;
-		FScriptDelegate ClickDelegate;
-	};
-
-	TArray<FProfessionCardData> ProfessionCards;
-
-	// 游侠
-	FProfessionCardData RangerCard;
-	RangerCard.ProfessionID = TEXT("Ranger");
-	RangerCard.DisplayName = FText::FromString(TEXT("游侠"));
-	RangerCard.Description = FText::FromString(TEXT("远程精准打击 · 元素手雷"));
-	RangerCard.ClickDelegate.BindUFunction(this, FName("OnRangerClicked"));
-	ProfessionCards.Add(RangerCard);
-
-	// 爆破手
-	FProfessionCardData DemolitionistCard;
-	DemolitionistCard.ProfessionID = TEXT("Demolitionist");
-	DemolitionistCard.DisplayName = FText::FromString(TEXT("爆破手"));
-	DemolitionistCard.Description = FText::FromString(TEXT("范围压制 · 火焰与近距离火力"));
-	DemolitionistCard.ClickDelegate.BindUFunction(this, FName("OnDemolitionistClicked"));
-	ProfessionCards.Add(DemolitionistCard);
-
-	// 工程师
-	FProfessionCardData EngineerCard;
-	EngineerCard.ProfessionID = TEXT("Engineer");
-	EngineerCard.DisplayName = FText::FromString(TEXT("工程师"));
-	EngineerCard.Description = FText::FromString(TEXT("持续火力 · 战场控制"));
-	EngineerCard.ClickDelegate.BindUFunction(this, FName("OnEngineerClicked"));
-	ProfessionCards.Add(EngineerCard);
-
-	// 创建三张等宽职业卡片
-	for (int32 Idx = 0; Idx < ProfessionCards.Num(); ++Idx)
-	{
-		const FProfessionCardData& CardData = ProfessionCards[Idx];
-
-		UButton* CardButton = WidgetTree->ConstructWidget<UButton>();
-
-		// 按钮内容：边框包裹垂直布局（职业名 + 简介）
-		UBorder* CardBorderWidget = WidgetTree->ConstructWidget<UBorder>();
-		CardBorderWidget->SetBrushColor(WeaponClassSelectWidgetPrivate::CardColorDefault);
-		CardBorderWidget->SetPadding(FMargin(25.f, 35.f));
-
-		UVerticalBox* CardContentBox = WidgetTree->ConstructWidget<UVerticalBox>();
-
-		UTextBlock* ProfessionNameText = WidgetTree->ConstructWidget<UTextBlock>();
-		ProfessionNameText->SetText(CardData.DisplayName);
-		ProfessionNameText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 32));
-		ProfessionNameText->SetColorAndOpacity(FSlateColor(WeaponClassSelectWidgetPrivate::AccentColor));
-		ProfessionNameText->SetJustification(ETextJustify::Center);
-
-		UTextBlock* ProfessionDescText = WidgetTree->ConstructWidget<UTextBlock>();
-		ProfessionDescText->SetText(CardData.Description);
-		ProfessionDescText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 18));
-		ProfessionDescText->SetColorAndOpacity(FSlateColor(WeaponClassSelectWidgetPrivate::TextSecondaryColor));
-		ProfessionDescText->SetJustification(ETextJustify::Center);
-		ProfessionDescText->SetAutoWrapText(true);
-
-		UVerticalBoxSlot* NameCardVBoxSlot = CardContentBox->AddChildToVerticalBox(ProfessionNameText);
-		NameCardVBoxSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 20.f));
-
-		UVerticalBoxSlot* DescCardVBoxSlot = CardContentBox->AddChildToVerticalBox(ProfessionDescText);
-		DescCardVBoxSlot->SetPadding(FMargin(0.f));
-
-		CardBorderWidget->AddChild(CardContentBox);
-		CardButton->AddChild(CardBorderWidget);
-
-		// 绑定点击事件
-		CardButton->OnClicked.Add(CardData.ClickDelegate);
-
-		// 添加到横向容器（三张卡片等宽 Fill）
-		UHorizontalBoxSlot* CardContainerHBoxSlot = CardsContainer->AddChildToHorizontalBox(CardButton);
-		CardContainerHBoxSlot->SetPadding(FMargin(Idx == 0 ? 0.f : 15.f, 0.f, 0.f, 0.f)); // 第一张左侧无间距
-		CardContainerHBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		CardContainerHBoxSlot->SetHorizontalAlignment(HAlign_Fill);
-		CardContainerHBoxSlot->SetVerticalAlignment(VAlign_Fill);
+		UCanvasPanelSlot* ShellSlot = Cast<UCanvasPanelSlot>(RootCanvas->AddChild(ShellOverlay));
+		ShellSlot->SetAnchors(FAnchors(0.0f, 0.0f, 1.0f, 1.0f));
+		ShellSlot->SetOffsets(FMargin(0.0f));
 	}
 
-	// 下部 Spacer（占剩余空间，让卡片区域垂直居中偏下）
-	USpacer* BottomSpacer = WidgetTree->ConstructWidget<USpacer>();
-	UVerticalBoxSlot* BottomSpacerVBoxSlot = ProfessionPageLayout->AddChildToVerticalBox(BottomSpacer);
-	BottomSpacerVBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	BottomSpacerVBoxSlot->SetVerticalAlignment(VAlign_Fill);
+	// 第 0 层：全屏半透明遮罩
+	{
+		UBorder* Scrim = WidgetTree->ConstructWidget<UBorder>();
+		Scrim->SetBrushColor(ScrimColor);
+		UOverlaySlot* ScrimSlot = ShellOverlay->AddChildToOverlay(Scrim);
+		ScrimSlot->SetHorizontalAlignment(HAlign_Fill);
+		ScrimSlot->SetVerticalAlignment(VAlign_Fill);
+	}
 
-	// ================= Page 1：武器选择（内容延迟到 SelectProfession 时动态构建） =================
+	// 第 1 层：SafeZone -> ScaleBox -> 设计尺寸 -> 单页内容
+	USafeZone* SafeArea = WidgetTree->ConstructWidget<USafeZone>();
+	{
+		UOverlaySlot* SafeSlot = ShellOverlay->AddChildToOverlay(SafeArea);
+		SafeSlot->SetHorizontalAlignment(HAlign_Fill);
+		SafeSlot->SetVerticalAlignment(VAlign_Fill);
+		SafeSlot->SetPadding(FMargin(20.0f, 20.0f));
+	}
 
-	WeaponPageRoot = WidgetTree->ConstructWidget<UVerticalBox>();
-	PageSwitcher->AddChild(WeaponPageRoot);
+	UScaleBox* Scaler = WidgetTree->ConstructWidget<UScaleBox>();
+	Scaler->SetStretch(EStretch::ScaleToFit);
+	SafeArea->AddChild(Scaler);
+
+	USizeBox* DesignBox = WidgetTree->ConstructWidget<USizeBox>();
+	DesignBox->SetWidthOverride(DesignWidth);
+	DesignBox->SetHeightOverride(DesignHeight);
+	Scaler->AddChild(DesignBox);
+
+	// 单页垂直三段：模型展示（Fill）、职业按钮行（Automatic）、开始游戏（Automatic）
+	UVerticalBox* PageColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+	DesignBox->AddChild(PageColumn);
+
+	// ---- 上段：大型模型展示占位，Fill 吃掉全部剩余高度 ----
+	{
+		UVerticalBoxSlot* PreviewSlot = PageColumn->AddChildToVerticalBox(BuildModelPreviewFrame());
+		PreviewSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		PreviewSlot->SetHorizontalAlignment(HAlign_Fill);
+		PreviewSlot->SetVerticalAlignment(VAlign_Fill);
+		PreviewSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 32.0f));
+	}
+
+	// ---- 中段：横排职业按钮 ----
+	{
+		UVerticalBoxSlot* ButtonRowSlot = PageColumn->AddChildToVerticalBox(BuildProfessionButtonRow());
+		ButtonRowSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+		ButtonRowSlot->SetHorizontalAlignment(HAlign_Center);
+		ButtonRowSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 28.0f));
+	}
+
+	// ---- 下段：开始游戏 ----
+	{
+		UVerticalBoxSlot* StartSlot = PageColumn->AddChildToVerticalBox(BuildStartGameButton());
+		StartSlot->SetSize(FSlateChildSize(ESlateSizeRule::Automatic));
+		StartSlot->SetHorizontalAlignment(HAlign_Center);
+	}
+}
+
+UWidget* UWeaponClassSelectWidget::BuildModelPreviewFrame()
+{
+	using namespace WeaponClassSelectStyle;
+
+	UBorder* Frame = WidgetTree->ConstructWidget<UBorder>();
+	Frame->SetBrush(MakeOutlinedBrush(PanelDeepColor, AmberFaint, 1.0f));
+	Frame->SetPadding(FMargin(0.0f));
+
+	UVerticalBox* FrameColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+	Frame->AddChild(FrameColumn);
+
+	// 顶部标签条
+	{
+		UBorder* TagBar = WidgetTree->ConstructWidget<UBorder>();
+		TagBar->SetBrushColor(FLinearColor(0.086f, 0.098f, 0.114f, 1.0f));
+		TagBar->SetPadding(FMargin(20.0f, 11.0f));
+
+		UHorizontalBox* TagRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+		TagBar->AddChild(TagRow);
+
+		{
+			UTextBlock* Tag = MakeText(TEXT("角色模型"), 11, Amber, true, 200);
+			UHorizontalBoxSlot* TagSlot = TagRow->AddChildToHorizontalBox(Tag);
+			TagSlot->SetVerticalAlignment(VAlign_Center);
+			TagSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		}
+
+		{
+			UTextBlock* Code = MakeText(TEXT("PREVIEW"), 9, TextMuted, false, 280);
+			UHorizontalBoxSlot* CodeSlot = TagRow->AddChildToHorizontalBox(Code);
+			CodeSlot->SetVerticalAlignment(VAlign_Center);
+		}
+
+		FrameColumn->AddChildToVerticalBox(TagBar);
+	}
+
+	// 中部：模型预览占位
+	{
+		UOverlay* Stage = WidgetTree->ConstructWidget<UOverlay>();
+
+		{
+			UBorder* StageBack = WidgetTree->ConstructWidget<UBorder>();
+			StageBack->SetBrushColor(FLinearColor(0.016f, 0.020f, 0.026f, 1.0f));
+			UOverlaySlot* BackSlot = Stage->AddChildToOverlay(StageBack);
+			BackSlot->SetHorizontalAlignment(HAlign_Fill);
+			BackSlot->SetVerticalAlignment(VAlign_Fill);
+		}
+
+		{
+			UVerticalBox* Hint = WidgetTree->ConstructWidget<UVerticalBox>();
+
+			{
+				UBorder* Glyph = WidgetTree->ConstructWidget<UBorder>();
+				Glyph->SetBrush(MakeOutlinedBrush(FLinearColor(1.0f, 1.0f, 1.0f, 0.02f), AmberDim, 1.0f));
+
+				USizeBox* GlyphSize = WidgetTree->ConstructWidget<USizeBox>();
+				GlyphSize->SetWidthOverride(180.0f);
+				GlyphSize->SetHeightOverride(280.0f);
+				Glyph->AddChild(GlyphSize);
+
+				UVerticalBoxSlot* GlyphSlot = Hint->AddChildToVerticalBox(Glyph);
+				GlyphSlot->SetHorizontalAlignment(HAlign_Center);
+				GlyphSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 20.0f));
+			}
+
+			{
+				UTextBlock* HintText = MakeText(TEXT("CHARACTER MODEL"), 11, TextMuted, true, 340);
+				HintText->SetJustification(ETextJustify::Center);
+				UVerticalBoxSlot* HintSlot = Hint->AddChildToVerticalBox(HintText);
+				HintSlot->SetHorizontalAlignment(HAlign_Center);
+			}
+
+			{
+				UTextBlock* SubText = MakeText(TEXT("角色模型占位"), 10, TextMuted, false, 140);
+				SubText->SetJustification(ETextJustify::Center);
+				UVerticalBoxSlot* SubSlot = Hint->AddChildToVerticalBox(SubText);
+				SubSlot->SetHorizontalAlignment(HAlign_Center);
+				SubSlot->SetPadding(FMargin(0.0f, 5.0f, 0.0f, 0.0f));
+			}
+
+			UOverlaySlot* HintOverlaySlot = Stage->AddChildToOverlay(Hint);
+			HintOverlaySlot->SetHorizontalAlignment(HAlign_Center);
+			HintOverlaySlot->SetVerticalAlignment(VAlign_Center);
+		}
+
+		UVerticalBoxSlot* StageSlot = FrameColumn->AddChildToVerticalBox(Stage);
+		StageSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		StageSlot->SetHorizontalAlignment(HAlign_Fill);
+		StageSlot->SetVerticalAlignment(VAlign_Fill);
+	}
+
+	return Frame;
+}
+
+UWidget* UWeaponClassSelectWidget::BuildProfessionButtonRow()
+{
+	using namespace WeaponClassSelectStyle;
+
+	UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+
+	// 三职业硬编码：快速原型优先最短稳定实现
+	struct FProfessionSpec
+	{
+		FName Id;
+		const TCHAR* Name;
+		const TCHAR* Subtitle;
+	};
+
+	const FProfessionSpec Specs[] =
+	{
+		{ TEXT("Ranger"),        TEXT("游侠"),   TEXT("RANGER") },
+		{ TEXT("Demolitionist"), TEXT("爆破手"), TEXT("DEMOLITIONIST") },
+		{ TEXT("Engineer"),      TEXT("工程师"), TEXT("ENGINEER") },
+	};
+
+	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Specs); ++Index)
+	{
+		const FProfessionSpec& Spec = Specs[Index];
+
+		// 固定宽度让三个按钮等宽
+		USizeBox* CardSize = WidgetTree->ConstructWidget<USizeBox>();
+		CardSize->SetWidthOverride(280.0f);
+		CardSize->SetHeightOverride(140.0f);
+
+		UProfessionCardButton* CardButton = WidgetTree->ConstructWidget<UProfessionCardButton>();
+		CardButton->InitializeCard(Spec.Id);
+		CardButton->OnProfessionCardClicked.AddDynamic(this, &UWeaponClassSelectWidget::HandleProfessionCardClicked);
+		{
+			FButtonStyle Style;
+			Style.SetNormal(MakeFlatBrush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)));
+			Style.SetHovered(MakeFlatBrush(FLinearColor(1.0f, 1.0f, 1.0f, 0.04f)));
+			Style.SetPressed(MakeFlatBrush(FLinearColor(0.780f, 0.525f, 0.098f, 0.15f)));
+			Style.SetDisabled(MakeFlatBrush(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f)));
+			Style.SetNormalPadding(FMargin(0.0f));
+			Style.SetPressedPadding(FMargin(0.0f));
+			CardButton->SetStyle(Style);
+		}
+		CardSize->AddChild(CardButton);
+
+		// 按钮内容：Border（用于选中态描边与底色）+ 文本
+		UBorder* CardBorder = WidgetTree->ConstructWidget<UBorder>();
+		CardBorder->SetBrush(MakeOutlinedBrush(CardDefault, AmberFaint, 1.0f));
+		CardBorder->SetPadding(FMargin(24.0f, 28.0f));
+		ProfessionCardBorders.Add(Spec.Id, CardBorder);
+
+		UVerticalBox* CardColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+		CardBorder->AddChild(CardColumn);
+
+		{
+			USpacer* TopGap = WidgetTree->ConstructWidget<USpacer>();
+			UVerticalBoxSlot* GapSlot = CardColumn->AddChildToVerticalBox(TopGap);
+			GapSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		}
+
+		{
+			UTextBlock* NameText = MakeText(Spec.Name, 26, TextPrimary, true, 80);
+			NameText->SetJustification(ETextJustify::Center);
+			UVerticalBoxSlot* NameSlot = CardColumn->AddChildToVerticalBox(NameText);
+			NameSlot->SetHorizontalAlignment(HAlign_Center);
+		}
+
+		{
+			UTextBlock* SubText = MakeText(Spec.Subtitle, 9, TextMuted, false, 320);
+			SubText->SetJustification(ETextJustify::Center);
+			UVerticalBoxSlot* SubSlot = CardColumn->AddChildToVerticalBox(SubText);
+			SubSlot->SetHorizontalAlignment(HAlign_Center);
+			SubSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 0.0f));
+		}
+
+		{
+			USpacer* BottomGap = WidgetTree->ConstructWidget<USpacer>();
+			UVerticalBoxSlot* GapSlot = CardColumn->AddChildToVerticalBox(BottomGap);
+			GapSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		}
+
+		CardButton->AddChild(CardBorder);
+		if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(CardButton->GetContentSlot()))
+		{
+			ContentSlot->SetPadding(FMargin(0.0f));
+			ContentSlot->SetHorizontalAlignment(HAlign_Fill);
+			ContentSlot->SetVerticalAlignment(VAlign_Fill);
+		}
+
+		UHorizontalBoxSlot* CardSlot = Row->AddChildToHorizontalBox(CardSize);
+		CardSlot->SetPadding(FMargin(Index == 0 ? 0.0f : 18.0f, 0.0f, 0.0f, 0.0f));
+		CardSlot->SetVerticalAlignment(VAlign_Center);
+	}
+
+	return Row;
+}
+
+UWidget* UWeaponClassSelectWidget::BuildStartGameButton()
+{
+	using namespace WeaponClassSelectStyle;
+
+	USizeBox* ButtonSize = WidgetTree->ConstructWidget<USizeBox>();
+	ButtonSize->SetWidthOverride(400.0f);
+
+	UButton* Button = WidgetTree->ConstructWidget<UButton>();
+	StartGameButton = Button;
+	{
+		FButtonStyle Style;
+		Style.SetNormal(MakeFlatBrush(FLinearColor(0.129f, 0.145f, 0.169f, 1.0f)));
+		Style.SetHovered(MakeFlatBrush(Amber));
+		Style.SetPressed(MakeFlatBrush(FLinearColor(0.780f, 0.525f, 0.098f, 1.0f)));
+		Style.SetDisabled(MakeFlatBrush(FLinearColor(0.08f, 0.08f, 0.08f, 0.5f)));
+		Style.SetNormalPadding(FMargin(0.0f));
+		Style.SetPressedPadding(FMargin(0.0f));
+		Button->SetStyle(Style);
+	}
+	Button->OnClicked.AddDynamic(this, &UWeaponClassSelectWidget::HandleStartGameClicked);
+	ButtonSize->AddChild(Button);
+
+	UBorder* ButtonSurface = WidgetTree->ConstructWidget<UBorder>();
+	ButtonSurface->SetBrushColor(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f));
+	ButtonSurface->SetPadding(FMargin(28.0f, 18.0f));
+
+	UVerticalBox* ButtonColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+	ButtonSurface->AddChild(ButtonColumn);
+
+	{
+		UTextBlock* MainText = MakeText(TEXT("开始游戏"), 22, TextPrimary, true, 120);
+		MainText->SetJustification(ETextJustify::Center);
+		UVerticalBoxSlot* MainSlot = ButtonColumn->AddChildToVerticalBox(MainText);
+		MainSlot->SetHorizontalAlignment(HAlign_Center);
+	}
+
+	{
+		UTextBlock* SubText = MakeText(TEXT("START MISSION"), 9, TextMuted, false, 360);
+		SubText->SetJustification(ETextJustify::Center);
+		UVerticalBoxSlot* SubSlot = ButtonColumn->AddChildToVerticalBox(SubText);
+		SubSlot->SetHorizontalAlignment(HAlign_Center);
+		SubSlot->SetPadding(FMargin(0.0f, 5.0f, 0.0f, 0.0f));
+	}
+
+	Button->AddChild(ButtonSurface);
+	if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(Button->GetContentSlot()))
+	{
+		ContentSlot->SetPadding(FMargin(0.0f));
+		ContentSlot->SetHorizontalAlignment(HAlign_Fill);
+		ContentSlot->SetVerticalAlignment(VAlign_Fill);
+	}
+
+	// 初始状态：未选职业时禁用
+	RefreshStartGameButtonState();
+
+	return ButtonSize;
 }
 
 void UWeaponClassSelectWidget::SelectProfession(FName ProfessionId)
 {
-	// 仅记录职业选择并进入武器选择页，不在此处触发重生。
 	SelectedProfessionId = ProfessionId;
-	SelectedPrimaryWeaponId = NAME_None;
-	SelectedSecondaryWeaponId = NAME_None;
-
-	BuildWeaponSelectPage();
-
-	if (PageSwitcher)
-	{
-		PageSwitcher->SetActiveWidgetIndex(WeaponPageIndex);
-	}
-}
-
-void UWeaponClassSelectWidget::OnRangerClicked()
-{
-	SelectProfession(TEXT("Ranger"));
-}
-
-void UWeaponClassSelectWidget::OnDemolitionistClicked()
-{
-	SelectProfession(TEXT("Demolitionist"));
-}
-
-void UWeaponClassSelectWidget::OnEngineerClicked()
-{
-	SelectProfession(TEXT("Engineer"));
-}
-
-void UWeaponClassSelectWidget::BuildWeaponSelectPage()
-{
-	using namespace WeaponClassSelectWidgetPrivate;
-
-	if (!WeaponPageRoot || !WidgetTree)
-	{
-		return;
-	}
-
-	// 每次重新进入武器页都从空白重建（不同职业武器池不同，避免残留旧卡片）
-	WeaponPageRoot->ClearChildren();
-	PrimaryWeaponCardBorders.Reset();
-	SecondaryWeaponCardBorders.Reset();
-	StartGameButton = nullptr;
-
-	UGameDataSubsystem* DataSys = nullptr;
-	if (UGameInstance* GI = GetGameInstance())
-	{
-		DataSys = GI->GetSubsystem<UGameDataSubsystem>();
-	}
-
-	// 上部 Spacer，与职业页保持一致的垂直节奏
-	USpacer* TopSpacer = WidgetTree->ConstructWidget<USpacer>();
-	UVerticalBoxSlot* TopSpacerSlot = WeaponPageRoot->AddChildToVerticalBox(TopSpacer);
-	TopSpacerSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	TopSpacerSlot->SetVerticalAlignment(VAlign_Fill);
-
-	// 标题
-	UTextBlock* TitleText = WidgetTree->ConstructWidget<UTextBlock>();
-	TitleText->SetText(FText::FromString(TEXT("选择武器装备")));
-	TitleText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 36));
-	TitleText->SetColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.95f, 1.0f, 1.0f)));
-	TitleText->SetJustification(ETextJustify::Center);
-	UVerticalBoxSlot* TitleSlot = WeaponPageRoot->AddChildToVerticalBox(TitleText);
-	TitleSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 30.f));
-	TitleSlot->SetHorizontalAlignment(HAlign_Center);
-
-	// 卡片区域：ScaleBox 自适应缩放 + SizeBox 限定设计尺寸（与职业页手法一致）
-	UScaleBox* ScaleContainer = WidgetTree->ConstructWidget<UScaleBox>();
-	ScaleContainer->SetStretch(EStretch::ScaleToFit);
-	UVerticalBoxSlot* ScaleSlot = WeaponPageRoot->AddChildToVerticalBox(ScaleContainer);
-	ScaleSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	ScaleSlot->SetHorizontalAlignment(HAlign_Center);
-	ScaleSlot->SetVerticalAlignment(VAlign_Center);
-
-	USizeBox* DesignSizeBox = WidgetTree->ConstructWidget<USizeBox>();
-	DesignSizeBox->SetWidthOverride(1200.f);
-	DesignSizeBox->SetHeightOverride(420.f);
-	ScaleContainer->AddChild(DesignSizeBox);
-
-	UVerticalBox* SlotsLayout = WidgetTree->ConstructWidget<UVerticalBox>();
-	DesignSizeBox->AddChild(SlotsLayout);
-
-	// 依次构建 Primary / Secondary 两组槽位
-	struct FSlotBuildInfo
-	{
-		FName SlotType;
-		FText SlotLabel;
-		TMap<FName, TObjectPtr<UBorder>>* CardBorderMap;
-	};
-
-	const FSlotBuildInfo SlotInfos[] =
-	{
-		{ TEXT("Primary"), FText::FromString(TEXT("主武器")), &PrimaryWeaponCardBorders },
-		{ TEXT("Secondary"), FText::FromString(TEXT("副武器")), &SecondaryWeaponCardBorders },
-	};
-
-	for (int32 SlotIdx = 0; SlotIdx < UE_ARRAY_COUNT(SlotInfos); ++SlotIdx)
-	{
-		const FSlotBuildInfo& SlotInfo = SlotInfos[SlotIdx];
-
-		// 槽位标签
-		UTextBlock* SlotLabelText = WidgetTree->ConstructWidget<UTextBlock>();
-		SlotLabelText->SetText(SlotInfo.SlotLabel);
-		SlotLabelText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 22));
-		SlotLabelText->SetColorAndOpacity(FSlateColor(AccentColor));
-		UVerticalBoxSlot* SlotLabelVBoxSlot = SlotsLayout->AddChildToVerticalBox(SlotLabelText);
-		SlotLabelVBoxSlot->SetPadding(FMargin(0.f, SlotIdx == 0 ? 0.f : 20.f, 0.f, 10.f));
-
-		// 该槽位合法武器列表
-		const TArray<FName> WeaponIds = DataSys ? DataSys->GetProfessionWeaponIds(SelectedProfessionId, SlotInfo.SlotType) : TArray<FName>();
-		const FName DefaultWeaponId = DataSys ? DataSys->GetDefaultProfessionWeaponId(SelectedProfessionId, SlotInfo.SlotType) : NAME_None;
-
-		UHorizontalBox* WeaponCardsRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-		UVerticalBoxSlot* WeaponCardsRowSlot = SlotsLayout->AddChildToVerticalBox(WeaponCardsRow);
-		WeaponCardsRowSlot->SetHorizontalAlignment(HAlign_Fill);
-
-		for (int32 WeaponIdx = 0; WeaponIdx < WeaponIds.Num(); ++WeaponIdx)
-		{
-			const FName WeaponId = WeaponIds[WeaponIdx];
-
-			// 武器展示名：优先取 DT_WeaponConfig.DisplayName，取不到时回退 WeaponId 本身
-			FText WeaponDisplayName = FText::FromName(WeaponId);
-			if (DataSys)
-			{
-				if (const FWeaponConfigRow* WeaponRow = DataSys->GetWeaponConfig(WeaponId))
-				{
-					if (!WeaponRow->DisplayName.IsEmpty())
-					{
-						WeaponDisplayName = WeaponRow->DisplayName;
-					}
-				}
-			}
-
-			UWeaponCardButton* CardButton = WidgetTree->ConstructWidget<UWeaponCardButton>();
-			// 显式初始化：设置槽位/武器 Id 并确保 OnClicked 只绑定一次
-			// （UWeaponCardButton 继承自 UButton，NativeOnInitialized 在此处不会被引擎自动调用，
-			// 因此不依赖它做绑定，改为构造后立即显式调用）。
-			CardButton->InitializeCard(SlotInfo.SlotType, WeaponId);
-			// 动态数量按钮无法各自声明独立 UFUNCTION，统一订阅到 HandleWeaponCardClicked，
-			// 由 UWeaponCardButton 点击时自行广播 SlotType/WeaponId。
-			CardButton->OnWeaponCardClicked.AddDynamic(this, &UWeaponClassSelectWidget::HandleWeaponCardClicked);
-
-			UBorder* CardBorderWidget = WidgetTree->ConstructWidget<UBorder>();
-			CardBorderWidget->SetBrushColor(CardColorDefault);
-			CardBorderWidget->SetPadding(FMargin(20.f, 25.f));
-
-			UTextBlock* WeaponNameText = WidgetTree->ConstructWidget<UTextBlock>();
-			WeaponNameText->SetText(WeaponDisplayName);
-			WeaponNameText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 20));
-			WeaponNameText->SetColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.95f, 0.95f, 1.0f)));
-			WeaponNameText->SetJustification(ETextJustify::Center);
-			WeaponNameText->SetAutoWrapText(true);
-
-			CardBorderWidget->AddChild(WeaponNameText);
-			CardButton->AddChild(CardBorderWidget);
-
-			UHorizontalBoxSlot* CardHBoxSlot = WeaponCardsRow->AddChildToHorizontalBox(CardButton);
-			CardHBoxSlot->SetPadding(FMargin(WeaponIdx == 0 ? 0.f : 12.f, 0.f, 0.f, 0.f));
-			CardHBoxSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-			CardHBoxSlot->SetHorizontalAlignment(HAlign_Fill);
-			CardHBoxSlot->SetVerticalAlignment(VAlign_Fill);
-
-			SlotInfo.CardBorderMap->Add(WeaponId, CardBorderWidget);
-		}
-
-		// 默认预选：池非空时选中 bDefaultEquipped 行；取不到默认值则回退池中第一把，保证槽位始终有效
-		FName InitialSelection = DefaultWeaponId;
-		if (InitialSelection.IsNone() && WeaponIds.Num() > 0)
-		{
-			InitialSelection = WeaponIds[0];
-		}
-
-		if (SlotInfo.SlotType == TEXT("Primary"))
-		{
-			SelectedPrimaryWeaponId = InitialSelection;
-		}
-		else
-		{
-			SelectedSecondaryWeaponId = InitialSelection;
-		}
-
-		RefreshWeaponSlotHighlight(*SlotInfo.CardBorderMap, InitialSelection);
-	}
-
-	// 底部按钮行：返回 + 开始游戏
-	UHorizontalBox* BottomButtonsRow = WidgetTree->ConstructWidget<UHorizontalBox>();
-	UVerticalBoxSlot* BottomButtonsRowSlot = SlotsLayout->AddChildToVerticalBox(BottomButtonsRow);
-	BottomButtonsRowSlot->SetPadding(FMargin(0.f, 30.f, 0.f, 0.f));
-	BottomButtonsRowSlot->SetHorizontalAlignment(HAlign_Fill);
-
-	// 返回按钮
-	{
-		UButton* BackButton = WidgetTree->ConstructWidget<UButton>();
-		UBorder* BackBorder = WidgetTree->ConstructWidget<UBorder>();
-		BackBorder->SetBrushColor(FLinearColor(0.2f, 0.2f, 0.2f, 0.95f));
-		BackBorder->SetPadding(FMargin(20.f, 14.f));
-
-		UTextBlock* BackText = WidgetTree->ConstructWidget<UTextBlock>();
-		BackText->SetText(FText::FromString(TEXT("返回")));
-		BackText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 20));
-		BackText->SetColorAndOpacity(FSlateColor(TextSecondaryColor));
-		BackText->SetJustification(ETextJustify::Center);
-
-		BackBorder->AddChild(BackText);
-		BackButton->AddChild(BackBorder);
-		BackButton->OnClicked.AddDynamic(this, &UWeaponClassSelectWidget::HandleBackToProfessionClicked);
-
-		UHorizontalBoxSlot* BackHBoxSlot = BottomButtonsRow->AddChildToHorizontalBox(BackButton);
-		BackHBoxSlot->SetPadding(FMargin(0.f, 0.f, 15.f, 0.f));
-		BackHBoxSlot->SetHorizontalAlignment(HAlign_Left);
-		BackHBoxSlot->SetVerticalAlignment(VAlign_Center);
-	}
-
-	// 开始游戏按钮
-	{
-		StartGameButton = WidgetTree->ConstructWidget<UButton>();
-		UBorder* StartBorder = WidgetTree->ConstructWidget<UBorder>();
-		StartBorder->SetBrushColor(FLinearColor(0.3f, 0.5f, 0.3f, 0.95f));
-		StartBorder->SetPadding(FMargin(30.f, 14.f));
-
-		UTextBlock* StartText = WidgetTree->ConstructWidget<UTextBlock>();
-		StartText->SetText(FText::FromString(TEXT("开始游戏")));
-		StartText->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 22));
-		StartText->SetColorAndOpacity(FSlateColor(FLinearColor(1.0f, 1.0f, 1.0f, 1.0f)));
-		StartText->SetJustification(ETextJustify::Center);
-
-		StartBorder->AddChild(StartText);
-		StartGameButton->AddChild(StartBorder);
-		StartGameButton->OnClicked.AddDynamic(this, &UWeaponClassSelectWidget::HandleStartGameClicked);
-
-		UHorizontalBoxSlot* StartHBoxSlot = BottomButtonsRow->AddChildToHorizontalBox(StartGameButton);
-		StartHBoxSlot->SetHorizontalAlignment(HAlign_Right);
-		StartHBoxSlot->SetVerticalAlignment(VAlign_Center);
-	}
-
-	// 下部 Spacer，保持与职业页一致的垂直居中节奏
-	USpacer* BottomSpacer = WidgetTree->ConstructWidget<USpacer>();
-	UVerticalBoxSlot* BottomSpacerSlot = WeaponPageRoot->AddChildToVerticalBox(BottomSpacer);
-	BottomSpacerSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-	BottomSpacerSlot->SetVerticalAlignment(VAlign_Fill);
-
+	RefreshProfessionHighlight();
 	RefreshStartGameButtonState();
 }
 
-void UWeaponClassSelectWidget::HandleWeaponCardClicked(FName SlotType, FName WeaponId)
+void UWeaponClassSelectWidget::HandleProfessionCardClicked(FName ProfessionId)
 {
-	if (SlotType == TEXT("Primary"))
-	{
-		SelectedPrimaryWeaponId = WeaponId;
-		RefreshWeaponSlotHighlight(PrimaryWeaponCardBorders, WeaponId);
-	}
-	else if (SlotType == TEXT("Secondary"))
-	{
-		SelectedSecondaryWeaponId = WeaponId;
-		RefreshWeaponSlotHighlight(SecondaryWeaponCardBorders, WeaponId);
-	}
-
-	RefreshStartGameButtonState();
-}
-
-void UWeaponClassSelectWidget::HandleBackToProfessionClicked()
-{
-	// 清空武器选择状态，回到职业选择页
-	SelectedProfessionId = NAME_None;
-	SelectedPrimaryWeaponId = NAME_None;
-	SelectedSecondaryWeaponId = NAME_None;
-	PrimaryWeaponCardBorders.Reset();
-	SecondaryWeaponCardBorders.Reset();
-
-	if (PageSwitcher)
-	{
-		PageSwitcher->SetActiveWidgetIndex(ProfessionPageIndex);
-	}
+	SelectProfession(ProfessionId);
 }
 
 void UWeaponClassSelectWidget::HandleStartGameClicked()
 {
-	if (SelectedPrimaryWeaponId.IsNone() || SelectedSecondaryWeaponId.IsNone())
+	if (SelectedProfessionId.IsNone())
 	{
 		return;
 	}
 
+	// 解析默认武器：优先 GetDefaultProfessionWeaponId，回退取池第一项
+	UGameInstance* GameInstance = GetGameInstance();
+	UGameDataSubsystem* DataSys = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+
+	FName PrimaryWeaponId = DataSys ? DataSys->GetDefaultProfessionWeaponId(SelectedProfessionId, TEXT("Primary")) : NAME_None;
+	if (PrimaryWeaponId.IsNone() && DataSys)
+	{
+		const TArray<FName> PrimaryPool = DataSys->GetProfessionWeaponIds(SelectedProfessionId, TEXT("Primary"));
+		if (PrimaryPool.Num() > 0)
+		{
+			PrimaryWeaponId = PrimaryPool[0];
+		}
+	}
+
+	FName SecondaryWeaponId = DataSys ? DataSys->GetDefaultProfessionWeaponId(SelectedProfessionId, TEXT("Secondary")) : NAME_None;
+	if (SecondaryWeaponId.IsNone() && DataSys)
+	{
+		const TArray<FName> SecondaryPool = DataSys->GetProfessionWeaponIds(SelectedProfessionId, TEXT("Secondary"));
+		if (SecondaryPool.Num() > 0)
+		{
+			SecondaryWeaponId = SecondaryPool[0];
+		}
+	}
+
+	// 调用 PlayerController::RequestSelectProfession，签名不变
 	APlayerController* PC = GetOwningPlayer();
 	if (AWeaponPlayerController* WeaponPC = Cast<AWeaponPlayerController>(PC))
 	{
-		WeaponPC->RequestSelectProfession(SelectedProfessionId, SelectedPrimaryWeaponId, SelectedSecondaryWeaponId);
+		WeaponPC->RequestSelectProfession(SelectedProfessionId, PrimaryWeaponId, SecondaryWeaponId);
 	}
 }
 
-void UWeaponClassSelectWidget::RefreshWeaponSlotHighlight(const TMap<FName, TObjectPtr<UBorder>>& CardBorders, FName SelectedWeaponId)
+void UWeaponClassSelectWidget::RefreshProfessionHighlight()
 {
-	using namespace WeaponClassSelectWidgetPrivate;
+	using namespace WeaponClassSelectStyle;
 
-	for (const TPair<FName, TObjectPtr<UBorder>>& Pair : CardBorders)
+	for (const TPair<FName, TObjectPtr<UBorder>>& Pair : ProfessionCardBorders)
 	{
 		if (UBorder* CardBorder = Pair.Value)
 		{
-			CardBorder->SetBrushColor(Pair.Key == SelectedWeaponId ? CardColorSelected : CardColorDefault);
+			if (Pair.Key == SelectedProfessionId)
+			{
+				// 选中：橙黄描边 + 抬起底色
+				CardBorder->SetBrush(MakeOutlinedBrush(CardSelected, Amber, 2.0f));
+			}
+			else
+			{
+				// 未选中：暗色底 + 低亮描边
+				CardBorder->SetBrush(MakeOutlinedBrush(CardDefault, AmberFaint, 1.0f));
+			}
 		}
 	}
 }
@@ -513,7 +499,25 @@ void UWeaponClassSelectWidget::RefreshStartGameButtonState()
 		return;
 	}
 
-	const bool bBothSlotsValid = !SelectedPrimaryWeaponId.IsNone() && !SelectedSecondaryWeaponId.IsNone();
-	StartGameButton->SetIsEnabled(bBothSlotsValid);
-	StartGameButton->SetRenderOpacity(bBothSlotsValid ? 1.0f : 0.4f);
+	const bool bHasSelection = !SelectedProfessionId.IsNone();
+	StartGameButton->SetIsEnabled(bHasSelection);
+	StartGameButton->SetRenderOpacity(bHasSelection ? 1.0f : 0.4f);
+}
+
+UTextBlock* UWeaponClassSelectWidget::MakeText(
+	const FString& InText,
+	int32 FontSize,
+	const FLinearColor& Color,
+	bool bBold,
+	int32 LetterSpacing)
+{
+	UTextBlock* Text = WidgetTree->ConstructWidget<UTextBlock>();
+	Text->SetText(FText::FromString(InText));
+
+	FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(bBold ? TEXT("Bold") : TEXT("Regular"), FontSize);
+	Font.LetterSpacing = LetterSpacing;
+	Text->SetFont(Font);
+
+	Text->SetColorAndOpacity(FSlateColor(Color));
+	return Text;
 }
