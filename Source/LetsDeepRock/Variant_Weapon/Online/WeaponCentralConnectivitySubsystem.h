@@ -56,7 +56,7 @@ public:
 	FOnWeaponCentralConnectivityChanged OnConnectivityChanged;
 
 	/** Host: 上传一个候选到中心。 */
-	bool UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError);
+	bool UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError) const;
 
 	/** Host: 用中心已确认的 direct endpoint 触发客户端 reconnect。 */
 	bool TriggerDirectReconnect(const FString& Address, FString& OutError);
@@ -79,8 +79,19 @@ private:
 	// Match 生命周期(中心分配 MatchId)
 	void SendCreateMatchRequest();
 	void SendJoinMatchRequest(const FString& JoinCode);
-	void HandleMatchCreated(const FGuid& InMatchId, const FString& JoinCode);
-	void HandleMatchJoined(const FGuid& InMatchId, const FString& Role);
+	void HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode);
+	void HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role);
+	void ExecutePendingMatchAction();
+
+	// 待认证完成后的 Match 动作(异步认证与 Match 请求脱节)
+	enum class EPendingMatchAction : uint8
+	{
+		None,
+		Create,
+		Join,
+	};
+	EPendingMatchAction PendingMatchAction = EPendingMatchAction::None;
+	FString PendingJoinCode;
 
 	// 向现有系统交付事实
 	void PublishBackendReadiness();
@@ -108,7 +119,7 @@ private:
 	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString CoordinatorBaseUrl = TEXT("https://coordinator.example.com");
+	FString CoordinatorBaseUrl = TEXT("http://192.168.3.75:8443");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
 	FString StunServerUrl = TEXT("stun:coordinator.example.com:3478");
@@ -140,6 +151,11 @@ private:
 
 	UPROPERTY()
 	FGuid MatchId;
+
+	// Go 返回的原始 matchId 字符串(小写带连字符 uuid)。
+	// 不能经 FGuid 往返:ToString() 会变成大写无连字符,查库 404。
+	UPROPERTY()
+	FString CentralMatchIdString;
 
 	UPROPERTY()
 	uint64 AuthorityEpoch = 0;

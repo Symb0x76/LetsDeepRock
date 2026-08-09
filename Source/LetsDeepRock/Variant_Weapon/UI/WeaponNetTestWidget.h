@@ -78,6 +78,8 @@ private:
 	UFUNCTION()
 	void HandleReconnectMigratedClicked();
 	UFUNCTION()
+	void HandleJoinCentralClicked();
+	UFUNCTION()
 	void HandleDestroyClicked();
 	UFUNCTION()
 	void HandleJoinResultClicked(int32 ResultIndex);
@@ -111,6 +113,8 @@ private:
 	TObjectPtr<UButton> DirectJoinButton;
 	UPROPERTY()
 	TObjectPtr<UButton> ReconnectButton;
+	UPROPERTY()
+	TObjectPtr<UButton> JoinCentralButton;
 	UPROPERTY()
 	TObjectPtr<UButton> DestroyButton;
 	UPROPERTY()

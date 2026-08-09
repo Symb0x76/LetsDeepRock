@@ -33,6 +33,9 @@ public:
 	/** 把 32 字节公钥编码成 base64url(Go 侧 /v1/devices/challenge 的 publicKey 字段)。 */
 	static FString EncodePublicKeyBase64Url(const TArray<uint8>& PublicKey);
 
+	/** base64url 无 padding 编码(Go 侧 RawURLEncoding 兼容)。 */
+	static FString EncodeBase64UrlNoPad(const TArray<uint8>& Data);
+
 	/** 校验签名(本地自检/调试用;线上由 Go Coordinator 校验)。 */
 	static bool Verify(
 		const TArray<uint8>& PublicKey,

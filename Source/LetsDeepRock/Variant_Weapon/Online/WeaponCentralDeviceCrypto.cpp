@@ -120,7 +120,19 @@ bool FWeaponCentralDeviceCrypto::Sign(
 
 FString FWeaponCentralDeviceCrypto::EncodePublicKeyBase64Url(const TArray<uint8>& PublicKey)
 {
-	return FBase64::Encode(PublicKey, EBase64Mode::UrlSafe);
+	return EncodeBase64UrlNoPad(PublicKey);
+}
+
+FString FWeaponCentralDeviceCrypto::EncodeBase64UrlNoPad(const TArray<uint8>& Data)
+{
+	// UE 的 FBase64::Encode(UrlSafe) 会带 '=' padding(1 或 2 个,取决于长度);
+	// Go 侧用 base64.RawURLEncoding(严格无 padding),这里去掉全部尾部 '=' 对齐。
+	FString Encoded = FBase64::Encode(Data, EBase64Mode::UrlSafe);
+	while (Encoded.EndsWith(TEXT("=")))
+	{
+		Encoded.LeftChopInline(1);
+	}
+	return Encoded;
 }
 
 bool FWeaponCentralDeviceCrypto::Verify(
