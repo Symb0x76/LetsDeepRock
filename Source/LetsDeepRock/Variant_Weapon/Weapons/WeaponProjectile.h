@@ -36,30 +36,36 @@ struct FWeaponProjectileInitializationState
 	FGameplayTagContainer DamageTags;
 
 	UPROPERTY()
+	FName StatusEffectId;
+
+	UPROPERTY()
 	float ProjectileSpeed = 3000.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float DamageFalloffStart = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float DamageFalloffEnd = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
+	float ArmorPenetration = 0.0f;
+
+	UPROPERTY()
 	float AreaDamage = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float AreaRadius = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float AreaFalloff = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	float ProjectileGravityScale = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	int32 MaxHitTargets = 1;
 
-	UPROPERTY(BlueprintReadOnly, Category = "Projectile")
+	UPROPERTY()
 	bool bPenetratesTerrain = false;
 
 	UPROPERTY()
@@ -90,6 +96,8 @@ public:
 		AActor* InInstigator, const FGameplayTagContainer& InDamageTags,
 		bool bInPenetratesTerrain, float InProjectileSpeed,
 		float InDamageFalloffStart = 0.0f, float InDamageFalloffEnd = 0.0f,
+		float InArmorPenetration = 0.0f,
+		FName InStatusEffectId = NAME_None,
 		const FUniqueNetIdRepl& ExplicitPlayerId = FUniqueNetIdRepl());
 
 	const FWeaponProjectileInitializationState& GetInitializationState() const { return InitializationState; }
@@ -130,6 +138,7 @@ protected:
 
 	int32 MaxHitTargets = 1;
 	TSet<TWeakObjectPtr<APawn>> HitPawns;
+	TSet<TWeakObjectPtr<APawn>> StatusAppliedPawns;
 	TOptional<FHitResult> PendingHitResult;
 	float AreaDamage = 0.0f;
 	float AreaRadius = 0.0f;

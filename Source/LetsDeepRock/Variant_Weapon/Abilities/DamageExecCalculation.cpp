@@ -11,6 +11,9 @@
 #include "EnemyCharacter.h"
 #include "WeaponPlayerController.h"
 #include "UI/WeaponDebugTypes.h"
+#include "Attributes/StatusEffectComponent.h"
+#include "Data/GameDataSubsystem.h"
+#include "Engine/GameInstance.h"
 
 // ============================================================================
 // 属性捕获定义（标准 GAS ExecCalc 结构体模式）
@@ -96,6 +99,8 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();
 	const FGameplayTagContainer& DamageTags = Spec.GetDynamicAssetTags();
+	const bool bBurningDamage = DamageTags.HasTagExact(TAG_Damage_Status_Burning);
+	const bool bBleedingDamage = DamageTags.HasTagExact(TAG_Damage_Status_Bleeding);
 	FName DamageTypeName = TAG_Damage_Type_Physical.GetTag().GetTagName();
 	if (DamageTags.HasTag(TAG_Damage_Type_True))
 	{
@@ -165,6 +170,8 @@ void UDamageExecCalculation::Execute_Implementation(
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().CritChanceDef, EvalParams, CritChance);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().CritDamageDef, EvalParams, CritDamage);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().ArmorPenetrationDef, EvalParams, ArmorPen);
+	const float WeaponArmorPen = Spec.GetSetByCallerMagnitude(TAG_Data_ArmorPenetration, false, 0.0f);
+	const float FinalArmorPen = FMath::Clamp(ArmorPen + WeaponArmorPen, 0.0f, 1.0f);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().DamageBonusDef, EvalParams, DmgBonus);
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().WeakpointBonusDef, EvalParams, WeakpointBonus);
 
@@ -173,10 +180,12 @@ void UDamageExecCalculation::Execute_Implementation(
 	ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().ArmorDef, EvalParams, TargetArmor);
 
 	// ---------- ② 全局伤害加成 ----------
-	float Damage = BaseDamage * (1.0f + DmgBonus);
+	// 状态伤害不继承来源属性；流血还会跳过后续全部外部修正。
+	float Damage = (bBurningDamage || bBleedingDamage) ? BaseDamage : BaseDamage * (1.0f + DmgBonus);
 	const float DamageBeforeFalloff = Damage;
 	float FalloffMultiplier = 1.0f;
-	const bool bFalloffEnabled = SourceAvatar && DamageFalloffEnd > DamageFalloffStart && DamageFalloffEnd > 0.0f;
+	const bool bFalloffEnabled = !bBurningDamage && !bBleedingDamage && SourceAvatar &&
+		DamageFalloffEnd > DamageFalloffStart && DamageFalloffEnd > 0.0f;
 	if (bFalloffEnabled)
 	{
 		FalloffMultiplier = 1.0f - FMath::Clamp(
@@ -211,13 +220,37 @@ void UDamageExecCalculation::Execute_Implementation(
 #endif
 
 	// ---------- ③ 伤害类型克制修正 ----------
-	// TODO: 后续通过 DataTable（FDamageTypeModifierRow）查询类型克制系数，
-	// 需要匹配 DamageTags 中的伤害类型 Tag 与目标的护甲类型 Tag
 	float TypeModifier = 1.0f;
+	if (!bBleedingDamage && TargetAvatar)
+	{
+		const UGameInstance* GameInstance = TargetAvatar->GetGameInstance();
+		const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+		const FDamageTypeModifierRow* Modifier = DataSubsystem ? DataSubsystem->GetDamageTypeModifier(DamageTypeName) : nullptr;
+		if (Modifier && TargetASC)
+		{
+			if (TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Light))
+			{
+				TypeModifier = Modifier->VsLight;
+			}
+			else if (TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Heavy))
+			{
+				TypeModifier = Modifier->VsHeavy;
+			}
+			else if (TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Organic))
+			{
+				TypeModifier = Modifier->VsOrganic;
+			}
+			else
+			{
+				TypeModifier = Modifier->VsUnarmored;
+			}
+		}
+	}
 	Damage *= TypeModifier;
 
 	// ---------- ④ 暴击判定 ----------
-	const bool bCritical = FMath::FRand() < FMath::Clamp(CritChance, 0.0f, 1.0f);
+	const bool bCritical = !bBurningDamage && !bBleedingDamage &&
+		FMath::FRand() < FMath::Clamp(CritChance, 0.0f, 1.0f);
 	const float CritMult = bCritical ? FMath::Max(CritDamage, 1.0f) : 1.0f;
 	Damage *= CritMult;
 
@@ -228,17 +261,42 @@ void UDamageExecCalculation::Execute_Implementation(
 
 	// ---------- ⑥ 护甲减伤 ----------
 	const bool bIsTrueDamage = DamageTags.HasTag(TAG_Damage_Type_True);
-	if (!bIsTrueDamage)
+	float EffectiveArmor = 0.0f;
+	float ArmorDR = 0.0f;
+	if (!bIsTrueDamage && !bBleedingDamage)
 	{
 		// 有效护甲 = 目标护甲 × (1 - 破甲率)，破甲率 clamp [0, 1]
-		const float EffectiveArmor = TargetArmor * (1.0f - FMath::Clamp(ArmorPen, 0.0f, 1.0f));
+		EffectiveArmor = TargetArmor * (1.0f - (bBurningDamage ? 0.0f : FinalArmorPen));
 		// DR = Armor / (Armor + K)，K = 200
-		const float ArmorDR = EffectiveArmor / (EffectiveArmor + 200.0f);
+		ArmorDR = EffectiveArmor / (EffectiveArmor + 200.0f);
 		Damage *= (1.0f - ArmorDR);
+	}
+	const float DamageAfterArmor = Damage;
+
+	if (TargetAvatar && TargetAvatar->ActorHasTag(TEXT("WeaponDamageTestTarget")))
+	{
+		const AEnemyCharacter* TargetEnemy = Cast<AEnemyCharacter>(TargetAvatar);
+		const FName TargetRow = TargetEnemy ? TargetEnemy->GetEnemyConfigRowName() : NAME_None;
+		UE_LOG(LogTemp, Warning, TEXT("[ArmorDiag] Hit Target=%s Row=%s BaseDamage=%.3f CapturedArmor=%.3f CharacterArmorPen=%.6f WeaponArmorPen=%.6f FinalArmorPen=%.6f TypeModifier=%.6f EffectiveArmor=%.3f ArmorDR=%.6f DamageAfterArmor=%.3f DamageType=%s Unarmored=%s Light=%s Heavy=%s"),
+			*GetNameSafe(TargetAvatar),
+			*TargetRow.ToString(),
+			BaseDamage,
+			TargetArmor,
+			ArmorPen,
+			WeaponArmorPen,
+			FinalArmorPen,
+			TypeModifier,
+			EffectiveArmor,
+			ArmorDR,
+			DamageAfterArmor,
+			*DamageTypeName.ToString(),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Unarmored) ? TEXT("true") : TEXT("false"),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Light) ? TEXT("true") : TEXT("false"),
+			TargetASC && TargetASC->HasMatchingGameplayTag(TAG_ArmorType_Heavy) ? TEXT("true") : TEXT("false"));
 	}
 
 	// ---------- ⑦ 抗性减免 ----------
-	if (!bIsTrueDamage)
+	if (!bIsTrueDamage && !bBleedingDamage)
 	{
 		float Resistance = 0.0f;
 
@@ -270,6 +328,15 @@ void UDamageExecCalculation::Execute_Implementation(
 		}
 
 		Damage *= (1.0f - FMath::Clamp(Resistance, 0.0f, 1.0f));
+	}
+
+	// 易伤作用于普通直接伤害和燃烧，但明确不作用于流血。
+	if (!bBleedingDamage && TargetAvatar)
+	{
+		if (const UStatusEffectComponent* StatusComponent = TargetAvatar->FindComponentByClass<UStatusEffectComponent>())
+		{
+			Damage *= StatusComponent->GetVulnerableMultiplier();
+		}
 	}
 
 	// ---------- ⑧ 输出到 Damage Meta Attribute ----------

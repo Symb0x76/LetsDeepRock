@@ -324,6 +324,7 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 	const float AreaFalloff = FireModeConfig ? FireModeConfig->AreaFalloff : 0.0f;
 	const float DamageFalloffStart = FireModeConfig ? FireModeConfig->DamageFalloffStart : 0.0f;
 	const float DamageFalloffEnd = FireModeConfig ? FireModeConfig->DamageFalloffEnd : 0.0f;
+	const float ArmorPenetration = FMath::Clamp(FireModeConfig ? FireModeConfig->ArmorPenetration : 0.0f, 0.0f, 1.0f);
 
 #if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] GA_Fire CurrentFireModeId=%s FireModeConfigFound=%s BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f"),
@@ -360,7 +361,9 @@ void UGA_Fire::ServerSpawnProjectile(const FGameplayAbilityActorInfo* ActorInfo,
 				WeaponData->bProjectilePenetratesTerrain,
 				ProjectileSpeed,
 				DamageFalloffStart,
-				DamageFalloffEnd);
+				DamageFalloffEnd,
+				ArmorPenetration,
+				FireModeConfig ? FireModeConfig->StatusEffectId : NAME_None);
 			Projectile->InitAreaDamageParams(AreaDamage, AreaRadius, AreaFalloff);
 			if (FireModeConfig)
 			{

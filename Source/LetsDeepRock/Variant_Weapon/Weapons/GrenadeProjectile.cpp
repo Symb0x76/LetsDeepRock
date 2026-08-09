@@ -58,6 +58,8 @@ void AGrenadeProjectile::InitFromGrenadeData(
 		GrenadeData->ThrowSpeed,
 		0.0f,
 		0.0f,
+		0.0f,
+		NAME_None,
 		ExplicitPlayerId
 	);
 	InitFlightParams(0.0f, GrenadeData->GravityScale, 1);

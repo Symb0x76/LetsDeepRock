@@ -77,15 +77,23 @@ FName UWeaponSessionSubsystem::ResolveCurrentMapName() const
 
 bool UWeaponSessionSubsystem::HostLanGame(const int32 MaxPlayers, const FString& ServerName)
 {
+	return HostLanGameOnMap(MaxPlayers, ServerName, ResolveCurrentMapName());
+}
+
+bool UWeaponSessionSubsystem::HostLanGameOnMap(
+	const int32 MaxPlayers,
+	const FString& ServerName,
+	const FName MapPackageName)
+{
 	if (CurrentOperation != EWeaponSessionOperation::Idle || MaxPlayers < 1 || MaxPlayers > 4)
 	{
 		return false;
 	}
 
-	PendingHostMapName = ResolveCurrentMapName();
+	PendingHostMapName = MapPackageName;
 	if (PendingHostMapName.IsNone())
 	{
-		BroadcastHostComplete(false, TEXT("Unable to resolve the current map."));
+		BroadcastHostComplete(false, TEXT("A valid host map is required."));
 		return false;
 	}
 
@@ -135,7 +143,7 @@ bool UWeaponSessionSubsystem::BeginHostTravel()
 		return false;
 	}
 
-	if (World->GetNetMode() == NM_ListenServer)
+	if (World->GetNetMode() == NM_ListenServer && ResolveCurrentMapName() == PendingHostMapName)
 	{
 		return BeginCreateSession();
 	}

@@ -9,7 +9,7 @@
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 8;
+inline constexpr int32 WeaponSnapshotVersion = 9;
 
 USTRUCT()
 struct FWeaponAmmoSnapshot
@@ -151,6 +151,9 @@ struct LETSDEEPROCK_API FWeaponProjectileSnapshot
 	FGameplayTagContainer DamageTags;
 
 	UPROPERTY(SaveGame)
+	FName StatusEffectId;
+
+	UPROPERTY(SaveGame)
 	float DamageValue = 0.0f;
 
 	UPROPERTY(SaveGame)
@@ -158,6 +161,7 @@ struct LETSDEEPROCK_API FWeaponProjectileSnapshot
 
 	UPROPERTY(SaveGame) float DamageFalloffStart = 0.0f;
 	UPROPERTY(SaveGame) float DamageFalloffEnd = 0.0f;
+	UPROPERTY(SaveGame) float ArmorPenetration = 0.0f;
 
 	UPROPERTY(SaveGame) float AreaDamage = 0.0f;
 	UPROPERTY(SaveGame) float AreaRadius = 0.0f;

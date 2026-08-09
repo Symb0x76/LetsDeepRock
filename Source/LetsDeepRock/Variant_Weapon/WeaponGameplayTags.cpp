@@ -6,6 +6,7 @@
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_Damage, "Data.Damage");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffStart, "Data.DamageFalloffStart");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Data_DamageFalloffEnd, "Data.DamageFalloffEnd");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Data_ArmorPenetration, "Data.ArmorPenetration");
 
 // Ability 标识
 UE_DEFINE_GAMEPLAY_TAG(TAG_Ability_Weapon, "Ability.Weapon");
@@ -23,6 +24,10 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_Cooldown_Weapon_Grenade, "Cooldown.Weapon.Grenade");
 
 // 状态
 UE_DEFINE_GAMEPLAY_TAG(TAG_State_Dead, "State.Dead");
+
+// 状态伤害内部分类
+UE_DEFINE_GAMEPLAY_TAG(TAG_Damage_Status_Burning, "Damage.Status.Burning");
+UE_DEFINE_GAMEPLAY_TAG(TAG_Damage_Status_Bleeding, "Damage.Status.Bleeding");
 
 // 伤害类型
 UE_DEFINE_GAMEPLAY_TAG(TAG_Damage_Terrain, "Damage.Terrain");

@@ -57,6 +57,7 @@ public:
 	const FWeaponFireModeConfigRow* GetWeaponFireModeConfig(FName RowName) const;
 	const FGrenadeConfigRow* GetGrenadeConfig(FName RowName) const;
 	const FStatusEffectConfigRow* GetStatusEffectConfig(FName RowName) const;
+	const FDamageTypeModifierRow* GetDamageTypeModifier(FName DamageTypeRowName) const;
 	const FToolConfigRow* GetToolConfig(FName RowName) const;
 	const FDroneConfigRow* GetDroneConfig(FName RowName) const;
 
@@ -100,6 +101,10 @@ protected:
 	/** DT_StatusEffectConfig */
 	UPROPERTY()
 	TObjectPtr<UDataTable> StatusEffectConfigTable;
+
+	/** DT_DamageTypeModifier */
+	UPROPERTY()
+	TObjectPtr<UDataTable> DamageTypeModifierTable;
 
 	/** DT_ToolConfig */
 	UPROPERTY()

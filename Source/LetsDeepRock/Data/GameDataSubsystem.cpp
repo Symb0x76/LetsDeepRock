@@ -28,6 +28,8 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 		TEXT("/Game/Data/DT_GrenadeConfig.DT_GrenadeConfig"));
 	StatusEffectConfigTable = LoadObject<UDataTable>(nullptr,
 		TEXT("/Game/Data/DT_StatusEffectConfig.DT_StatusEffectConfig"));
+	DamageTypeModifierTable = LoadObject<UDataTable>(nullptr,
+		TEXT("/Game/Data/DT_DamageTypeModifier.DT_DamageTypeModifier"));
 	ToolConfigTable = LoadObject<UDataTable>(nullptr,
 		TEXT("/Game/Data/DT_ToolConfig.DT_ToolConfig"));
 	DroneConfigTable = LoadObject<UDataTable>(nullptr,
@@ -55,6 +57,7 @@ void UGameDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	if (!WeaponFireModeConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_WeaponFireModeConfig not found at /Game/Data/."));
 	if (!GrenadeConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_GrenadeConfig not found at /Game/Data/."));
 	if (!StatusEffectConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_StatusEffectConfig not found at /Game/Data/."));
+	if (!DamageTypeModifierTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_DamageTypeModifier not found at /Game/Data/."));
 	if (!ToolConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_ToolConfig not found at /Game/Data/."));
 	if (!DroneConfigTable) UE_LOG(LogTemp, Warning, TEXT("[GameDataSubsystem] DT_DroneConfig not found at /Game/Data/."));
 }
@@ -171,6 +174,12 @@ const FStatusEffectConfigRow* UGameDataSubsystem::GetStatusEffectConfig(FName Ro
 {
 	if (!StatusEffectConfigTable) return nullptr;
 	return StatusEffectConfigTable->FindRow<FStatusEffectConfigRow>(RowName, TEXT("GetStatusEffectConfig"));
+}
+
+const FDamageTypeModifierRow* UGameDataSubsystem::GetDamageTypeModifier(const FName DamageTypeRowName) const
+{
+	if (!DamageTypeModifierTable) return nullptr;
+	return DamageTypeModifierTable->FindRow<FDamageTypeModifierRow>(DamageTypeRowName, TEXT("GetDamageTypeModifier"));
 }
 
 const FToolConfigRow* UGameDataSubsystem::GetToolConfig(FName RowName) const
