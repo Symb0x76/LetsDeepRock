@@ -84,7 +84,7 @@ public:
 
 	/** 在当前地图以 ?listen 重载，NetDriver 就绪后创建并广播 LAN Session。 */
 	UFUNCTION(BlueprintCallable, Category = "LAN Session")
-	bool HostLanGame(int32 MaxPlayers, const FString& ServerName);
+	bool HostLanGame(int32 MaxPlayers, const FString& ServerName, FName TargetMapName = NAME_None);
 
 	/** 搜索同一局域网内由 OnlineSubsystemNull 广播的 Session。 */
 	UFUNCTION(BlueprintCallable, Category = "LAN Session")

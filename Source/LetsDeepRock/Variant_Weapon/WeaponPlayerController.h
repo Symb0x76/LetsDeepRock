@@ -10,6 +10,7 @@
 
 class UInputMappingContext;
 class UWeaponClassSelectWidget;
+class UWeaponLobbyWidget;
 
 /**
  *  俯视角武器系统 Player Controller（Variant_Weapon 骨架）
@@ -88,6 +89,14 @@ protected:
 	UPROPERTY()
 	TObjectPtr<UWeaponClassSelectWidget> ClassSelectWidget;
 
+	/** 多人房间 UI 控件类（默认为 UWeaponLobbyWidget，可由蓝图子类替换） */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Lobby|UI")
+	TSubclassOf<UWeaponLobbyWidget> LobbyWidgetClass;
+
+	/** 常驻的房间 UI 实例（仅本地客户端持有，默认以左侧小窗形态显示） */
+	UPROPERTY()
+	TObjectPtr<UWeaponLobbyWidget> LobbyWidget;
+
 protected:
 
 	//~ APlayerController
@@ -127,6 +136,9 @@ protected:
 
 	/** 关卡内自动创建并显示职业选择 UI（仅本地控制器执行） */
 	void ShowClassSelectUI();
+
+	/** 关卡内创建常驻的房间 UI（仅本地控制器执行；默认为左侧小窗形态） */
+	void ShowLobbyUI();
 
 	/** 恢复俯视角玩法输入：保留可见光标，同时让未被 UI 处理的输入进入游戏。 */
 	void ApplyGameplayInputMode();

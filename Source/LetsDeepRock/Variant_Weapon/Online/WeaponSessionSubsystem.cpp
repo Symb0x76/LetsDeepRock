@@ -75,14 +75,17 @@ FName UWeaponSessionSubsystem::ResolveCurrentMapName() const
 	return FName(*UWorld::RemovePIEPrefix(World->GetOutermost()->GetName()));
 }
 
-bool UWeaponSessionSubsystem::HostLanGame(const int32 MaxPlayers, const FString& ServerName)
+bool UWeaponSessionSubsystem::HostLanGame(
+	const int32 MaxPlayers,
+	const FString& ServerName,
+	const FName TargetMapName)
 {
 	if (CurrentOperation != EWeaponSessionOperation::Idle || MaxPlayers < 1 || MaxPlayers > 4)
 	{
 		return false;
 	}
 
-	PendingHostMapName = ResolveCurrentMapName();
+	PendingHostMapName = TargetMapName.IsNone() ? ResolveCurrentMapName() : TargetMapName;
 	if (PendingHostMapName.IsNone())
 	{
 		BroadcastHostComplete(false, TEXT("Unable to resolve the current map."));
