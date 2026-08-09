@@ -119,7 +119,7 @@ private:
 	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString CoordinatorBaseUrl = TEXT("http://192.168.3.75:8443");
+	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8443");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
 	FString StunServerUrl = TEXT("stun:coordinator.example.com:3478");
