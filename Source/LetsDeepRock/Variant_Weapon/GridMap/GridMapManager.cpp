@@ -4,6 +4,7 @@
 #include "WeaponGameState.h"
 #include "GridMapData.h"
 #include "GridMapGenerator.h"
+#include "GridMapGenerator_RoomGraph.h"
 #include "GridMapRenderer.h"
 #include "NavigationSystem.h"
 #include "Net/UnrealNetwork.h"
@@ -70,8 +71,15 @@ void AGridMapManager::BeginPlay()
 	}
 	else if (!HasAuthority() && BaselineState.bGenerated)
 	{
-		BuildBaselineMap(BaselineState);
-		ApplyAllReplicatedDeltas();
+		FString Error;
+		if (BuildBaselineMap(BaselineState, &Error))
+		{
+			ApplyAllReplicatedDeltas();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Error, TEXT("[GridMap] 客户端 BeginPlay Baseline 重放失败：%s"), *Error);
+		}
 	}
 }
 
@@ -108,26 +116,39 @@ void AGridMapManager::GenerateMap()
 	}
 
 	FGridMapBaselineState NewState;
-	NewState.SchemaVersion = 1;
+	NewState.SchemaVersion = 2;
 	NewState.GenerationVersion = BaselineState.GenerationVersion + 1;
 	NewState.Config = MapConfig;
 	NewState.GeneratorClass = GeneratorClass;
-	NewState.bGenerated = true;
-
-	Generator = GeneratorClass ? NewObject<UGridMapGenerator>(this, GeneratorClass) : nullptr;
-	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
+	NewState.EffectiveSeed = RequestedSeed;
+	if (NewState.EffectiveSeed == 0 && GeneratorClass)
 	{
-		NewState.EffectiveSeed = SimpleGenerator->Seed != 0
-			? SimpleGenerator->Seed
-			: FMath::RandRange(1, MAX_int32);
+		if (const UGridMapGenerator_Simple* SimpleDefaults = Cast<UGridMapGenerator_Simple>(GeneratorClass->GetDefaultObject()))
+		{
+			NewState.EffectiveSeed = SimpleDefaults->Seed;
+		}
 	}
-
+	if (NewState.EffectiveSeed == 0)
+	{
+		NewState.EffectiveSeed = FMath::RandRange(1, MAX_int32);
+	}
+	FString Error;
+	if (!BuildBaselineMap(NewState, &Error))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[GridMap] 基础地图生成失败：%s"), *Error);
+		return;
+	}
+	NewState.AlgorithmVersion = Generator->GetAlgorithmVersion();
+	NewState.TemplateSetVersion = Generator->GetTemplateSetVersion();
+	NewState.Recipe = Generator->GetGeneratedRecipe();
+	NewState.ResultHash = UGridMapGenerator::ComputeStableResultHash(*MapData, NewState.EffectiveSeed,
+		NewState.AlgorithmVersion, NewState.TemplateSetVersion, NewState.Recipe);
+	NewState.bGenerated = true;
 	BaselineState = NewState;
 	TileDeltas.Items.Reset();
 	TileDeltas.MarkArrayDirty();
 	NextTileRevision = 0;
 
-	BuildBaselineMap(BaselineState);
 	ForceNetUpdate();
 }
 
@@ -146,6 +167,10 @@ bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FStr
 	OutState.Config = BaselineState.Config;
 	OutState.GeneratorClass = FSoftClassPath(BaselineState.GeneratorClass.Get());
 	OutState.EffectiveSeed = BaselineState.EffectiveSeed;
+	OutState.AlgorithmVersion = BaselineState.AlgorithmVersion;
+	OutState.TemplateSetVersion = BaselineState.TemplateSetVersion;
+	OutState.Recipe = BaselineState.Recipe;
+	OutState.ResultHash = BaselineState.ResultHash;
 	OutState.bGenerated = BaselineState.bGenerated;
 	OutState.NextTileRevision = NextTileRevision;
 	OutState.TileDeltas.Reserve(TileDeltas.Items.Num());
@@ -171,7 +196,7 @@ bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, 
 	const FGridMapConfig& Config = State.Config;
 	const int64 TileCount = static_cast<int64>(Config.MapWidth) * Config.MapHeight;
 	if (State.SchemaVersion != GridMapRecoveryStateVersion ||
-		State.BaselineSchemaVersion != 1 || !State.bGenerated ||
+		State.BaselineSchemaVersion != 2 || !State.bGenerated ||
 		State.GenerationVersion <= 0 || !State.GeneratorClass.IsValid() ||
 		Config.MapWidth <= 0 || Config.MapHeight <= 0 ||
 		!FMath::IsFinite(Config.TileSize) || Config.TileSize <= 0.0f ||
@@ -180,6 +205,60 @@ bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, 
 	{
 		OutError = TEXT("GridMap recovery baseline is invalid");
 		return false;
+	}
+	UClass* RecoveryGeneratorClass = State.GeneratorClass.TryLoadClass<UGridMapGenerator>();
+	if (!RecoveryGeneratorClass || !RecoveryGeneratorClass->IsChildOf(UGridMapGenerator::StaticClass()))
+	{
+		OutError = TEXT("GridMap recovery generator class could not be loaded or is not a GridMap generator");
+		return false;
+	}
+	const bool bRoomGraph = RecoveryGeneratorClass->IsChildOf(UGridMapGenerator_RoomGraph::StaticClass());
+	if (State.EffectiveSeed == 0 || (bRoomGraph && (State.AlgorithmVersion <= 0 || State.TemplateSetVersion <= 0
+		|| State.ResultHash == 0 || State.Recipe.Rooms.IsEmpty())))
+	{
+		OutError = TEXT("GridMap recovery deterministic baseline is incomplete");
+		return false;
+	}
+	if (bRoomGraph)
+	{
+		TArray<FIntRect> RecipeBounds;
+		for (int32 Index = 0; Index < State.Recipe.Rooms.Num(); ++Index)
+		{
+			const FGridMapRecipeRoom& Room = State.Recipe.Rooms[Index];
+			if (!Room.TemplatePath.IsValid() || Room.TemplateVersion <= 0 || Room.TemplateContentHash == 0
+				|| Room.Size.X <= 0 || Room.Size.Y <= 0 || Room.Origin.X < 0 || Room.Origin.Y < 0
+				|| Room.Origin.X + Room.Size.X > Config.MapWidth || Room.Origin.Y + Room.Size.Y > Config.MapHeight
+				|| !StaticEnum<EGridMapRoomPurpose>()->IsValidEnumValue(static_cast<int64>(Room.Purpose)))
+			{
+				OutError = TEXT("GridMap recovery Recipe room is invalid"); return false;
+			}
+			const FIntRect Bounds(Room.Origin, Room.Origin + Room.Size);
+			for (const FIntRect& Existing : RecipeBounds)
+			{
+				if (Bounds.Intersect(Existing)) { OutError = TEXT("GridMap recovery Recipe rooms overlap"); return false; }
+			}
+			RecipeBounds.Add(Bounds);
+		}
+		for (const FGridMapRecipeConnection& Connection : State.Recipe.Connections)
+		{
+			if (!State.Recipe.Rooms.IsValidIndex(Connection.FromRoom) || !State.Recipe.Rooms.IsValidIndex(Connection.ToRoom)
+				|| Connection.FromRoom == Connection.ToRoom || Connection.CorridorWidth < 1 || Connection.CorridorWidth > 5
+				|| Connection.CorridorWidth % 2 == 0 || Connection.Points.Num() < 2)
+			{
+				OutError = TEXT("GridMap recovery Recipe connection is invalid"); return false;
+			}
+			for (int32 PointIndex = 0; PointIndex < Connection.Points.Num(); ++PointIndex)
+			{
+				const FIntPoint Point = Connection.Points[PointIndex];
+				const int32 HalfWidth = Connection.CorridorWidth / 2;
+				if (Point.X - HalfWidth < 0 || Point.Y - HalfWidth < 0
+					|| Point.X + HalfWidth >= Config.MapWidth || Point.Y + HalfWidth >= Config.MapHeight
+					|| (PointIndex > 0 && Point.X != Connection.Points[PointIndex - 1].X && Point.Y != Connection.Points[PointIndex - 1].Y))
+				{
+					OutError = TEXT("GridMap recovery Recipe corridor is invalid"); return false;
+				}
+			}
+		}
 	}
 
 	TSet<int64> Coordinates;
@@ -241,8 +320,16 @@ bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, F
 	RestoredBaseline.Config = State.Config;
 	RestoredBaseline.GeneratorClass = LoadedGeneratorClass;
 	RestoredBaseline.EffectiveSeed = State.EffectiveSeed;
+	RestoredBaseline.AlgorithmVersion = State.AlgorithmVersion;
+	RestoredBaseline.TemplateSetVersion = State.TemplateSetVersion;
+	RestoredBaseline.Recipe = State.Recipe;
+	RestoredBaseline.ResultHash = State.ResultHash;
 	RestoredBaseline.bGenerated = State.bGenerated;
 
+	if (!BuildBaselineMap(RestoredBaseline, &OutError))
+	{
+		return false;
+	}
 	BaselineState = RestoredBaseline;
 	MapConfig = State.Config;
 	GeneratorClass = LoadedGeneratorClass;
@@ -261,34 +348,49 @@ bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, F
 	TileDeltas.MarkArrayDirty();
 	NextTileRevision = State.NextTileRevision;
 
-	BuildBaselineMap(BaselineState);
 	ApplyAllReplicatedDeltas();
 	ForceNetUpdate();
 	return true;
 }
 
-void AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State)
+bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FString* OutError)
 {
-	if (!State.bGenerated || State.SchemaVersion != 1)
+	if (State.GenerationVersion <= 0 || State.SchemaVersion != 2)
 	{
-		return;
+		if (OutError) { *OutError = TEXT("GridMap Baseline schema 不受支持"); }
+		return false;
 	}
 
-	MapData = NewObject<UGridMapData>(this);
-	MapData->Initialize(State.Config);
-	Generator = State.GeneratorClass ? NewObject<UGridMapGenerator>(this, State.GeneratorClass) : nullptr;
+	UGridMapData* NewMapData = NewObject<UGridMapData>(this);
+	NewMapData->Initialize(State.Config);
+	UGridMapGenerator* NewGenerator = State.GeneratorClass ? NewObject<UGridMapGenerator>(this, State.GeneratorClass) : nullptr;
+
+	if (!NewGenerator)
+	{
+		if (OutError) { *OutError = TEXT("GridMap GeneratorClass 无效"); }
+		return false;
+	}
+	NewGenerator->SetEffectiveSeed(State.EffectiveSeed);
+	NewGenerator->SetReplayRecipe(State.Recipe);
+	if (!NewGenerator->GenerateChecked(NewMapData))
+	{
+		if (OutError) { *OutError = NewGenerator->GetLastError(); }
+		return false;
+	}
+	if (State.ResultHash != 0)
+	{
+		const uint64 ActualHash = UGridMapGenerator::ComputeStableResultHash(*NewMapData, State.EffectiveSeed,
+			State.AlgorithmVersion, State.TemplateSetVersion, NewGenerator->GetGeneratedRecipe());
+		if (ActualHash != State.ResultHash)
+		{
+			if (OutError) { *OutError = TEXT("GridMap Recipe 重放 ResultHash 不一致"); }
+			return false;
+		}
+	}
+	MapData = NewMapData;
+	Generator = NewGenerator;
 	VisibleTiles.Init(false, MapData->GetTotalTiles());
 	MarkVisionDirty();
-
-	if (UGridMapGenerator_Simple* SimpleGenerator = Cast<UGridMapGenerator_Simple>(Generator))
-	{
-		SimpleGenerator->Seed = State.EffectiveSeed;
-	}
-
-	if (Generator)
-	{
-		Generator->Generate(MapData);
-	}
 
 	if (MapRenderer)
 	{
@@ -305,12 +407,20 @@ void AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State)
 
 	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
 		State.GenerationVersion, State.EffectiveSeed);
+	return true;
 }
 
 void AGridMapManager::OnRep_BaselineState()
 {
-	BuildBaselineMap(BaselineState);
-	ApplyAllReplicatedDeltas();
+	FString Error;
+	if (BuildBaselineMap(BaselineState, &Error))
+	{
+		ApplyAllReplicatedDeltas();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Error, TEXT("[GridMap] 客户端 Baseline 重放失败：%s"), *Error);
+	}
 }
 
 bool AGridMapManager::GetTileAtWorldLocation(const FVector& WorldLocation, FGridTileData& OutTileData) const
