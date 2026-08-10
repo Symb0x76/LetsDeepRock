@@ -1,6 +1,7 @@
 """关卡操作工具（Actor 放置、导航构建、材质创建、Blackboard 创建）"""
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from ._helpers import unwrap_result
@@ -9,8 +10,150 @@ if TYPE_CHECKING:
     from ..server import UnrealConnection
 
 
+def _normalize_level_path(level_path: str) -> str | None:
+    """校验并规范化 /Game 下的关卡包路径，不接触 UE。"""
+    if not isinstance(level_path, str):
+        return None
+
+    path = level_path.strip().replace("\\", "/")
+    if not path.startswith("/Game/") or path.endswith("/") or "//" in path:
+        return None
+
+    package_name, separator, object_name = path.rpartition(".")
+    if separator and object_name == package_name.rsplit("/", 1)[-1]:
+        path = package_name
+
+    if not re.fullmatch(r"/Game/[A-Za-z0-9_./-]+", path) or "." in path.rsplit("/", 1)[-1]:
+        return None
+    return path
+
+
 def register(server, connection: "UnrealConnection"):
     """向 MCP Server 注册关卡操作相关的工具"""
+
+    # ================================================================
+    #  0. open_level / get_open_level_status — 下一帧安全切换关卡
+    # ================================================================
+    @server.tool()
+    async def open_level(level_path: str) -> str:
+        """异步安排安全关卡切换。
+
+        第一条 Remote Execution 命令只校验资产并注册一次性 Slate PostTick
+        回调，不会直接切换关卡。随后使用 get_open_level_status 轮询结果。
+
+        Args:
+            level_path: /Game 开头的 World 包路径，也接受重复对象后缀
+                （例如 /Game/Maps/Test.Test）。
+        """
+        target = _normalize_level_path(level_path)
+        if target is None:
+            return json.dumps({
+                "success": False,
+                "status": "failed",
+                "message": "level_path 必须是有效的 /Game/... 关卡路径",
+            }, ensure_ascii=False)
+
+        code = f'''import unreal
+import json
+import sys
+import types
+import uuid
+
+target = {target!r}
+runtime_name = "_unreal_mcp_open_level_runtime"
+runtime = sys.modules.get(runtime_name)
+if runtime is None:
+    runtime = types.ModuleType(runtime_name)
+    runtime.state = {{"status": "failed", "target": "", "token": "", "message": "尚未安排关卡切换"}}
+    runtime.callback = None
+    runtime.callback_handle = None
+    sys.modules[runtime_name] = runtime
+
+if runtime.state.get("status") in ("scheduled", "loading"):
+    print(json.dumps({{"success": False, "status": runtime.state["status"], "target": runtime.state.get("target", ""), "message": "已有待处理的关卡切换请求"}}))
+else:
+    dirty_paths = []
+    for package in list(unreal.EditorLoadingAndSavingUtils.get_dirty_map_packages()) + list(unreal.EditorLoadingAndSavingUtils.get_dirty_content_packages()):
+        dirty_paths.append(str(package.get_path_name()))
+    try:
+        del package
+    except NameError:
+        pass
+
+    if dirty_paths:
+        runtime.state = {{"status": "failed", "target": target, "token": "", "message": "存在未保存的脏包，已拒绝切换", "dirty_packages": dirty_paths}}
+        print(json.dumps({{"success": False, **runtime.state}}))
+    else:
+        target_asset = unreal.EditorAssetLibrary.load_asset(target)
+        valid_world = target_asset is not None and isinstance(target_asset, unreal.World)
+        del target_asset
+        if not valid_world:
+            runtime.state = {{"status": "failed", "target": target, "token": "", "message": "目标资产不存在或不是 World"}}
+            print(json.dumps({{"success": False, **runtime.state}}))
+        else:
+            token = uuid.uuid4().hex
+            runtime.state = {{"status": "scheduled", "target": target, "token": token, "message": "已安排在下一帧切换关卡"}}
+
+            def _open_level_on_post_tick(delta_time, _target=target, _token=token):
+                unreal.unregister_slate_post_tick_callback(sys.modules["_unreal_mcp_open_level_runtime"].callback_handle)
+                _runtime = sys.modules.get("_unreal_mcp_open_level_runtime")
+                _runtime.callback_handle = None
+                _runtime.callback = None
+                _runtime.state = {{"status": "loading", "target": _target, "token": _token, "message": "正在切换关卡"}}
+                try:
+                    _level_editor = unreal.get_editor_subsystem(unreal.LevelEditorSubsystem)
+                    _loaded = bool(_level_editor.load_level(_target))
+                    del _level_editor
+                    if _loaded:
+                        _runtime.state = {{"status": "succeeded", "target": _target, "token": _token, "message": "关卡切换成功"}}
+                        unreal.log("UnrealMCP open_level succeeded: " + _target)
+                    else:
+                        _runtime.state = {{"status": "failed", "target": _target, "token": _token, "message": "LevelEditorSubsystem.load_level 返回失败"}}
+                        unreal.log_error("UnrealMCP open_level failed: " + _target)
+                except Exception as error:
+                    _runtime.state = {{"status": "failed", "target": _target, "token": _token, "message": str(error)}}
+                    unreal.log_error("UnrealMCP open_level exception: " + str(error))
+
+            runtime.callback = _open_level_on_post_tick
+            try:
+                runtime.callback_handle = unreal.register_slate_post_tick_callback(runtime.callback)
+                print(json.dumps({{"success": True, **runtime.state}}))
+            except Exception as error:
+                runtime.callback = None
+                runtime.callback_handle = None
+                runtime.state = {{"status": "failed", "target": target, "token": token, "message": str(error)}}
+                print(json.dumps({{"success": False, **runtime.state}}))
+'''
+        result = await connection.execute_python(code)
+        return unwrap_result(result)
+
+    @server.tool()
+    async def get_open_level_status() -> str:
+        """查询 open_level 的纯数据状态和当前关卡路径。"""
+        code = '''import unreal
+import json
+import sys
+
+runtime = sys.modules.get("_unreal_mcp_open_level_runtime")
+state = dict(runtime.state) if runtime is not None else {"status": "failed", "target": "", "token": "", "message": "尚未安排关卡切换"}
+current_level = ""
+editor_subsystem = None
+world = None
+try:
+    editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+    world = editor_subsystem.get_editor_world()
+    if world is not None:
+        current_level = str(world.get_path_name())
+except Exception as error:
+    state = {"status": "failed", "target": state.get("target", ""), "token": state.get("token", ""), "message": str(error)}
+finally:
+    del world
+    del editor_subsystem
+
+print(json.dumps({"success": state.get("status") != "failed", **state, "current_level": current_level}))
+'''
+        result = await connection.execute_python(code)
+        return unwrap_result(result)
 
     # ================================================================
     #  1. spawn_actor_in_level — 在当前关卡中放置 Actor

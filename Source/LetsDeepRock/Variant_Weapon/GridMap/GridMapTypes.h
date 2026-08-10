@@ -18,7 +18,8 @@ enum class EGridTileType : uint8
 	Empty = 0		UMETA(DisplayName = "空地"),
 	Tree = 1		UMETA(DisplayName = "一般树木"),
 	Rock = 2		UMETA(DisplayName = "岩石"),
-	LargeTree = 3	UMETA(DisplayName = "高大树木")
+	LargeTree = 3	UMETA(DisplayName = "高大树木"),
+	Uncarved = 4	UMETA(DisplayName = "未开凿区域")
 };
 
 /**

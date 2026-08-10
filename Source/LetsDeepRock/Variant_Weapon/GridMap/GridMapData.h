@@ -26,6 +26,9 @@ public:
 	/** 根据配置初始化地图数据（全部填充为空地） */
 	void Initialize(const FGridMapConfig& InConfig);
 
+	/** 将所有格子填充为同一种类型。 */
+	void Fill(EGridTileType Type);
+
 	/** 获取地图配置 */
 	const FGridMapConfig& GetConfig() const { return Config; }
 

@@ -1,4 +1,4 @@
-// 网格地图系统 - 渲染层实现
+// 网格地图系统 - 64x64 区块渲染层实现
 
 #include "GridMapRenderer.h"
 #include "GridMapData.h"
@@ -10,240 +10,175 @@
 UGridMapRenderer::UGridMapRenderer()
 {
 	PrimaryComponentTick.bCanEverTick = false;
-
-	// 默认使用引擎内置 Cube Mesh
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(
-		TEXT("/Engine/BasicShapes/Cube.Cube"));
-	if (CubeMesh.Succeeded())
-	{
-		TileMesh = CubeMesh.Object;
-	}
-}
-
-void UGridMapRenderer::BeginPlay()
-{
-	Super::BeginPlay();
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
+	if (CubeMesh.Succeeded()) { TileMesh = CubeMesh.Object; }
 }
 
 void UGridMapRenderer::BuildFromMapData(UGridMapData* MapData)
 {
-	if (!MapData || !TileMesh)
+	ClearAllChunks();
+	CachedMapData = MapData;
+	if (!MapData) { return; }
+
+	for (const FGridTileData& Tile : MapData->GetAllTiles())
 	{
-		UE_LOG(LogTemp, Error, TEXT("[GridMap Renderer] MapData 或 TileMesh 为空，无法渲染。"));
-		return;
+		if (Tile.TileType != EGridTileType::Tree && Tile.TileType != EGridTileType::Rock && Tile.TileType != EGridTileType::LargeTree) { continue; }
+		FChunkRenderData& Chunk = Chunks.FindOrAdd({Tile.GridX / ChunkSize, Tile.GridY / ChunkSize});
+		TArray<FTransform>* Transforms = Tile.TileType == EGridTileType::Tree ? &Chunk.TreeTransforms
+			: Tile.TileType == EGridTileType::Rock ? &Chunk.RockTransforms : &Chunk.LargeTreeTransforms;
+		Transforms->Add(MakeTileTransform(Tile));
 	}
 
-	const FGridMapConfig& Config = MapData->GetConfig();
-	CachedMapWidth = Config.MapWidth;
-
-	// 清理旧的 HISM（如果重新生成）
-	if (TreeHISM) { TreeHISM->ClearInstances(); TreeHISM->DestroyComponent(); TreeHISM = nullptr; }
-	if (RockHISM) { RockHISM->ClearInstances(); RockHISM->DestroyComponent(); RockHISM = nullptr; }
-	if (LargeTreeHISM) { LargeTreeHISM->ClearInstances(); LargeTreeHISM->DestroyComponent(); LargeTreeHISM = nullptr; }
-
-	TreeInstanceMap.Empty();
-	RockInstanceMap.Empty();
-	LargeTreeInstanceMap.Empty();
-
-	// 创建 HISM 组件
-	TreeHISM = CreateHISMForType(EGridTileType::Tree);
-	RockHISM = CreateHISMForType(EGridTileType::Rock);
-	LargeTreeHISM = CreateHISMForType(EGridTileType::LargeTree);
-
-	// 遍历所有格子，为非空格子添加实例
-	const TArray<FGridTileData>& AllTiles = MapData->GetAllTiles();
-
-	for (const FGridTileData& Tile : AllTiles)
+	for (TPair<FIntPoint, FChunkRenderData>& Pair : Chunks)
 	{
-		AddTileInstance(MapData, Tile);
+		FChunkRenderData& Chunk = Pair.Value;
+		Chunk.TreeHISM = CreateChunkHISM(Pair.Key, EGridTileType::Tree, Chunk.TreeTransforms);
+		Chunk.RockHISM = CreateChunkHISM(Pair.Key, EGridTileType::Rock, Chunk.RockTransforms);
+		Chunk.LargeTreeHISM = CreateChunkHISM(Pair.Key, EGridTileType::LargeTree, Chunk.LargeTreeTransforms);
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("[GridMap Renderer] 渲染完成 - 树木实例=%d，岩石实例=%d，高大树木实例=%d"),
-		TreeHISM ? TreeHISM->GetInstanceCount() : 0,
-		RockHISM ? RockHISM->GetInstanceCount() : 0,
-		LargeTreeHISM ? LargeTreeHISM->GetInstanceCount() : 0);
+	LastFlushChunkCount = 0;
 }
 
-void UGridMapRenderer::RefreshTileInstance(UGridMapData* MapData, int32 GridX, int32 GridY)
+void UGridMapRenderer::MarkDirtyChunk(const int32 GridX, const int32 GridY)
 {
-	if (!MapData)
-	{
-		return;
-	}
-
-	RemoveTileInstance(GridX, GridY);
-	if (const FGridTileData* Tile = MapData->GetTile(GridX, GridY))
-	{
-		AddTileInstance(MapData, *Tile);
-	}
+	if (CachedMapData && CachedMapData->IsValidCoord(GridX, GridY)) { DirtyChunks.Add({GridX / ChunkSize, GridY / ChunkSize}); }
 }
 
-void UGridMapRenderer::AddTileInstance(UGridMapData* MapData, const FGridTileData& Tile)
+void UGridMapRenderer::FlushDirtyChunks()
 {
-	if (!MapData || Tile.TileType == EGridTileType::Empty)
-	{
-		return;
-	}
-
-	UHierarchicalInstancedStaticMeshComponent* TargetHISM = GetHISMForType(Tile.TileType);
-	TMap<int32, int32>* TargetMap = GetInstanceMapForType(Tile.TileType);
-	if (!TargetHISM || !TargetMap)
-	{
-		return;
-	}
-
-	const FGridMapConfig& Config = MapData->GetConfig();
-	const FVector WorldPos = MapData->GridToWorld(Tile.GridX, Tile.GridY);
-	const float Height = GetHeightForType(Tile.TileType);
-	const float ScaleXY = Config.TileSize / 100.0f;
-	const float ScaleZ = Height / 100.0f;
-
-	FTransform InstanceTransform;
-	InstanceTransform.SetLocation(FVector(WorldPos.X, WorldPos.Y, Height * 0.5f));
-	InstanceTransform.SetScale3D(FVector(ScaleXY, ScaleXY, ScaleZ));
-
-	const int32 InstanceIndex = TargetHISM->AddInstance(InstanceTransform, true);
-	const int32 Key = Tile.GridY * CachedMapWidth + Tile.GridX;
-	TargetMap->Add(Key, InstanceIndex);
+	LastFlushChunkCount = DirtyChunks.Num();
+	TArray<FIntPoint> Pending = DirtyChunks.Array();
+	DirtyChunks.Reset();
+	for (const FIntPoint ChunkCoord : Pending) { RebuildChunk(ChunkCoord); }
 }
 
-void UGridMapRenderer::RemoveTileInstance(int32 GridX, int32 GridY)
+void UGridMapRenderer::RemoveTileInstance(const int32 GridX, const int32 GridY)
 {
-	// 尝试从所有类型的映射中查找并移除
-	const int32 Key = GridY * CachedMapWidth + GridX;
+	MarkDirtyChunk(GridX, GridY);
+}
 
-	// 辅助 lambda：在指定 HISM 和 Map 中移除
-	auto TryRemove = [&](UHierarchicalInstancedStaticMeshComponent* HISM, TMap<int32, int32>& Map) -> bool
+void UGridMapRenderer::RefreshTileInstance(UGridMapData* MapData, const int32 GridX, const int32 GridY)
+{
+	CachedMapData = MapData;
+	MarkDirtyChunk(GridX, GridY);
+}
+
+int32 UGridMapRenderer::GetTotalInstanceCount() const
+{
+	return GetInstanceCountForType(EGridTileType::Tree) + GetInstanceCountForType(EGridTileType::Rock) + GetInstanceCountForType(EGridTileType::LargeTree);
+}
+
+int32 UGridMapRenderer::GetInstanceCountForType(const EGridTileType Type) const
+{
+	int32 Count = 0;
+	for (const TPair<FIntPoint, FChunkRenderData>& Pair : Chunks)
 	{
-		const int32* FoundIndex = Map.Find(Key);
-		if (!FoundIndex || !HISM)
+		Count += Type == EGridTileType::Tree ? Pair.Value.TreeTransforms.Num()
+			: Type == EGridTileType::Rock ? Pair.Value.RockTransforms.Num()
+			: Type == EGridTileType::LargeTree ? Pair.Value.LargeTreeTransforms.Num() : 0;
+	}
+	return Count;
+}
+
+void UGridMapRenderer::ClearAllChunks()
+{
+	for (TPair<FIntPoint, FChunkRenderData>& Pair : Chunks) { DestroyChunkComponents(Pair.Value); }
+	Chunks.Reset();
+	DirtyChunks.Reset();
+	DynamicHISMs.Reset();
+}
+
+void UGridMapRenderer::CollectChunk(const FIntPoint& ChunkCoord, FChunkRenderData& OutData) const
+{
+	if (!CachedMapData) { return; }
+	const FGridMapConfig& Config = CachedMapData->GetConfig();
+	const int32 MinX = ChunkCoord.X * ChunkSize, MinY = ChunkCoord.Y * ChunkSize;
+	const int32 MaxX = FMath::Min(MinX + ChunkSize, Config.MapWidth), MaxY = FMath::Min(MinY + ChunkSize, Config.MapHeight);
+	for (int32 Y = MinY; Y < MaxY; ++Y)
+	{
+		for (int32 X = MinX; X < MaxX; ++X)
 		{
-			return false;
+			const FGridTileData* Tile = CachedMapData->GetTile(X, Y);
+			if (!Tile) { continue; }
+			TArray<FTransform>* Transforms = Tile->TileType == EGridTileType::Tree ? &OutData.TreeTransforms
+				: Tile->TileType == EGridTileType::Rock ? &OutData.RockTransforms
+				: Tile->TileType == EGridTileType::LargeTree ? &OutData.LargeTreeTransforms : nullptr;
+			if (Transforms) { Transforms->Add(MakeTileTransform(*Tile)); }
 		}
-
-		const int32 IndexToRemove = *FoundIndex;
-		HISM->RemoveInstance(IndexToRemove);
-
-		// RemoveInstance 后，最后一个实例被 swap 到了被删除的位置
-		// 需要更新映射中原来指向最后一个位置的条目
-		const int32 LastIndex = HISM->GetInstanceCount(); // 删除后的 Count 就是原来的最后一个索引
-		Map.Remove(Key);
-
-		// 查找并更新被 swap 过来的实例的映射
-		for (auto& Pair : Map)
-		{
-			if (Pair.Value == LastIndex)
-			{
-				Pair.Value = IndexToRemove;
-				break;
-			}
-		}
-
-		return true;
-	};
-
-	if (TryRemove(TreeHISM, TreeInstanceMap)) return;
-	if (TryRemove(RockHISM, RockInstanceMap)) return;
-	if (TryRemove(LargeTreeHISM, LargeTreeInstanceMap)) return;
+	}
 }
 
-UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateHISMForType(EGridTileType Type)
+void UGridMapRenderer::RebuildChunk(const FIntPoint& ChunkCoord)
+{
+	if (FChunkRenderData* Existing = Chunks.Find(ChunkCoord)) { DestroyChunkComponents(*Existing); Chunks.Remove(ChunkCoord); }
+	FChunkRenderData NewChunk;
+	CollectChunk(ChunkCoord, NewChunk);
+	if (NewChunk.TreeTransforms.IsEmpty() && NewChunk.RockTransforms.IsEmpty() && NewChunk.LargeTreeTransforms.IsEmpty()) { return; }
+	NewChunk.TreeHISM = CreateChunkHISM(ChunkCoord, EGridTileType::Tree, NewChunk.TreeTransforms);
+	NewChunk.RockHISM = CreateChunkHISM(ChunkCoord, EGridTileType::Rock, NewChunk.RockTransforms);
+	NewChunk.LargeTreeHISM = CreateChunkHISM(ChunkCoord, EGridTileType::LargeTree, NewChunk.LargeTreeTransforms);
+	Chunks.Add(ChunkCoord, MoveTemp(NewChunk));
+}
+
+void UGridMapRenderer::DestroyChunkComponents(FChunkRenderData& Chunk)
+{
+	UHierarchicalInstancedStaticMeshComponent* Components[] = {Chunk.TreeHISM, Chunk.RockHISM, Chunk.LargeTreeHISM};
+	for (UHierarchicalInstancedStaticMeshComponent* Component : Components)
+	{
+		if (Component) { DynamicHISMs.Remove(Component); Component->ClearInstances(); Component->DestroyComponent(); }
+	}
+}
+
+UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::CreateChunkHISM(const FIntPoint& ChunkCoord, const EGridTileType Type, const TArray<FTransform>& Transforms)
 {
 	AActor* Owner = GetOwner();
-	if (!Owner)
-	{
-		return nullptr;
-	}
-
-	UHierarchicalInstancedStaticMeshComponent* HISM =
-		NewObject<UHierarchicalInstancedStaticMeshComponent>(Owner);
+	if (Transforms.IsEmpty() || !Owner || !TileMesh) { return nullptr; }
+	const TCHAR* TypeName = Type == EGridTileType::Tree ? TEXT("Tree") : Type == EGridTileType::Rock ? TEXT("Rock") : TEXT("LargeTree");
+	const FName Name = MakeUniqueObjectName(Owner, UHierarchicalInstancedStaticMeshComponent::StaticClass(),
+		FName(*FString::Printf(TEXT("GridChunk_%d_%d_%s"), ChunkCoord.X, ChunkCoord.Y, TypeName)));
+	UHierarchicalInstancedStaticMeshComponent* HISM = NewObject<UHierarchicalInstancedStaticMeshComponent>(Owner, Name);
+	Owner->AddInstanceComponent(HISM);
 	HISM->SetStaticMesh(TileMesh);
-	HISM->SetMobility(EComponentMobility::Movable); // Movable 以支持运行时移除实例
-	HISM->SetCullDistances(0, 50000); // 500m 裁剪距离
-
-	// 启用碰撞（阻挡玩家和 AI 移动，影响 NavMesh）
+	HISM->SetMobility(EComponentMobility::Movable);
+	HISM->SetCullDistances(0, 50000);
 	HISM->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	HISM->SetCollisionObjectType(ECollisionChannel::ECC_WorldStatic);
 	HISM->SetCollisionResponseToAllChannels(ECollisionResponse::ECR_Block);
 	HISM->SetGenerateOverlapEvents(false);
-	HISM->SetCanEverAffectNavigation(true); // 影响 NavMesh
-
-	// 设置材质：优先用户配置，否则创建默认颜色材质
-	UMaterialInterface* Mat = GetMaterialForType(Type);
-	if (Mat)
+	HISM->SetCanEverAffectNavigation(true);
+	if (UMaterialInterface* Material = GetMaterialForType(Type)) { HISM->SetMaterial(0, Material); }
+	else if (UMaterialInterface* BaseMaterial = HISM->GetMaterial(0))
 	{
-		HISM->SetMaterial(0, Mat);
-	}
-	else
-	{
-		// 无配置材质时，创建动态材质实例并赋予默认颜色
-		UMaterialInterface* BaseMat = HISM->GetMaterial(0);
-		if (BaseMat)
+		UMaterialInstanceDynamic* DynamicMaterial = UMaterialInstanceDynamic::Create(BaseMaterial, Owner);
+		if (DynamicMaterial)
 		{
-			UMaterialInstanceDynamic* DynMat = UMaterialInstanceDynamic::Create(BaseMat, Owner);
-			if (DynMat)
-			{
-				FLinearColor Color;
-				switch (Type)
-				{
-				case EGridTileType::Tree:      Color = FLinearColor(0.1f, 0.7f, 0.1f); break;  // 绿色
-				case EGridTileType::Rock:      Color = FLinearColor(0.5f, 0.5f, 0.5f); break;  // 灰色
-				case EGridTileType::LargeTree: Color = FLinearColor(0.05f, 0.4f, 0.05f); break; // 深绿
-				default:                       Color = FLinearColor::White; break;
-				}
-				DynMat->SetVectorParameterValue(TEXT("BaseColor"), Color);
-				DynMat->SetVectorParameterValue(TEXT("Color"), Color); // 兼容不同材质参数名
-				HISM->SetMaterial(0, DynMat);
-			}
+			const FLinearColor Color = Type == EGridTileType::Tree ? FLinearColor(0.1f, 0.7f, 0.1f)
+				: Type == EGridTileType::Rock ? FLinearColor(0.5f, 0.5f, 0.5f) : FLinearColor(0.05f, 0.4f, 0.05f);
+			DynamicMaterial->SetVectorParameterValue(TEXT("BaseColor"), Color); DynamicMaterial->SetVectorParameterValue(TEXT("Color"), Color); HISM->SetMaterial(0, DynamicMaterial);
 		}
 	}
-
-	HISM->RegisterComponent();
 	HISM->AttachToComponent(Owner->GetRootComponent(), FAttachmentTransformRules::KeepRelativeTransform);
-
+	HISM->RegisterComponent();
+	// UE 5.8 三参数签名为 (Transforms, bShouldReturnIndices, bWorldSpace)。
+	HISM->AddInstances(Transforms, false, true);
+	DynamicHISMs.Add(HISM);
 	return HISM;
 }
 
-float UGridMapRenderer::GetHeightForType(EGridTileType Type) const
+FTransform UGridMapRenderer::MakeTileTransform(const FGridTileData& Tile) const
 {
-	switch (Type)
-	{
-	case EGridTileType::Tree:      return TreeHeight;
-	case EGridTileType::Rock:      return RockHeight;
-	case EGridTileType::LargeTree: return LargeTreeHeight;
-	default:                       return 0.0f;
-	}
+	const FGridMapConfig& Config = CachedMapData->GetConfig();
+	const FVector WorldPosition = CachedMapData->GridToWorld(Tile.GridX, Tile.GridY);
+	const float Height = GetHeightForType(Tile.TileType);
+	return FTransform(FRotator::ZeroRotator, FVector(WorldPosition.X, WorldPosition.Y, Height * 0.5f), FVector(Config.TileSize / 100.0f, Config.TileSize / 100.0f, Height / 100.0f));
 }
 
-UMaterialInterface* UGridMapRenderer::GetMaterialForType(EGridTileType Type) const
+float UGridMapRenderer::GetHeightForType(const EGridTileType Type) const
 {
-	switch (Type)
-	{
-	case EGridTileType::Tree:      return TreeMaterial;
-	case EGridTileType::Rock:      return RockMaterial;
-	case EGridTileType::LargeTree: return LargeTreeMaterial;
-	default:                       return nullptr;
-	}
+	return Type == EGridTileType::Tree ? TreeHeight : Type == EGridTileType::Rock ? RockHeight : Type == EGridTileType::LargeTree ? LargeTreeHeight : 0.0f;
 }
 
-TMap<int32, int32>* UGridMapRenderer::GetInstanceMapForType(EGridTileType Type)
+UMaterialInterface* UGridMapRenderer::GetMaterialForType(const EGridTileType Type) const
 {
-	switch (Type)
-	{
-	case EGridTileType::Tree:      return &TreeInstanceMap;
-	case EGridTileType::Rock:      return &RockInstanceMap;
-	case EGridTileType::LargeTree: return &LargeTreeInstanceMap;
-	default:                       return nullptr;
-	}
-}
-
-UHierarchicalInstancedStaticMeshComponent* UGridMapRenderer::GetHISMForType(EGridTileType Type)
-{
-	switch (Type)
-	{
-	case EGridTileType::Tree:      return TreeHISM;
-	case EGridTileType::Rock:      return RockHISM;
-	case EGridTileType::LargeTree: return LargeTreeHISM;
-	default:                       return nullptr;
-	}
+	return Type == EGridTileType::Tree ? TreeMaterial : Type == EGridTileType::Rock ? RockMaterial : Type == EGridTileType::LargeTree ? LargeTreeMaterial : nullptr;
 }

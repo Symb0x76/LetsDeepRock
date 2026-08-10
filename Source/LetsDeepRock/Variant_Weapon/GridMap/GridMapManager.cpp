@@ -106,6 +106,8 @@ void AGridMapManager::Tick(float DeltaSeconds)
 	{
 		DrawVisionDebug();
 	}
+
+	if (MapRenderer) { MapRenderer->FlushDirtyChunks(); }
 }
 
 void AGridMapManager::GenerateMap()
@@ -213,7 +215,7 @@ bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, 
 		return false;
 	}
 	const bool bRoomGraph = RecoveryGeneratorClass->IsChildOf(UGridMapGenerator_RoomGraph::StaticClass());
-	if (State.EffectiveSeed == 0 || (bRoomGraph && (State.AlgorithmVersion <= 0 || State.TemplateSetVersion <= 0
+	if (State.EffectiveSeed == 0 || (bRoomGraph && ((State.AlgorithmVersion != 1 && State.AlgorithmVersion != 2) || State.TemplateSetVersion <= 0
 		|| State.ResultHash == 0 || State.Recipe.Rooms.IsEmpty())))
 	{
 		OutError = TEXT("GridMap recovery deterministic baseline is incomplete");
@@ -372,6 +374,23 @@ bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FStri
 	}
 	NewGenerator->SetEffectiveSeed(State.EffectiveSeed);
 	NewGenerator->SetReplayRecipe(State.Recipe);
+	if (UGridMapGenerator_RoomGraph* RoomGraph = Cast<UGridMapGenerator_RoomGraph>(NewGenerator))
+	{
+		const bool bNewGeneration = State.Recipe.IsEmpty() && State.ResultHash == 0 && !State.bGenerated;
+		if (bNewGeneration)
+		{
+			RoomGraph->AlgorithmVersion = UGridMapGenerator_RoomGraph::CurrentAlgorithmVersion;
+		}
+		else
+		{
+			if (State.AlgorithmVersion != 1 && State.AlgorithmVersion != 2)
+			{
+				if (OutError) { *OutError = TEXT("GridMap RoomGraph 算法版本不受支持"); }
+				return false;
+			}
+			RoomGraph->AlgorithmVersion = State.AlgorithmVersion;
+		}
+	}
 	if (!NewGenerator->GenerateChecked(NewMapData))
 	{
 		if (OutError) { *OutError = NewGenerator->GetLastError(); }
@@ -621,7 +640,8 @@ void AGridMapManager::SampleVisionSourceState()
 	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
 	{
 		UVisionSourceComponent* Source = *It;
-		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId
+			|| !FMath::IsFinite(Source->Range) || Source->Range <= 0.0f)
 		{
 			continue;
 		}
@@ -699,7 +719,8 @@ void AGridMapManager::RebuildLocalVisibility()
 	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
 	{
 		UVisionSourceComponent* Source = *It;
-		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId
+			|| !FMath::IsFinite(Source->Range) || Source->Range <= 0.0f)
 		{
 			continue;
 		}
@@ -712,14 +733,11 @@ void AGridMapManager::RebuildLocalVisibility()
 			continue;
 		}
 
-		const bool bUnlimited = Source->Range <= 0.0f;
-		const int32 GridRadius = bUnlimited
-			? FMath::Max(Config.MapWidth, Config.MapHeight)
-			: FMath::CeilToInt(Source->Range / Config.TileSize) + 1;
-		const int32 MinX = bUnlimited ? 0 : FMath::Max(0, SourceX - GridRadius);
-		const int32 MaxX = bUnlimited ? Config.MapWidth - 1 : FMath::Min(Config.MapWidth - 1, SourceX + GridRadius);
-		const int32 MinY = bUnlimited ? 0 : FMath::Max(0, SourceY - GridRadius);
-		const int32 MaxY = bUnlimited ? Config.MapHeight - 1 : FMath::Min(Config.MapHeight - 1, SourceY + GridRadius);
+		const int32 GridRadius = FMath::CeilToInt(Source->Range / Config.TileSize) + 1;
+		const int32 MinX = FMath::Max(0, SourceX - GridRadius);
+		const int32 MaxX = FMath::Min(Config.MapWidth - 1, SourceX + GridRadius);
+		const int32 MinY = FMath::Max(0, SourceY - GridRadius);
+		const int32 MaxY = FMath::Min(Config.MapHeight - 1, SourceY + GridRadius);
 		const float RangeSq = Source->Range * Source->Range;
 		const float ConeThreshold = FMath::Cos(FMath::DegreesToRadians(Source->HalfAngle));
 		FVector2D Forward(Source->GetVisionDirection().X, Source->GetVisionDirection().Y);
@@ -732,7 +750,7 @@ void AGridMapManager::RebuildLocalVisibility()
 				const FVector TileCenter = MapData->GridToWorld(X, Y);
 				const FVector2D ToTile(TileCenter.X - SourceLocation.X, TileCenter.Y - SourceLocation.Y);
 				const float DistanceSq = ToTile.SizeSquared();
-				if (!bUnlimited && DistanceSq > RangeSq)
+				if (DistanceSq > RangeSq)
 				{
 					continue;
 				}
@@ -984,6 +1002,7 @@ void AGridMapManager::ApplyAllReplicatedDeltas()
 			ApplyTileState(Delta);
 		}
 	}
+	if (MapRenderer) { MapRenderer->FlushDirtyChunks(); }
 }
 
 void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
@@ -1003,7 +1022,7 @@ void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
 
 	if (bTypeChanged && MapRenderer)
 	{
-		MapRenderer->RefreshTileInstance(MapData, Delta.GridX, Delta.GridY);
+		MapRenderer->MarkDirtyChunk(Delta.GridX, Delta.GridY);
 		MarkTileNavigationDirty(Delta.GridX, Delta.GridY);
 	}
 

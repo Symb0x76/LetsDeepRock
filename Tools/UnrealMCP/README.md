@@ -44,6 +44,8 @@ Editor 模块已编译并加载；若刚添加或更新该模块，需要重新�
 | 工具 | 功能 |
 |------|------|
 | `spawn_actor_in_level` | 在关卡中放置 Actor |
+| `open_level` | 在下一帧异步、安全地安排关卡切换 |
+| `get_open_level_status` | 查询异步关卡切换状态与当前关卡路径 |
 | `build_navigation` | 构建 NavMesh |
 | `create_material` | 创建简单材质 |
 | `create_blackboard` | 创建 AI Blackboard + 添加键 |
@@ -163,6 +165,16 @@ duration_magnitude: 0.5
 ```
 code: "import unreal; print(unreal.SystemLibrary.get_engine_version())"
 ```
+
+### 安全切换关卡
+
+调用 `open_level(level_path="/Game/Maps/MyLevel")` 后，第一条 Remote Execution
+命令只会校验 World 并注册一次性 Slate PostTick 回调。随后轮询
+`get_open_level_status`，直至返回 `succeeded` 或 `failed`（中间状态为
+`scheduled` / `loading`）。若存在脏包，工具会拒绝切换且不会擅自保存。
+
+不要通过 `execute_python` 在 Remote Execution 命令栈内直接调用
+`load_level`；这可能让旧 World 仍被 Python UObject wrapper 引用。
 
 ---
 
