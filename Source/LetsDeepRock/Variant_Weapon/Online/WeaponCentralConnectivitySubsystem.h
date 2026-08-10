@@ -52,6 +52,14 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Central Connectivity")
 	bool IsCentralCheckpointReady() const { return bCentralCheckpointReady; }
 
+	/** 控制面已认证且 Coordinator 已为本局分配 MatchId。 */
+	UFUNCTION(BlueprintPure, Category = "Central Connectivity")
+	bool IsCentralMatchReady() const { return bCentralControlReady && MatchId.IsValid() && !CentralMatchIdString.IsEmpty(); }
+
+	/** 当前中心的 MatchId（原始小写 uuid 字符串；未创建/加入 Match 时为空）。 */
+	UFUNCTION(BlueprintPure, Category = "Central Connectivity")
+	const FString& GetCentralMatchIdString() const { return CentralMatchIdString; }
+
 	UPROPERTY(BlueprintAssignable, Category = "Central Connectivity")
 	FOnWeaponCentralConnectivityChanged OnConnectivityChanged;
 
@@ -82,6 +90,7 @@ private:
 	void HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode);
 	void HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role);
 	void ExecutePendingMatchAction();
+	void FailMatchAction(const FString& Message);
 
 	// 待认证完成后的 Match 动作(异步认证与 Match 请求脱节)
 	enum class EPendingMatchAction : uint8

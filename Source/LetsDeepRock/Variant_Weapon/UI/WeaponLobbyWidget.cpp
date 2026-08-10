@@ -28,6 +28,7 @@
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateTypes.h"
+#include "Online/WeaponCentralConnectivitySubsystem.h"
 #include "WeaponGameMode.h"
 
 namespace WeaponLobbyStyle
@@ -167,6 +168,12 @@ void UWeaponLobbyWidget::BindLobbyEvents()
 		{
 			OldPlayerState->OnLobbyStateChanged.RemoveDynamic(this, &UWeaponLobbyWidget::HandleLobbyStateChanged);
 		}
+		if (UWeaponCentralConnectivitySubsystem* OldCentral =
+			GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+		{
+			OldCentral->OnConnectivityChanged.RemoveDynamic(
+				this, &UWeaponLobbyWidget::HandleCentralConnectivityChanged);
+		}
 		bEventsBound = false;
 	}
 
@@ -178,8 +185,20 @@ void UWeaponLobbyWidget::BindLobbyEvents()
 	{
 		PlayerState->OnLobbyStateChanged.AddDynamic(this, &UWeaponLobbyWidget::HandleLobbyStateChanged);
 	}
+	if (UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+	{
+		Central->OnConnectivityChanged.AddDynamic(this, &UWeaponLobbyWidget::HandleCentralConnectivityChanged);
+	}
 
 	bEventsBound = true;
+	RefreshLobbyState();
+}
+
+void UWeaponLobbyWidget::HandleCentralConnectivityChanged(
+	EWeaponCentralConnectivityState NewState,
+	FString Message)
+{
 	RefreshLobbyState();
 }
 
@@ -320,6 +339,14 @@ void UWeaponLobbyWidget::BuildCollapsedDock(UPanelWidget* RootCanvas)
 	{
 		UVerticalBoxSlot* StatusSlot = DockContent->AddChildToVerticalBox(StatusText);
 		StatusSlot->SetPadding(FMargin(0.0f, 1.0f, 0.0f, 10.0f));
+	}
+
+	// 联机模式标签：LOCAL P2P / CENTRAL SERVER，小窗里的最低一级信息
+	UTextBlock* ModeText = MakeText(TEXT("LOCAL P2P"), 9, TextMuted, true, 200);
+	DockModeText = ModeText;
+	{
+		UVerticalBoxSlot* ModeSlot = DockContent->AddChildToVerticalBox(ModeText);
+		ModeSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f));
 	}
 
 	// 展开按钮：整块可点，宽度撑满小窗
@@ -497,7 +524,39 @@ void UWeaponLobbyWidget::BuildExpandedShell(UPanelWidget* RootCanvas)
 	// 顶栏下的橙黄发丝线，把标题和内容切开
 	{
 		UVerticalBoxSlot* LineSlot = ShellColumn->AddChildToVerticalBox(MakeHairline(AmberDim, 2.0f));
-		LineSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 18.0f));
+		LineSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f));
+	}
+
+	// ---- 联机信息行：模式 / 角色 / 房间号 / 端口（房主多显示端口）----
+	{
+		UBorder* InfoPanel = MakePanel(PanelDeepColor, FMargin(16.0f, 10.0f));
+		UVerticalBox* InfoColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+		InfoPanel->AddChild(InfoColumn);
+		SessionInfoBox = InfoColumn;
+
+		// 三行小号键值对：模式 / 角色 / 网络地址与房间
+		const TCHAR* RowLabels[] = { TEXT("模式"), TEXT("角色"), TEXT("房间") };
+		for (int32 RowIndex = 0; RowIndex < UE_ARRAY_COUNT(RowLabels); ++RowIndex)
+		{
+			UTextBlock* Label = MakeText(RowLabels[RowIndex], 10, TextMuted, true, 200);
+			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+			UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label);
+			LabelSlot->SetVerticalAlignment(VAlign_Center);
+			LabelSlot->SetPadding(FMargin(0.0f, 0.0f, 16.0f, 0.0f));
+
+			UTextBlock* Value = MakeText(TEXT("--"), 11, TextPrimary, false, 80);
+			Value->SetAutoWrapText(true);
+			UHorizontalBoxSlot* ValueSlot = Row->AddChildToHorizontalBox(Value);
+			ValueSlot->SetVerticalAlignment(VAlign_Center);
+			ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+
+			UVerticalBoxSlot* RowSlot = InfoColumn->AddChildToVerticalBox(Row);
+			RowSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, RowIndex < 2 ? 4.0f : 0.0f));
+			SessionInfoRows.Add(FWeaponLobbySessionInfoRow{ Label, Value });
+		}
+
+		UVerticalBoxSlot* InfoSlot = ShellColumn->AddChildToVerticalBox(InfoPanel);
+		InfoSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 16.0f));
 	}
 
 	// ---- 内容区：两页切换 ----
@@ -1156,6 +1215,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 {
 	using namespace WeaponLobbyStyle;
 
+	RefreshSessionInfo();
+
 	const UWorld* World = GetWorld();
 	const AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
 
@@ -1338,6 +1399,68 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 			break;
 		}
 	}
+}
+
+void UWeaponLobbyWidget::RefreshSessionInfo()
+{
+	using namespace WeaponLobbyStyle;
+
+	// 模式：中心控制面已认证且本局 MatchId 已建立 → Central Server。
+	// Direct/Relay 是客户端候选连通结果，不是新建 Host 的启动前置条件。
+	const UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	const bool bCentralMode = Central && Central->IsCentralMatchReady();
+
+	if (DockModeText)
+	{
+		DockModeText->SetText(FText::FromString(bCentralMode ? TEXT("CENTRAL SERVER") : TEXT("LOCAL P2P")));
+		DockModeText->SetColorAndOpacity(FSlateColor(bCentralMode ? Amber : TextMuted));
+	}
+
+	if (SessionInfoRows.Num() < 3)
+	{
+		return;
+	}
+
+	const bool bIsHost = IsLocalHost();
+	const UWorld* World = GetWorld();
+
+	// 模式
+	SessionInfoRows[0].Value->SetText(FText::FromString(bCentralMode ? TEXT("Central Server") : TEXT("Local P2P")));
+	SessionInfoRows[0].Value->SetColorAndOpacity(FSlateColor(bCentralMode ? Amber : TextPrimary));
+
+	// 角色：房主显示端口，队员显示服务器地址。
+	FString RoleText = bIsHost ? TEXT("Host（房主）") : TEXT("Client（队员）");
+	if (bIsHost && World)
+	{
+		RoleText += FString::Printf(TEXT(" · 端口 %d"), World->URL.Port);
+	}
+	else if (World)
+	{
+		RoleText += FString::Printf(TEXT(" · %s"), World->URL.Host.IsEmpty() ? TEXT("本机") : *World->URL.Host);
+	}
+	SessionInfoRows[1].Value->SetText(FText::FromString(RoleText));
+	SessionInfoRows[1].Value->SetColorAndOpacity(FSlateColor(bIsHost ? Amber : TextPrimary));
+
+	// 房间号：Central 模式显示 MatchId；Local P2P 显示本地地址。
+	FString RoomText;
+	if (bCentralMode && Central)
+	{
+		const FString& MatchId = Central->GetCentralMatchIdString();
+		RoomText = MatchId.IsEmpty() ? TEXT("匹配中…") : MatchId;
+	}
+	else if (World)
+	{
+		// 房主的 URL.Host 为空，用"本机"占位避免出现 "LAN · :7777"。
+		const FString& HostText = World->URL.Host.IsEmpty() ? TEXT("本机") : World->URL.Host;
+		RoomText = FString::Printf(TEXT("LAN · %s:%d"), *HostText, World->URL.Port);
+	}
+	else
+	{
+		RoomText = TEXT("--");
+	}
+	SessionInfoRows[2].Value->SetText(FText::FromString(RoomText));
+	SessionInfoRows[2].Value->SetColorAndOpacity(FSlateColor(TextSecondary));
 }
 
 bool UWeaponLobbyWidget::IsLocalHost() const

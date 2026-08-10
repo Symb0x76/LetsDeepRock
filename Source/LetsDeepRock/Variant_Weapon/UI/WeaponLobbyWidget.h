@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Online/WeaponCentralConnectivityTypes.h"
 #include "WeaponGameState.h"
 #include "WeaponPlayerState.h"
 #include "WeaponLobbyWidget.generated.h"
@@ -16,6 +17,7 @@ class UPanelWidget;
 class UTextBlock;
 class UVerticalBox;
 class UWidgetSwitcher;
+class UWeaponCentralConnectivitySubsystem;
 
 /** 房间 UI 的两种呈现形态：常驻小窗 / 全屏面板。 */
 UENUM()
@@ -51,6 +53,19 @@ enum class EWeaponLobbyPrimaryAction : uint8
 
 	/** 房主已准备且其他人全部就绪 —— "开始游戏" */
 	StartGame,
+};
+
+/** 联机信息行：标签 + 值文本，行内容由 RefreshSessionInfo 填充。 */
+USTRUCT()
+struct FWeaponLobbySessionInfoRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> Label = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> Value = nullptr;
 };
 
 /** 一行队伍名单所需要刷新的控件引用集合。 */
@@ -237,8 +252,15 @@ private:
 	UFUNCTION()
 	void HandleMatchPhaseChanged(EWeaponMatchPhase NewPhase);
 
+	/** 中心控制面状态变化（握手进度 / Direct/Relay 建立）后刷新联机信息行。 */
+	UFUNCTION()
+	void HandleCentralConnectivityChanged(EWeaponCentralConnectivityState NewState, FString Message);
+
 	/** 接管对本地 PlayerState 网络事件的监听（重复创建/重建时先解绑旧的）。 */
 	void BindLobbyEvents();
+
+	/** 刷新联机信息行（模式 / 角色 / 房间号 / 端口，读 Central 与 World URL）。 */
+	void RefreshSessionInfo();
 
 	/** 切换分页 */
 	void SetActivePage(EWeaponLobbyPage NewPage);
@@ -272,6 +294,18 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UTextBlock> HeaderPhaseText = nullptr;
+
+	/** 小窗上的联机模式标签（LOCAL P2P / CENTRAL） */
+	UPROPERTY()
+	TObjectPtr<UTextBlock> DockModeText = nullptr;
+
+	/** 全屏面板顶栏下方的联机信息行（模式 / 角色 / 房间号 / 端口） */
+	UPROPERTY()
+	TObjectPtr<UVerticalBox> SessionInfoBox = nullptr;
+
+	/** 联机信息键值对（标签与值文本），行内容由 RefreshSessionInfo 填充 */
+	UPROPERTY()
+	TArray<FWeaponLobbySessionInfoRow> SessionInfoRows;
 
 	UPROPERTY()
 	TArray<FWeaponLobbyRosterRow> RosterRows;

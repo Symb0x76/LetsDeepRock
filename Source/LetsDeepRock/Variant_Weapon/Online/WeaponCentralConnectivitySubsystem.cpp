@@ -176,8 +176,10 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 	{
 		if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 201)
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("CreateMatch failed (HTTP %d)"),
-				Resp.IsValid() ? Resp->GetResponseCode() : 0);
+			const int32 StatusCode = Resp.IsValid() ? Resp->GetResponseCode() : 0;
+			const FString ResponseBody = Resp.IsValid() ? Resp->GetContentAsString() : FString();
+			FailMatchAction(FString::Printf(
+				TEXT("Create Match failed (HTTP %d): %s"), StatusCode, *ResponseBody));
 			return;
 		}
 
@@ -185,7 +187,7 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
 		if (!FJsonSerializer::Deserialize(Reader, Json))
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("CreateMatch response parse failed"));
+			FailMatchAction(TEXT("Create Match response parse failed"));
 			return;
 		}
 
@@ -195,6 +197,15 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 		HandleMatchCreated(CreatedMatchId, RawMatchId, JoinCode);
 	});
 	Request->ProcessRequest();
+}
+
+void UWeaponCentralConnectivitySubsystem::FailMatchAction(const FString& Message)
+{
+	PendingMatchAction = EPendingMatchAction::None;
+	PendingJoinCode.Reset();
+	ConnectivityState = EWeaponCentralConnectivityState::Failed;
+	UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Central Match action failed: %s"), *Message);
+	OnConnectivityChanged.Broadcast(ConnectivityState, Message);
 }
 
 void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& JoinCode)
@@ -244,9 +255,22 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 
 void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode)
 {
-	if (!InMatchId.IsValid())
+	if (!InMatchId.IsValid() || RawMatchId.IsEmpty())
 	{
-		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("CreateMatch returned invalid MatchId"));
+		FailMatchAction(TEXT("Create Match returned an invalid MatchId"));
+		return;
+	}
+
+	if (!SnapshotCoordinator.IsValid())
+	{
+		FailMatchAction(TEXT("Snapshot Coordinator is unavailable"));
+		return;
+	}
+
+	FString AdoptError;
+	if (!SnapshotCoordinator->AdoptActiveMatchId(InMatchId, AdoptError))
+	{
+		FailMatchAction(FString::Printf(TEXT("Cannot adopt central MatchId: %s"), *AdoptError));
 		return;
 	}
 
@@ -258,6 +282,11 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatc
 	// MatchId 建立 → 重放暂存事件 + 打开事件通道
 	ReplayStashedEvents();
 	OpenEventChannel();
+
+	// 创建 Host 的 UI 只需要控制面认证 + MatchId。Lease / 首个 Checkpoint
+	// 必须进入玩法世界后才能继续收敛，不能反向阻塞 Host 创建。
+	ConnectivityState = EWeaponCentralConnectivityState::Connected;
+	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Central Match ready"));
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role)
