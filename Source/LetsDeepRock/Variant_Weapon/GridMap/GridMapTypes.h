@@ -96,7 +96,89 @@ struct FGridMapConfig
 	int32 LargeTreeHealth = 300;
 };
 
-inline constexpr int32 GridMapRecoveryStateVersion = 1;
+inline constexpr int32 GridMapRecoveryStateVersion = 2;
+
+UENUM()
+enum class EGridMapRoomPurpose : uint8
+{
+	Spawn,
+	Connector,
+	Combat,
+	Objective,
+	Branch
+};
+
+USTRUCT()
+struct FGridMapRecipeRoom
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	FSoftObjectPath TemplatePath;
+
+	UPROPERTY(SaveGame)
+	int32 TemplateVersion = 0;
+
+	UPROPERTY(SaveGame)
+	uint64 TemplateContentHash = 0;
+
+	UPROPERTY(SaveGame)
+	FIntPoint Origin = FIntPoint::ZeroValue;
+
+	UPROPERTY(SaveGame)
+	FIntPoint Size = FIntPoint::ZeroValue;
+
+	UPROPERTY(SaveGame)
+	EGridMapRoomPurpose Purpose = EGridMapRoomPurpose::Connector;
+};
+
+USTRUCT()
+struct FGridMapRecipeConnection
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	int32 FromRoom = INDEX_NONE;
+
+	UPROPERTY(SaveGame)
+	int32 ToRoom = INDEX_NONE;
+
+	UPROPERTY(SaveGame)
+	int32 CorridorWidth = 1;
+
+	/** 已含起终出口的确定性折线。 */
+	UPROPERTY(SaveGame)
+	TArray<FIntPoint> Points;
+};
+
+USTRUCT()
+struct FGridMapRecipeMarker
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	uint8 Type = 0;
+
+	UPROPERTY(SaveGame)
+	FIntPoint GridCoord = FIntPoint::ZeroValue;
+};
+
+USTRUCT()
+struct FGridMapGenerationRecipe
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	TArray<FGridMapRecipeRoom> Rooms;
+
+	UPROPERTY(SaveGame)
+	TArray<FGridMapRecipeConnection> Connections;
+
+	UPROPERTY(SaveGame)
+	TArray<FGridMapRecipeMarker> Markers;
+
+	bool IsEmpty() const { return Rooms.IsEmpty(); }
+};
 
 /** SaveGame 中单格相对 deterministic baseline 的最新状态。 */
 USTRUCT()
@@ -136,7 +218,7 @@ struct FGridMapRecoveryState
 	int32 SchemaVersion = GridMapRecoveryStateVersion;
 
 	UPROPERTY(SaveGame)
-	int32 BaselineSchemaVersion = 1;
+	int32 BaselineSchemaVersion = 2;
 
 	UPROPERTY(SaveGame)
 	int32 GenerationVersion = 0;
@@ -149,6 +231,18 @@ struct FGridMapRecoveryState
 
 	UPROPERTY(SaveGame)
 	int32 EffectiveSeed = 0;
+
+	UPROPERTY(SaveGame)
+	int32 AlgorithmVersion = 0;
+
+	UPROPERTY(SaveGame)
+	int32 TemplateSetVersion = 0;
+
+	UPROPERTY(SaveGame)
+	FGridMapGenerationRecipe Recipe;
+
+	UPROPERTY(SaveGame)
+	uint64 ResultHash = 0;
 
 	UPROPERTY(SaveGame)
 	bool bGenerated = false;
@@ -167,7 +261,7 @@ struct FGridMapBaselineState
 	GENERATED_BODY()
 
 	UPROPERTY()
-	int32 SchemaVersion = 1;
+	int32 SchemaVersion = 2;
 
 	UPROPERTY()
 	int32 GenerationVersion = 0;
@@ -181,6 +275,18 @@ struct FGridMapBaselineState
 	/** 服务器实际使用的随机种子；客户端不得自行生成。 */
 	UPROPERTY()
 	int32 EffectiveSeed = 0;
+
+	UPROPERTY()
+	int32 AlgorithmVersion = 0;
+
+	UPROPERTY()
+	int32 TemplateSetVersion = 0;
+
+	UPROPERTY()
+	FGridMapGenerationRecipe Recipe;
+
+	UPROPERTY()
+	uint64 ResultHash = 0;
 
 	UPROPERTY()
 	bool bGenerated = false;

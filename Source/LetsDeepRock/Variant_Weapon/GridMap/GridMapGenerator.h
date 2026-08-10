@@ -22,6 +22,20 @@ class LETSDEEPROCK_API UGridMapGenerator : public UObject
 	GENERATED_BODY()
 
 public:
+	/** Manager 统一提供的服务器有效种子；生成器不得自行换种子。 */
+	void SetEffectiveSeed(int32 InSeed) { EffectiveSeed = InSeed; }
+	int32 GetEffectiveSeed() const { return EffectiveSeed; }
+
+	virtual bool GenerateChecked(UGridMapData* MapData);
+	virtual int32 GetAlgorithmVersion() const { return 0; }
+	virtual int32 GetTemplateSetVersion() const { return 0; }
+	virtual void SetReplayRecipe(const FGridMapGenerationRecipe& InRecipe) { ReplayRecipe = InRecipe; }
+	virtual const FGridMapGenerationRecipe& GetGeneratedRecipe() const { return GeneratedRecipe; }
+	const FString& GetLastError() const { return LastError; }
+
+	static uint64 ComputeStableResultHash(const UGridMapData& MapData, int32 Seed,
+		int32 AlgorithmVersion, int32 TemplateSetVersion, const FGridMapGenerationRecipe& Recipe);
+
 	/**
 	 * 执行地图生成，填充 MapData 中的格子数据。
 	 * 子类必须重写此函数实现具体生成算法。
@@ -30,6 +44,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable)
 	virtual void Generate(UGridMapData* MapData);
+
+protected:
+	void WriteTile(UGridMapData* MapData, int32 X, int32 Y, EGridTileType Type) const;
+	int32 EffectiveSeed = 1;
+	FGridMapGenerationRecipe ReplayRecipe;
+	FGridMapGenerationRecipe GeneratedRecipe;
+	FString LastError;
 };
 
 /**
@@ -67,8 +88,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float LargeTreeDensity = 0.01f;
 
-	// 随机种子（0 为完全随机）
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	/** 旧资产迁移字段；仅服务器 Manager 在 RequestedSeed=0 时读取，生成器自身不使用。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DeprecatedProperty, DeprecationMessage = "请改用 GridMapManager.RequestedSeed"))
 	int32 Seed = 0;
 
 	virtual void Generate(UGridMapData* MapData) override;

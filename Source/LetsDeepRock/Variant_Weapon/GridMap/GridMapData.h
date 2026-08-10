@@ -7,9 +7,7 @@
 #include "GridMapData.generated.h"
 
 class AGridMapManager;
-class UGridMapGenerator_Default;
-class UGridMapGenerator_Simple;
-class UGridMapGenerator_Test;
+class UGridMapGenerator;
 
 /**
  * UGridMapData
@@ -51,9 +49,7 @@ public:
 
 private:
 	friend class AGridMapManager;
-	friend class UGridMapGenerator_Default;
-	friend class UGridMapGenerator_Simple;
-	friend class UGridMapGenerator_Test;
+	friend class UGridMapGenerator;
 
 	/** 运行时仅允许 Manager 写入；生成阶段仅允许已登记的生成器写入。 */
 	FGridTileData* GetTileMutable(int32 X, int32 Y);
