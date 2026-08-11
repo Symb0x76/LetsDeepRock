@@ -173,10 +173,10 @@ private:
 	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8443");
+	FString CoordinatorBaseUrl = TEXT("http://deeprock.symb0x76.top");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString StunServerUrl = TEXT("stun:symb0x76.top:3478");
+	FString StunServerUrl = TEXT("stun:stun.symb0x76.top");
 
 	/** Optional public DNS/IP for the listen Host. Blank falls back to the local interface address (LAN only). */
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
