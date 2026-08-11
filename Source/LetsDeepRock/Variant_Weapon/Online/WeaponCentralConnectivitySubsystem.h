@@ -82,6 +82,12 @@ public:
 	/** 是否已缓存有效的 relay 凭证。 */
 	bool HasRelayCredentials() const { return RelayCredentialsCached.IsValid(); }
 
+	/** 客户端已决定走 relay 回退(仅客户端有意义;Host 始终有凭证即走 relay)。 */
+	bool ShouldUseRelayFallback() const { return bRelayFallbackRequested; }
+
+	/** 每帧推进 relay NetDriver 的 TURN 事务(重传/超时)。 */
+	void TickRelayNetDriver();
+
 	/** Host: 创建 Match(中心分配 MatchId + JoinCode)。 */
 	bool CreateCentralMatch(FString& OutError);
 
@@ -125,6 +131,9 @@ private:
 	void ClaimHostLease();
 	void SendLeaseHeartbeat();
 	void PublishHostEndpoint();
+	void UploadHostCandidate(const FString& CandidateType, const FString& Address, int32 Port, uint32 Priority, const FString& Foundation);
+	void QueryStunReflexiveAddress(FString& OutAddress, int32& OutPort);
+	void PublishRelayedHostCandidate();
 	void NominateHostEndpoint(const FString& Address, int32 Port);
 	bool ResolveHostEndpoint(FString& OutAddress, int32& OutPort, FString& OutError) const;
 
@@ -155,6 +164,7 @@ private:
 	void HandleEventDispatch(const TSharedPtr<FJsonObject>& Json, const FString& EventType, const FGuid& EventMatchId, uint64 EventEpoch);
 	void HandleLeaseGranted(const FWeaponCentralHostLease& Lease);
 	void HandleHostEndpointNominated(const FWeaponCentralEndpointCandidate& Endpoint);
+	static int32 RankDirectCandidate(const FWeaponCentralEndpointCandidate& Candidate);
 	void HandleCheckpointCommitted(const FGuid& InMatchId, uint64 Epoch, int64 Revision);
 	void ScheduleReconnect();
 	void HandleReconnectTimeout();
@@ -173,10 +183,10 @@ private:
 	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString CoordinatorBaseUrl = TEXT("http://deeprock.symb0x76.top");
+	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8443");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString StunServerUrl = TEXT("stun:stun.symb0x76.top");
+	FString StunServerUrl = TEXT("stun:symb0x76.top:3478");
 
 	/** Optional public DNS/IP for the listen Host. Blank falls back to the local interface address (LAN only). */
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
@@ -218,6 +228,7 @@ private:
 	FTimerHandle LeaseHeartbeatTimerHandle;
 	FTimerHandle HostEndpointPollTimerHandle;
 	FTimerHandle HostEndpointWaitTimerHandle;
+	FTimerHandle RelayTickTimerHandle;
 	int32 ReconnectAttempt = 0;
 	double ReconnectDeadlineSeconds = 0.0;
 
@@ -271,6 +282,8 @@ private:
 	bool bCentralControlReady = false;
 	bool bCentralLeaseReady = false;
 	bool bCentralCheckpointReady = false;
+	// 客户端已选定 relay 候选并准备经 TURN 连接(仅客户端有意义)
+	bool bRelayFallbackRequested = false;
 
 	TWeakObjectPtr<UWeaponHostMigrationSubsystem> HostMigration;
 	TWeakObjectPtr<UWeaponSessionSubsystem> SessionSubsystem;

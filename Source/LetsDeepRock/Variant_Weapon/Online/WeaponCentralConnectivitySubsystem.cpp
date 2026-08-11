@@ -3,10 +3,12 @@
 #include "WeaponCentralConnectivitySubsystem.h"
 
 #include "WeaponCentralDeviceCrypto.h"
+#include "WeaponCentralConnectivitySubsystem.h"
 #include "WeaponHostMigrationSubsystem.h"
 #include "WeaponRelayNetDriver.h"
 #include "WeaponSessionSubsystem.h"
 #include "WeaponSnapshotCoordinator.h"
+#include "WeaponStunClient.h"
 
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
@@ -66,6 +68,7 @@ void UWeaponCentralConnectivitySubsystem::Deinitialize()
 		GI->GetTimerManager().ClearTimer(LeaseHeartbeatTimerHandle);
 		GI->GetTimerManager().ClearTimer(HostEndpointPollTimerHandle);
 		GI->GetTimerManager().ClearTimer(HostEndpointWaitTimerHandle);
+		GI->GetTimerManager().ClearTimer(RelayTickTimerHandle);
 	}
 	ResetEventSocket();
 	ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
@@ -397,6 +400,15 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(
 	ReplayStashedEvents();
 	OpenEventChannel();
 
+	// Host 也预取 relay 凭证:自己的 TURN 分配(relayed 候选)与后续
+	// 迁移都依赖它。失败不阻塞,relay 只是附加能力。
+	// (凭证到达后由 RequestRelayCredentials 回调内配置 Host NetDriver)
+	FString RelayError;
+	if (IsCentralMatchReady())
+	{
+		RequestRelayCredentials(RelayError);
+	}
+
 	// 创建 Host 的 UI 只需要控制面认证 + MatchId。Lease / 首个 Checkpoint
 	// 必须进入玩法世界后才能继续收敛，不能反向阻塞 Host 创建。
 	ConnectivityState = EWeaponCentralConnectivityState::Connected;
@@ -446,6 +458,14 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(
 	// MatchId 建立 → 重放暂存事件 + 打开事件通道
 	ReplayStashedEvents();
 	OpenEventChannel();
+
+	// 预取 relay 凭证:direct 不可达时 ConfigureRelayNetDriver 立即可用。
+	// 失败不阻塞加入流程,relay 只是 fallback。
+	FString RelayError;
+	if (IsCentralMatchReady())
+	{
+		RequestRelayCredentials(RelayError);
+	}
 
 	ConnectivityState = EWeaponCentralConnectivityState::Connected;
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Central Match joined; waiting for host endpoint"));
@@ -674,6 +694,103 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 		return;
 	}
 
+	// 有 relay 凭证时,Host 的 Listen socket 已走 TURN(仅经 TURN 可达),
+	// 只发布 relayed 候选;否则发布 direct 候选(内网 + STUN 反射)。
+	if (HasRelayCredentials())
+	{
+		PublishRelayedHostCandidate();
+		return;
+	}
+
+	// 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
+	UploadHostCandidate(TEXT("Host"), Address, Port, 100, TEXT("listen"));
+
+	// STUN 反射候选:本机在公网的地址。UDP 直连不经过 libcurl/代理,
+	// 拿到的是真实出口(而非代理出口)。失败不阻塞,继续用内网候选。
+	FString ReflexiveAddress;
+	int32 ReflexivePort = 0;
+	QueryStunReflexiveAddress(ReflexiveAddress, ReflexivePort);
+	if (!ReflexiveAddress.IsEmpty() && ReflexivePort > 0)
+	{
+		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, ReflexivePort, 90, TEXT("stun"));
+		UE_LOG(LogWeaponCentralConnectivity, Log,
+			TEXT("Published server-reflexive candidate %s:%d"), *ReflexiveAddress, ReflexivePort);
+	}
+
+	// 向中心提名最高优先级的 direct endpoint(Host 候选;STUN 反射候选
+	// 仅是附加,不改变既有 HostEndpointPublished 事件语义)。
+	NominateHostEndpoint(Address, Port);
+}
+
+void UWeaponCentralConnectivitySubsystem::PublishRelayedHostCandidate()
+{
+	UWorld* World = GetWorld();
+	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
+	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
+	if (!RelayDriver)
+	{
+		return;
+	}
+
+	const FString RelayedAddr = RelayDriver->GetRelayedAddressString();
+	if (RelayedAddr.IsEmpty())
+	{
+		return;
+	}
+
+	FString RelayedHost;
+	int32 RelayedPort = 0;
+	const int32 Colon = RelayedAddr.Find(TEXT(":"));
+	if (Colon == INDEX_NONE)
+	{
+		RelayedHost = RelayedAddr;
+	}
+	else
+	{
+		RelayedHost = RelayedAddr.Left(Colon);
+		RelayedPort = FCString::Atoi(*RelayedAddr.RightChop(Colon + 1));
+	}
+	if (RelayedHost.IsEmpty() || RelayedPort <= 0)
+	{
+		return;
+	}
+
+	FWeaponCentralEndpointCandidate Candidate;
+	Candidate.MatchId = CentralMatchIdString;
+	Candidate.AuthorityEpoch = AuthorityEpoch;
+	Candidate.RosterRevision = RosterRevision;
+	Candidate.PeerId = ExpectedHostPeerId;
+	Candidate.CandidateId = PublishedCandidateId + TEXT("-Relay");
+	Candidate.Transport = TEXT("Relay");
+	Candidate.CandidateType = TEXT("Relayed");
+	Candidate.Address = RelayedHost;
+	Candidate.Port = RelayedPort;
+	Candidate.Priority = 80;
+	Candidate.Foundation = TEXT("relay");
+
+	FString Error;
+	if (!UploadCandidate(Candidate, Error))
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("Cannot upload relayed candidate %s: %s"), *RelayedAddr, *Error);
+		return;
+	}
+	UE_LOG(LogWeaponCentralConnectivity, Log,
+		TEXT("Published relayed candidate %s"), *RelayedAddr);
+}
+
+void UWeaponCentralConnectivitySubsystem::UploadHostCandidate(
+	const FString& CandidateType,
+	const FString& Address,
+	const int32 Port,
+	const uint32 Priority,
+	const FString& Foundation)
+{
+	if (CandidateType.IsEmpty() || Address.IsEmpty() || Port <= 0 || Port > 65535)
+	{
+		return;
+	}
+
 	if (PublishedCandidateId.IsEmpty())
 	{
 		PublishedCandidateId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
@@ -683,20 +800,48 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 	Candidate.AuthorityEpoch = AuthorityEpoch;
 	Candidate.RosterRevision = RosterRevision;
 	Candidate.PeerId = ExpectedHostPeerId;
-	Candidate.CandidateId = PublishedCandidateId;
+	// 每类候选独立 ID:Go 端 ON CONFLICT (match_id, peer_id, candidate_id)
+	// 覆盖更新,共用 ID 会导致后上传的候选覆盖先上传的。
+	Candidate.CandidateId = PublishedCandidateId + TEXT("-") + CandidateType;
 	Candidate.Transport = TEXT("UDP");
-	Candidate.CandidateType = TEXT("Host");
+	Candidate.CandidateType = CandidateType;
 	Candidate.Address = Address;
 	Candidate.Port = Port;
-	Candidate.Priority = 100;
-	Candidate.Foundation = TEXT("listen");
+	Candidate.Priority = Priority;
+	Candidate.Foundation = Foundation;
+
+	FString Error;
 	if (!UploadCandidate(Candidate, Error))
 	{
-		FailMatchAction(FString::Printf(TEXT("Cannot upload Host endpoint: %s"), *Error));
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("Cannot upload %s candidate %s:%d: %s"), *CandidateType, *Address, Port, *Error);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::QueryStunReflexiveAddress(FString& OutAddress, int32& OutPort)
+{
+	OutAddress.Reset();
+	OutPort = 0;
+
+	if (StunServerUrl.IsEmpty())
+	{
 		return;
 	}
 
-	NominateHostEndpoint(Address, Port);
+	FString Host;
+	int32 ServerPort = 0;
+	if (!FWeaponStunClient::ParseServerUrl(StunServerUrl, Host, ServerPort))
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Invalid StunServerUrl '%s'"), *StunServerUrl);
+		return;
+	}
+
+	FWeaponStunClient Client;
+	if (!Client.QueryReflexiveAddress(Host, ServerPort, OutAddress, OutPort))
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("STUN reflexive lookup failed via %s; continuing with LAN-only candidate"), *StunServerUrl);
+	}
 }
 
 void UWeaponCentralConnectivitySubsystem::NominateHostEndpoint(
@@ -807,6 +952,7 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 			}
 
 			FWeaponCentralEndpointCandidate Best;
+			FWeaponCentralEndpointCandidate BestRelay;
 			for (const TSharedPtr<FJsonValue>& Value : *Candidates)
 			{
 				const TSharedPtr<FJsonObject> CandidateJson = Value.IsValid() ? Value->AsObject() : nullptr;
@@ -824,13 +970,34 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 				Candidate.Priority = static_cast<uint32>(CandidateJson->GetNumberField(TEXT("priority")));
 
 				if ((!ExpectedHostPeerId.IsEmpty() && Candidate.PeerId != ExpectedHostPeerId) ||
-					Candidate.AuthorityEpoch < AuthorityEpoch || Candidate.Transport != TEXT("UDP") ||
+					Candidate.AuthorityEpoch < AuthorityEpoch ||
 					Candidate.Address.IsEmpty() || Candidate.Port <= 0 || Candidate.Port > 65535)
 				{
 					continue;
 				}
+
+				if (Candidate.Transport == TEXT("Relay"))
+				{
+					// 记录 relay 候选:direct 不可用时的 fallback
+					if (BestRelay.Address.IsEmpty() || Candidate.Priority > BestRelay.Priority)
+					{
+						BestRelay = MoveTemp(Candidate);
+					}
+					continue;
+				}
+
+				if (Candidate.Transport != TEXT("UDP"))
+				{
+					continue;
+				}
+
+				// 同 Epoch 下 ServerReflexive(公网)优先于内网 Host 候选。
+				const int32 BestRank = RankDirectCandidate(Best);
+				const int32 CandidateRank = RankDirectCandidate(Candidate);
 				if (Best.Address.IsEmpty() || Candidate.AuthorityEpoch > Best.AuthorityEpoch ||
-					(Candidate.AuthorityEpoch == Best.AuthorityEpoch && Candidate.Priority > Best.Priority))
+					(Candidate.AuthorityEpoch == Best.AuthorityEpoch &&
+					 (CandidateRank > BestRank ||
+					  (CandidateRank == BestRank && Candidate.Priority > Best.Priority))))
 				{
 					Best = MoveTemp(Candidate);
 				}
@@ -840,6 +1007,18 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 			{
 				AuthorityEpoch = FMath::Max(AuthorityEpoch, Best.AuthorityEpoch);
 				HandleHostEndpointNominated(Best);
+				return;
+			}
+
+			// 无 direct 候选 → relay 回退(需已缓存 TURN 凭证,由 RelayNetDriver 拉取)
+			if (!BestRelay.Address.IsEmpty() && HasRelayCredentials())
+			{
+				AuthorityEpoch = FMath::Max(AuthorityEpoch, BestRelay.AuthorityEpoch);
+				bRelayFallbackRequested = true;
+				UE_LOG(LogWeaponCentralConnectivity, Log,
+					TEXT("No direct candidate; falling back to relay %s:%d"),
+					*BestRelay.Address, BestRelay.Port);
+				HandleHostEndpointNominated(BestRelay);
 				return;
 			}
 			ScheduleHostCandidatePoll();
@@ -976,6 +1155,25 @@ bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutEr
 			RelayCredentialsCached->Username = Json->GetStringField(TEXT("username"));
 			RelayCredentialsCached->Password = Json->GetStringField(TEXT("password"));
 			RelayCredentialsCached->RelayAddr = Json->GetStringField(TEXT("relayAddr"));
+
+			// Host:凭证到达后立即配置 Listen NetDriver 走 TURN,
+			// 这样后续 PublishHostEndpoint 才能拿到 relayed 地址。
+			if (CurrentMatchRole == TEXT("Host"))
+			{
+				FString ConfigureError;
+				ConfigureRelayNetDriver(ConfigureError);
+			}
+
+			// 凭证就绪后启动 relay 事务推进(每帧 Tick),驱动 TURN Allocate 完成。
+			if (UGameInstance* GI = GetGameInstance())
+			{
+				GI->GetTimerManager().SetTimer(
+					RelayTickTimerHandle,
+					this,
+					&UWeaponCentralConnectivitySubsystem::TickRelayNetDriver,
+					0.05f,
+					true);
+			}
 
 			UE_LOG(LogWeaponCentralConnectivity, Log,
 				TEXT("Relay credentials obtained for match %s (TURN %s)"),
@@ -1588,7 +1786,14 @@ void UWeaponCentralConnectivitySubsystem::HandleEventDispatch(
 			Endpoint.Address = (*Payload)->GetStringField(TEXT("address"));
 			Endpoint.Port = (*Payload)->GetIntegerField(TEXT("port"));
 		}
-		HandleHostEndpointNominated(Endpoint);
+
+		// 不直接 travel:事件只携带 Host 提名的单一地址(可能是内网地址)。
+		// 重新拉候选列表,由 RequestHostCandidates 按可达性(ServerReflexive
+		// > Host)挑选,避免远程玩家被带往不可达的内网地址。
+		if (bWaitingForHostEndpoint)
+		{
+			RequestHostCandidates();
+		}
 	}
 	else if (EventType == TEXT("CandidateUpdated"))
 	{
@@ -1663,6 +1868,16 @@ bool UWeaponCentralConnectivitySubsystem::ValidateEventFence(const FGuid& EventM
 	return true;
 }
 
+void UWeaponCentralConnectivitySubsystem::TickRelayNetDriver()
+{
+	UWorld* World = GetWorld();
+	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
+	if (UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver))
+	{
+		RelayDriver->TickRelay();
+	}
+}
+
 void UWeaponCentralConnectivitySubsystem::HandleLeaseGranted(const FWeaponCentralHostLease& Lease)
 {
 	// Lease 已通过 fencing;置第二门锁并报告事实
@@ -1697,6 +1912,20 @@ void UWeaponCentralConnectivitySubsystem::HandleHostEndpointNominated(const FWea
 	StopHostEndpointWait();
 	ConnectivityState = EWeaponCentralConnectivityState::DirectConnected;
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Direct endpoint connected"));
+}
+
+int32 UWeaponCentralConnectivitySubsystem::RankDirectCandidate(const FWeaponCentralEndpointCandidate& Candidate)
+{
+	// 公网可达性排序:ServerReflexive > Host(内网/手动)。Relay 走单独路径。
+	if (Candidate.CandidateType == TEXT("ServerReflexive"))
+	{
+		return 2;
+	}
+	if (Candidate.CandidateType == TEXT("Host"))
+	{
+		return 1;
+	}
+	return 0;
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleCheckpointCommitted(const FGuid& InMatchId, uint64 Epoch, int64 Revision)
