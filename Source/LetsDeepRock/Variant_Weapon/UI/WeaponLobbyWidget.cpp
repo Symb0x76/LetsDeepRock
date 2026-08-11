@@ -29,8 +29,8 @@
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateTypes.h"
-#include "WeaponGameState.h"
-#include "WeaponPlayerState.h"
+#include "Online/WeaponCentralConnectivitySubsystem.h"
+#include "WeaponGameMode.h"
 
 namespace WeaponLobbyStyle
 {
@@ -136,6 +136,7 @@ void UWeaponLobbyWidget::NativeOnInitialized()
 	// Esc 收起依赖键盘焦点，全屏面板展开时才请求焦点。
 	SetIsFocusable(true);
 
+	BindLobbyEvents();
 	CollapseLobby();
 	RefreshLobbyState();
 }
@@ -144,14 +145,74 @@ void UWeaponLobbyWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
-	// 本次不接网络回调，用低频轮询保证人数 / 队友准备态能跟上复制。
-	// 接网后可以删掉这段，改由 RefreshLobbyState() 被复制回调直接驱动。
+	// 网络回调只覆盖 ready 与阶段变化；远程玩家中途加入/离开仍以低频轮询兜底，
+	// 保证小窗人数与名单能跟上 PlayerArray 的复制。
 	RefreshAccumulator += InDeltaTime;
 	if (RefreshAccumulator >= 0.25f)
 	{
 		RefreshAccumulator = 0.0f;
 		RefreshLobbyState();
 	}
+}
+
+void UWeaponLobbyWidget::BindLobbyEvents()
+{
+	// 每次进入关卡都会重新创建本控件，重复绑定的旧引用已被 GC 或指向旧世界，
+	// 先解绑再绑定，避免监听泄漏与重复刷新。
+	if (bEventsBound)
+	{
+		if (AWeaponGameState* OldGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr)
+		{
+			OldGameState->OnMatchPhaseChanged.RemoveDynamic(this, &UWeaponLobbyWidget::HandleMatchPhaseChanged);
+		}
+		if (AWeaponPlayerState* OldPlayerState = Cast<AWeaponPlayerState>(GetOwningPlayerState()))
+		{
+			OldPlayerState->OnLobbyStateChanged.RemoveDynamic(this, &UWeaponLobbyWidget::HandleLobbyStateChanged);
+		}
+		if (UWeaponCentralConnectivitySubsystem* OldCentral =
+			GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+		{
+			OldCentral->OnConnectivityChanged.RemoveDynamic(
+				this, &UWeaponLobbyWidget::HandleCentralConnectivityChanged);
+		}
+		bEventsBound = false;
+	}
+
+	if (AWeaponGameState* GameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr)
+	{
+		GameState->OnMatchPhaseChanged.AddDynamic(this, &UWeaponLobbyWidget::HandleMatchPhaseChanged);
+	}
+	if (AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(GetOwningPlayerState()))
+	{
+		PlayerState->OnLobbyStateChanged.AddDynamic(this, &UWeaponLobbyWidget::HandleLobbyStateChanged);
+	}
+	if (UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+	{
+		Central->OnConnectivityChanged.AddDynamic(this, &UWeaponLobbyWidget::HandleCentralConnectivityChanged);
+	}
+
+	bEventsBound = true;
+	RefreshLobbyState();
+}
+
+void UWeaponLobbyWidget::HandleCentralConnectivityChanged(
+	EWeaponCentralConnectivityState NewState,
+	FString Message)
+{
+	RefreshLobbyState();
+}
+
+void UWeaponLobbyWidget::HandleLobbyStateChanged(
+	FWeaponPlayerLobbyState OldState,
+	FWeaponPlayerLobbyState NewState)
+{
+	RefreshLobbyState();
+}
+
+void UWeaponLobbyWidget::HandleMatchPhaseChanged(EWeaponMatchPhase NewPhase)
+{
+	RefreshLobbyState();
 }
 
 FReply UWeaponLobbyWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
@@ -279,6 +340,14 @@ void UWeaponLobbyWidget::BuildCollapsedDock(UPanelWidget* RootCanvas)
 	{
 		UVerticalBoxSlot* StatusSlot = DockContent->AddChildToVerticalBox(StatusText);
 		StatusSlot->SetPadding(FMargin(0.0f, 1.0f, 0.0f, 10.0f));
+	}
+
+	// 联机模式标签：LOCAL P2P / CENTRAL SERVER，小窗里的最低一级信息
+	UTextBlock* ModeText = MakeText(TEXT("LOCAL P2P"), 9, TextMuted, true, 200);
+	DockModeText = ModeText;
+	{
+		UVerticalBoxSlot* ModeSlot = DockContent->AddChildToVerticalBox(ModeText);
+		ModeSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f));
 	}
 
 	// 展开按钮：整块可点，宽度撑满小窗
@@ -456,7 +525,39 @@ void UWeaponLobbyWidget::BuildExpandedShell(UPanelWidget* RootCanvas)
 	// 顶栏下的橙黄发丝线，把标题和内容切开
 	{
 		UVerticalBoxSlot* LineSlot = ShellColumn->AddChildToVerticalBox(MakeHairline(AmberDim, 2.0f));
-		LineSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 18.0f));
+		LineSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f));
+	}
+
+	// ---- 联机信息行：模式 / 角色 / 房间号 / 端口（房主多显示端口）----
+	{
+		UBorder* InfoPanel = MakePanel(PanelDeepColor, FMargin(16.0f, 10.0f));
+		UVerticalBox* InfoColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+		InfoPanel->AddChild(InfoColumn);
+		SessionInfoBox = InfoColumn;
+
+		// 三行小号键值对：模式 / 角色 / 网络地址与房间
+		const TCHAR* RowLabels[] = { TEXT("模式"), TEXT("角色"), TEXT("房间") };
+		for (int32 RowIndex = 0; RowIndex < UE_ARRAY_COUNT(RowLabels); ++RowIndex)
+		{
+			UTextBlock* Label = MakeText(RowLabels[RowIndex], 10, TextMuted, true, 200);
+			UHorizontalBox* Row = WidgetTree->ConstructWidget<UHorizontalBox>();
+			UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label);
+			LabelSlot->SetVerticalAlignment(VAlign_Center);
+			LabelSlot->SetPadding(FMargin(0.0f, 0.0f, 16.0f, 0.0f));
+
+			UTextBlock* Value = MakeText(TEXT("--"), 11, TextPrimary, false, 80);
+			Value->SetAutoWrapText(true);
+			UHorizontalBoxSlot* ValueSlot = Row->AddChildToHorizontalBox(Value);
+			ValueSlot->SetVerticalAlignment(VAlign_Center);
+			ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+
+			UVerticalBoxSlot* RowSlot = InfoColumn->AddChildToVerticalBox(Row);
+			RowSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, RowIndex < 2 ? 4.0f : 0.0f));
+			SessionInfoRows.Add(FWeaponLobbySessionInfoRow{ Label, Value });
+		}
+
+		UVerticalBoxSlot* InfoSlot = ShellColumn->AddChildToVerticalBox(InfoPanel);
+		InfoSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 16.0f));
 	}
 
 	// ---- 内容区：两页切换 ----
@@ -778,7 +879,7 @@ UWidget* UWeaponLobbyWidget::BuildRosterRow(int32 SlotIndex)
 		AvatarSize->SetHeightOverride(56.0f);
 		AvatarFrame->AddChild(AvatarSize);
 
-		UTextBlock* AvatarHint = MakeText(TEXT("头像"), 9, TextMuted, false, 120);
+		UTextBlock* AvatarHint = MakeText(TEXT("矿工"), 9, TextMuted, false, 120);
 		AvatarHint->SetJustification(ETextJustify::Center);
 		Row.AvatarHintText = AvatarHint;
 		AvatarSize->AddChild(AvatarHint);
@@ -788,11 +889,11 @@ UWidget* UWeaponLobbyWidget::BuildRosterRow(int32 SlotIndex)
 		AvatarSlot->SetPadding(FMargin(0.0f, 12.0f, 14.0f, 12.0f));
 	}
 
-	// 玩家名 + 信息占位
+	// 玩家名 + 信息占位（本次不显示真实玩家名，统一用"矿工 0N"占位标识）
 	{
 		UVerticalBox* InfoColumn = WidgetTree->ConstructWidget<UVerticalBox>();
 
-		UTextBlock* NameText = MakeText(TEXT("空席位"), 15, TextMuted, true, 40);
+		UTextBlock* NameText = MakeText(FString::Printf(TEXT("矿工 %02d"), SlotIndex + 1), 15, TextMuted, true, 40);
 		Row.PlayerNameText = NameText;
 		InfoColumn->AddChildToVerticalBox(NameText);
 
@@ -1115,6 +1216,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 {
 	using namespace WeaponLobbyStyle;
 
+	RefreshSessionInfo();
+
 	const UWorld* World = GetWorld();
 	const AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
 
@@ -1122,6 +1225,7 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	const int32 ConnectedCount = WeaponGameState ? WeaponGameState->GetConnectedPlayerCount() : 1;
 
 	const APlayerState* LocalPlayerState = GetOwningPlayerState();
+	const bool bLocalReady = IsLocalPlayerReady();
 
 	// ---- 小窗 ----
 	if (DockCountText)
@@ -1130,12 +1234,12 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	}
 	if (DockStatusText)
 	{
-		DockStatusText->SetText(FText::FromString(bLocalReadyPrototype ? TEXT("已准备") : TEXT("待命")));
-		DockStatusText->SetColorAndOpacity(FSlateColor(bLocalReadyPrototype ? Ready : Amber));
+		DockStatusText->SetText(FText::FromString(bLocalReady ? TEXT("已准备") : TEXT("待命")));
+		DockStatusText->SetColorAndOpacity(FSlateColor(bLocalReady ? Ready : Amber));
 	}
 	if (DockAccentBar)
 	{
-		DockAccentBar->SetBrushColor(bLocalReadyPrototype ? Ready : Amber);
+		DockAccentBar->SetBrushColor(bLocalReady ? Ready : Amber);
 	}
 
 	// ---- 顶栏 ----
@@ -1149,8 +1253,7 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 		HeaderPhaseText->SetText(FText::FromString(IsLocalHost() ? TEXT("房主 · 待命中") : TEXT("队员 · 待命中")));
 	}
 
-	// ---- 名单 ----
-	// PlayerArray 顺序即当前已连接玩家；本次原型不按 SlotIndex 排布，只顺序填充。
+	// ---- 名单：按服务端分配的 SlotIndex 排布（槽位 0..MaxPlayers-1 对应行）----
 	TArray<APlayerState*> Players;
 	if (WeaponGameState)
 	{
@@ -1182,24 +1285,24 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 			continue;
 		}
 
-		APlayerState* Player = Players.IsValidIndex(RowIndex) ? Players[RowIndex] : nullptr;
+		// 该槽位当前由谁占用：取 SlotIndex == RowIndex 的玩家。
+		APlayerState* Player = nullptr;
+		for (APlayerState* Candidate : Players)
+		{
+			const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(Candidate);
+			if (WeaponPS && WeaponPS->GetPlayerSlotIndex() == RowIndex)
+			{
+				Player = Candidate;
+				break;
+			}
+		}
 
 		const bool bOccupied = Player != nullptr;
 		const bool bIsLocal = bOccupied && Player == LocalPlayerState;
 
-		// 本地玩家用本地原型状态，其他人读复制值。
-		bool bIsReady = false;
-		if (bOccupied)
-		{
-			if (bIsLocal)
-			{
-				bIsReady = bLocalReadyPrototype;
-			}
-			else if (const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(Player))
-			{
-				bIsReady = WeaponPS->GetIsPlayerReady();
-			}
-		}
+		// 本地玩家与远程玩家统一读复制后的真实 ready 状态。
+		const bool bIsReady = bOccupied &&
+			(Player == LocalPlayerState ? bLocalReady : Cast<AWeaponPlayerState>(Player)->GetIsPlayerReady());
 
 		if (Row.RowBackground)
 		{
@@ -1218,22 +1321,15 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 		}
 		if (Row.AvatarHintText)
 		{
-			Row.AvatarHintText->SetText(FText::FromString(bOccupied ? TEXT("头像") : TEXT("空")));
+			Row.AvatarHintText->SetText(FText::FromString(bOccupied ? TEXT("矿工") : TEXT("空")));
 		}
 		if (Row.PlayerNameText)
 		{
-			FString DisplayName = TEXT("空席位");
-			if (bOccupied)
+			// 本次不显示真实玩家名，固定用槽位占位标识；"（你）"标出本地玩家所在行。
+			FString DisplayName = FString::Printf(TEXT("矿工 %02d"), RowIndex + 1);
+			if (bIsLocal)
 			{
-				DisplayName = Player->GetPlayerName();
-				if (DisplayName.IsEmpty())
-				{
-					DisplayName = FString::Printf(TEXT("矿工 %02d"), RowIndex + 1);
-				}
-				if (bIsLocal)
-				{
-					DisplayName += TEXT("（你）");
-				}
+				DisplayName += TEXT("（你）");
 			}
 			Row.PlayerNameText->SetText(FText::FromString(DisplayName));
 			Row.PlayerNameText->SetColorAndOpacity(FSlateColor(bOccupied ? TextPrimary : TextMuted));
@@ -1306,6 +1402,68 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	}
 }
 
+void UWeaponLobbyWidget::RefreshSessionInfo()
+{
+	using namespace WeaponLobbyStyle;
+
+	// 模式：中心控制面已认证且本局 MatchId 已建立 → Central Server。
+	// Direct/Relay 是客户端候选连通结果，不是新建 Host 的启动前置条件。
+	const UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	const bool bCentralMode = Central && Central->IsCentralMatchReady();
+
+	if (DockModeText)
+	{
+		DockModeText->SetText(FText::FromString(bCentralMode ? TEXT("CENTRAL SERVER") : TEXT("LOCAL P2P")));
+		DockModeText->SetColorAndOpacity(FSlateColor(bCentralMode ? Amber : TextMuted));
+	}
+
+	if (SessionInfoRows.Num() < 3)
+	{
+		return;
+	}
+
+	const bool bIsHost = IsLocalHost();
+	const UWorld* World = GetWorld();
+
+	// 模式
+	SessionInfoRows[0].Value->SetText(FText::FromString(bCentralMode ? TEXT("Central Server") : TEXT("Local P2P")));
+	SessionInfoRows[0].Value->SetColorAndOpacity(FSlateColor(bCentralMode ? Amber : TextPrimary));
+
+	// 角色：房主显示端口，队员显示服务器地址。
+	FString RoleText = bIsHost ? TEXT("Host（房主）") : TEXT("Client（队员）");
+	if (bIsHost && World)
+	{
+		RoleText += FString::Printf(TEXT(" · 端口 %d"), World->URL.Port);
+	}
+	else if (World)
+	{
+		RoleText += FString::Printf(TEXT(" · %s"), World->URL.Host.IsEmpty() ? TEXT("本机") : *World->URL.Host);
+	}
+	SessionInfoRows[1].Value->SetText(FText::FromString(RoleText));
+	SessionInfoRows[1].Value->SetColorAndOpacity(FSlateColor(bIsHost ? Amber : TextPrimary));
+
+	// 房间号：Central 模式显示玩家可分享的 JoinCode，而不是内部 MatchId UUID。
+	FString RoomText;
+	if (bCentralMode && Central)
+	{
+		const FString& JoinCode = Central->GetCentralJoinCode();
+		RoomText = JoinCode.IsEmpty() ? TEXT("房间号生成中…") : JoinCode;
+	}
+	else if (World)
+	{
+		// 房主的 URL.Host 为空，用"本机"占位避免出现 "LAN · :7777"。
+		const FString& HostText = World->URL.Host.IsEmpty() ? TEXT("本机") : World->URL.Host;
+		RoomText = FString::Printf(TEXT("LAN · %s:%d"), *HostText, World->URL.Port);
+	}
+	else
+	{
+		RoomText = TEXT("--");
+	}
+	SessionInfoRows[2].Value->SetText(FText::FromString(RoomText));
+	SessionInfoRows[2].Value->SetColorAndOpacity(FSlateColor(TextSecondary));
+}
+
 bool UWeaponLobbyWidget::IsLocalHost() const
 {
 	// Listen Host 的本地 PlayerController 持有 authority；纯客户端没有。
@@ -1341,9 +1499,15 @@ bool UWeaponLobbyWidget::AreOtherPlayersReady() const
 	return true;
 }
 
+bool UWeaponLobbyWidget::IsLocalPlayerReady() const
+{
+	const AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(GetOwningPlayerState());
+	return PlayerState && PlayerState->GetIsPlayerReady();
+}
+
 EWeaponLobbyPrimaryAction UWeaponLobbyWidget::ResolvePrimaryAction() const
 {
-	if (!bLocalReadyPrototype)
+	if (!IsLocalPlayerReady())
 	{
 		return EWeaponLobbyPrimaryAction::Ready;
 	}
@@ -1386,19 +1550,34 @@ void UWeaponLobbyWidget::HandlePrimaryActionClicked()
 	switch (ResolvePrimaryAction())
 	{
 	case EWeaponLobbyPrimaryAction::Ready:
-		bLocalReadyPrototype = true;
+		// 向服务端提交 ready 意图；服务端校验阶段后写入复制属性并广播。
+		RequestLocalReady(true);
 		break;
 
 	case EWeaponLobbyPrimaryAction::Unready:
-		bLocalReadyPrototype = false;
+		RequestLocalReady(false);
 		break;
 
 	case EWeaponLobbyPrimaryAction::StartGame:
-		// 原型阶段不发起开局；接网后在这里调用真正的开始流程。
+		// 只有房主且全员就绪才会走到这里：发起开局倒计时。
+		if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+		{
+			GameMode->TryStartWeaponMatch();
+		}
 		break;
 	}
+}
 
-	RefreshLobbyState();
+void UWeaponLobbyWidget::RequestLocalReady(bool bNewIsReady)
+{
+	AWeaponPlayerState* PlayerState = Cast<AWeaponPlayerState>(GetOwningPlayerState());
+	if (PlayerState)
+	{
+		// 服务端通过 OnLobbyStateChanged 广播回来，RefreshLobbyState 由回调驱动；
+		// 本地 Listen Host 的 RequestSetPlayerReady 同步执行 ApplyPlayerReadyRequest，
+		// 无需在这里手动刷新。
+		PlayerState->RequestSetPlayerReady(bNewIsReady);
+	}
 }
 
 void UWeaponLobbyWidget::HandleLoadoutButtonClicked()

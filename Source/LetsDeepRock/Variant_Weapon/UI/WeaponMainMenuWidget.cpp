@@ -9,6 +9,7 @@
 #include "Components/ButtonSlot.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/SafeZone.h"
@@ -21,11 +22,12 @@
 #include "Components/VerticalBoxSlot.h"
 #include "Components/WidgetSwitcher.h"
 #include "Engine/GameInstance.h"
-#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "Kismet/KismetSystemLibrary.h"
+#include "Online/WeaponCentralConnectivitySubsystem.h"
 #include "Online/WeaponSessionSubsystem.h"
 #include "Styling/CoreStyle.h"
+#include "TimerManager.h"
 
 namespace WeaponMainMenuStyle
 {
@@ -37,22 +39,22 @@ namespace WeaponMainMenuStyle
 	static const TCHAR* GameplayLevelPath = TEXT("/Game/Variant_Weapon/LVL_Weapon/NewMap");
 
 	// 暗色科幻矿业终端配色
-	static const FLinearColor BackdropDeep(0.028f, 0.036f, 0.045f, 1.0f);   // 最底层背景
-	static const FLinearColor BackdropWash(0.055f, 0.075f, 0.090f, 1.0f);   // 左侧竖向亮区，制造光照渐变感
-	static const FLinearColor PanelFill(0.052f, 0.065f, 0.078f, 0.97f);     // 右侧深色面板
-	static const FLinearColor PanelInner(0.075f, 0.092f, 0.108f, 1.0f);     // 面板内的占位块
-	static const FLinearColor PanelEdge(0.16f, 0.20f, 0.23f, 1.0f);         // 面板描边
-	static const FLinearColor Amber(1.0f, 0.72f, 0.18f, 1.0f);              // 强调色：琥珀黄
-	static const FLinearColor AmberDim(1.0f, 0.72f, 0.18f, 0.28f);          // 强调色低透明度（装饰线）
-	static const FLinearColor TextPrimary(0.90f, 0.93f, 0.95f, 1.0f);
-	static const FLinearColor TextSecondary(0.54f, 0.61f, 0.67f, 1.0f);
-	static const FLinearColor TextMuted(0.36f, 0.42f, 0.47f, 1.0f);
-	static const FLinearColor ButtonIdle(0.085f, 0.102f, 0.118f, 1.0f);
-	static const FLinearColor ButtonHover(0.130f, 0.155f, 0.175f, 1.0f);
-	static const FLinearColor ButtonPress(0.170f, 0.150f, 0.075f, 1.0f);
-	static const FLinearColor AmberHover(1.0f, 0.80f, 0.34f, 1.0f);
-	static const FLinearColor AmberPress(0.86f, 0.60f, 0.12f, 1.0f);
-	static const FLinearColor OnAmber(0.05f, 0.05f, 0.05f, 1.0f);
+	static constexpr FLinearColor BackdropDeep(0.028f, 0.036f, 0.045f, 1.0f);   // 最底层背景
+	static constexpr FLinearColor BackdropWash(0.055f, 0.075f, 0.090f, 1.0f);   // 左侧竖向亮区，制造光照渐变感
+	static constexpr FLinearColor PanelFill(0.052f, 0.065f, 0.078f, 0.97f);     // 右侧深色面板
+	static constexpr FLinearColor PanelInner(0.075f, 0.092f, 0.108f, 1.0f);     // 面板内的占位块
+	static constexpr FLinearColor PanelEdge(0.16f, 0.20f, 0.23f, 1.0f);         // 面板描边
+	static constexpr FLinearColor Amber(1.0f, 0.72f, 0.18f, 1.0f);              // 强调色：琥珀黄
+	static constexpr FLinearColor AmberDim(1.0f, 0.72f, 0.18f, 0.28f);          // 强调色低透明度（装饰线）
+	static constexpr FLinearColor TextPrimary(0.90f, 0.93f, 0.95f, 1.0f);
+	static constexpr FLinearColor TextSecondary(0.54f, 0.61f, 0.67f, 1.0f);
+	static constexpr FLinearColor TextMuted(0.36f, 0.42f, 0.47f, 1.0f);
+	static constexpr FLinearColor ButtonIdle(0.085f, 0.102f, 0.118f, 1.0f);
+	static constexpr FLinearColor ButtonHover(0.130f, 0.155f, 0.175f, 1.0f);
+	static constexpr FLinearColor ButtonPress(0.170f, 0.150f, 0.075f, 1.0f);
+	static constexpr FLinearColor AmberHover(1.0f, 0.80f, 0.34f, 1.0f);
+	static constexpr FLinearColor AmberPress(0.86f, 0.60f, 0.12f, 1.0f);
+	static constexpr FLinearColor OnAmber(0.05f, 0.05f, 0.05f, 1.0f);
 }
 
 void UWeaponMainMenuWidget::NativeOnInitialized()
@@ -109,6 +111,14 @@ void UWeaponMainMenuWidget::NativeOnInitialized()
 		Session->OnFindComplete.AddDynamic(this, &UWeaponMainMenuWidget::HandleFindSessionsComplete);
 		Session->OnJoinComplete.AddDynamic(this, &UWeaponMainMenuWidget::HandleJoinSessionComplete);
 	}
+
+	// 订阅中心连接状态：创建房间等待就绪 / 失败回退弹窗
+	if (UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+	{
+		Central->OnConnectivityChanged.AddDynamic(
+			this, &UWeaponMainMenuWidget::HandleCentralConnectivityChanged);
+	}
 }
 
 void UWeaponMainMenuWidget::NativeDestruct()
@@ -119,6 +129,13 @@ void UWeaponMainMenuWidget::NativeDestruct()
 		Session->OnHostComplete.RemoveDynamic(this, &UWeaponMainMenuWidget::HandleHostSessionComplete);
 		Session->OnFindComplete.RemoveDynamic(this, &UWeaponMainMenuWidget::HandleFindSessionsComplete);
 		Session->OnJoinComplete.RemoveDynamic(this, &UWeaponMainMenuWidget::HandleJoinSessionComplete);
+	}
+
+	if (UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr)
+	{
+		Central->OnConnectivityChanged.RemoveDynamic(
+			this, &UWeaponMainMenuWidget::HandleCentralConnectivityChanged);
 	}
 
 	Super::NativeDestruct();
@@ -291,7 +308,7 @@ void UWeaponMainMenuWidget::BuildRightPanel(UCanvasPanel* DesignCanvas)
 
 	UCanvasPanelSlot* PanelSlot = DesignCanvas->AddChildToCanvas(Panel);
 	PanelSlot->SetAnchors(FAnchors(0.f, 0.f));
-	// 右半侧：留出与左栏一致的边距，纵向高于导航区，形成明显的主次分区
+	// 右半侧：留出于左栏一致的边距，纵向高于导航区，形成明显的主次分区
 	PanelSlot->SetOffsets(FMargin(860.f, 64.f, 940.f, 952.f));
 
 	UVerticalBox* PanelBody = WidgetTree->ConstructWidget<UVerticalBox>();
@@ -387,6 +404,7 @@ void UWeaponMainMenuWidget::BuildTeamPage()
 
 	UButton* CreateButton = MakeActionButton(TEXT("创建房间"), true);
 	CreateButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleCreateRoomClicked);
+	CreateRoomButton = CreateButton;
 	ActionRow->AddChildToHorizontalBox(CreateButton);
 
 	UButton* RefreshButton = MakeActionButton(TEXT("刷新房间"), false);
@@ -394,7 +412,36 @@ void UWeaponMainMenuWidget::BuildTeamPage()
 	UHorizontalBoxSlot* RefreshSlot = ActionRow->AddChildToHorizontalBox(RefreshButton);
 	RefreshSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
 
-	RoomStatusText = MakeText(TEXT("点击刷新房间，搜索同一局域网内的队伍。"), TEXT("Regular"), 16.f, TextSecondary);
+	UVerticalBoxSlot* CentralLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("中心服务器房间号"), TEXT("Bold"), 17.f, Amber, 100));
+	CentralLabelSlot->SetPadding(FMargin(0.f, 24.f, 0.f, 10.f));
+
+	UHorizontalBox* CentralJoinRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* CentralJoinRowSlot = Page->AddChildToVerticalBox(CentralJoinRow);
+	CentralJoinRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	CentralJoinCodeInput = WidgetTree->ConstructWidget<UEditableTextBox>();
+	FEditableTextBoxStyle JoinCodeStyle =
+		FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
+	JoinCodeStyle.SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 16.f));
+	JoinCodeStyle.SetForegroundColor(FSlateColor(TextPrimary));
+	JoinCodeStyle.SetBackgroundColor(FSlateColor(PanelInner));
+	CentralJoinCodeInput->SetWidgetStyle(JoinCodeStyle);
+	CentralJoinCodeInput->SetHintText(FText::FromString(TEXT("输入房主分享的 JoinCode")));
+	CentralJoinCodeInput->SetMinDesiredWidth(320.f);
+	CentralJoinCodeInput->SetSelectAllTextWhenFocused(true);
+	CentralJoinCodeInput->SetClearKeyboardFocusOnCommit(false);
+	UHorizontalBoxSlot* JoinCodeInputSlot = CentralJoinRow->AddChildToHorizontalBox(CentralJoinCodeInput);
+	JoinCodeInputSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	JoinCodeInputSlot->SetVerticalAlignment(VAlign_Fill);
+
+	CentralJoinButton = MakeActionButton(TEXT("按房间号加入"), false);
+	CentralJoinButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleCentralJoinClicked);
+	UHorizontalBoxSlot* CentralJoinButtonSlot = CentralJoinRow->AddChildToHorizontalBox(CentralJoinButton);
+	CentralJoinButtonSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+	CentralJoinButtonSlot->SetVerticalAlignment(VAlign_Fill);
+
+	RoomStatusText = MakeText(TEXT("输入 Central 房间号，或刷新同一局域网内的房间。"), TEXT("Regular"), 16.f, TextSecondary);
 	UVerticalBoxSlot* StatusSlot = Page->AddChildToVerticalBox(RoomStatusText);
 	StatusSlot->SetPadding(FMargin(0.f, 18.f, 0.f, 0.f));
 
@@ -583,22 +630,6 @@ void UWeaponMainMenuWidget::HandleBackClicked()
 	ShowPanelPage(IdlePageIndex, TEXT("终端待命"));
 }
 
-void UWeaponMainMenuWidget::HandleCreateRoomClicked()
-{
-	UWeaponSessionSubsystem* Session = GetSessionSubsystem();
-	if (!Session)
-	{
-		SetRoomStatus(TEXT("Session 子系统不可用。"));
-		return;
-	}
-
-	SetRoomStatus(TEXT("正在创建房间…"));
-	if (!Session->HostLanGameOnMap(4, TEXT("LDR 房间"), FName(WeaponMainMenuStyle::GameplayLevelPath)))
-	{
-		SetRoomStatus(TEXT("创建请求被拒绝，稍后再试。"));
-	}
-}
-
 void UWeaponMainMenuWidget::HandleRefreshRoomsClicked()
 {
 	UWeaponSessionSubsystem* Session = GetSessionSubsystem();
@@ -757,5 +788,466 @@ void UWeaponMainMenuWidget::SetRoomStatus(const FString& Status)
 	if (RoomStatusText)
 	{
 		RoomStatusText->SetText(FText::FromString(Status));
+	}
+}
+
+// =====================================================================================
+//  LocalP2P 回退确认弹窗
+// =====================================================================================
+
+namespace
+{
+	/** 弹窗内的统一文本构造（与主菜单风格一致）。 */
+	UTextBlock* MakeDialogText(
+		UWidgetTree* Tree,
+		const FString& Text,
+		const FName& Typeface,
+		float FontSize,
+		const FLinearColor& Color,
+		int32 LetterSpacing = 0)
+	{
+		UTextBlock* Block = Tree->ConstructWidget<UTextBlock>();
+		Block->SetText(FText::FromString(Text));
+
+		FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle(Typeface, FontSize);
+		Font.LetterSpacing = LetterSpacing;
+		Block->SetFont(Font);
+
+		Block->SetColorAndOpacity(FSlateColor(Color));
+		return Block;
+	}
+}
+
+void UWeaponLobbyFallbackDialog::NativeOnInitialized()
+{
+	using namespace WeaponMainMenuStyle;
+
+	Super::NativeOnInitialized();
+
+	if (!WidgetTree)
+	{
+		WidgetTree = NewObject<UWidgetTree>(this, TEXT("WidgetTree"));
+	}
+
+	UCanvasPanel* RootCanvas = Cast<UCanvasPanel>(GetRootWidget());
+	if (!RootCanvas)
+	{
+		RootCanvas = WidgetTree->ConstructWidget<UCanvasPanel>();
+		WidgetTree->RootWidget = RootCanvas;
+	}
+
+	// 全屏遮罩：半透明深色，盖住主菜单但透出轮廓
+	UBorder* Scrim = WidgetTree->ConstructWidget<UBorder>();
+	Scrim->SetBrushColor(FLinearColor(0.02f, 0.03f, 0.04f, 0.78f));
+	UCanvasPanelSlot* ScrimSlot = RootCanvas->AddChildToCanvas(Scrim);
+	ScrimSlot->SetAnchors(FAnchors(0.f, 0.f, 1.f, 1.f));
+	ScrimSlot->SetOffsets(FMargin(0.f));
+
+	// 居中弹窗：深色面板 + 琥珀描边 + 标题 / 说明 / 双按钮
+	USizeBox* DialogSize = WidgetTree->ConstructWidget<USizeBox>();
+	DialogSize->SetWidthOverride(660.f);
+	UCanvasPanelSlot* DialogSlot = RootCanvas->AddChildToCanvas(DialogSize);
+	DialogSlot->SetAnchors(FAnchors(0.5f, 0.5f, 0.5f, 0.5f));
+	DialogSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+	// Canvas slot 默认不是 AutoSize，零 offsets 会把 660px 的 SizeBox 压成近零宽度，
+	// 导致标题溢出、中文正文逐字换行。让 slot 使用子控件的 desired size。
+	DialogSlot->SetAutoSize(true);
+	DialogSlot->SetZOrder(1);
+
+	UBorder* DialogFrame = WidgetTree->ConstructWidget<UBorder>();
+	DialogFrame->SetBrush(FSlateRoundedBoxBrush(FLinearColor(0.052f, 0.065f, 0.078f, 0.98f), 6.f, Amber, 1.5f));
+	DialogFrame->SetPadding(FMargin(34.f, 28.f));
+	DialogSize->AddChild(DialogFrame);
+
+	UVerticalBox* DialogColumn = WidgetTree->ConstructWidget<UVerticalBox>();
+	DialogFrame->AddChild(DialogColumn);
+
+	UTextBlock* Title = WidgetTree->ConstructWidget<UTextBlock>();
+	Title->SetText(FText::FromString(TEXT("中心服务器不可用")));
+	Title->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Bold"), 24.f));
+	Title->SetColorAndOpacity(FSlateColor(TextPrimary));
+	Title->SetJustification(ETextJustify::Center);
+	DialogColumn->AddChildToVerticalBox(Title);
+
+	UTextBlock* Body = WidgetTree->ConstructWidget<UTextBlock>();
+	Body->SetText(FText::FromString(
+		TEXT("无法连接中心服务器（网络或服务异常）。\n是否以本地点对点（Local P2P）模式创建房间？")));
+	Body->SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 15.f));
+	Body->SetColorAndOpacity(FSlateColor(TextSecondary));
+	Body->SetJustification(ETextJustify::Center);
+	Body->SetAutoWrapText(true);
+	UVerticalBoxSlot* BodySlot = DialogColumn->AddChildToVerticalBox(Body);
+	BodySlot->SetPadding(FMargin(0.f, 18.f, 0.f, 28.f));
+
+	UHorizontalBox* ButtonRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* ButtonRowSlot = DialogColumn->AddChildToVerticalBox(ButtonRow);
+	ButtonRowSlot->SetHorizontalAlignment(HAlign_Center);
+
+	// 拒绝：次级描边按钮（内容自适应宽度）
+	UButton* DeclineButton = WidgetTree->ConstructWidget<UButton>();
+	{
+		FButtonStyle Style;
+		Style.SetNormal(FSlateRoundedBoxBrush(FLinearColor(0.09f, 0.11f, 0.13f, 1.0f), 4.f, FLinearColor(0.24f, 0.29f, 0.33f, 1.0f), 1.f));
+		Style.SetHovered(FSlateRoundedBoxBrush(FLinearColor(0.13f, 0.16f, 0.18f, 1.0f), 4.f, Amber, 1.f));
+		Style.SetPressed(FSlateRoundedBoxBrush(ButtonPress, 4.f, Amber, 1.f));
+		Style.SetNormalPadding(FMargin(0.f));
+		Style.SetPressedPadding(FMargin(0.f));
+		DeclineButton->SetStyle(Style);
+	}
+	DeclineButton->OnClicked.AddDynamic(this, &UWeaponLobbyFallbackDialog::HandleDeclineClicked);
+	DeclineButton->AddChild(MakeDialogText(WidgetTree, TEXT("返回主菜单"), TEXT("Bold"), 15.f, TextPrimary, 40));
+	if (UButtonSlot* DeclineContentSlot = Cast<UButtonSlot>(DeclineButton->GetContentSlot()))
+	{
+		DeclineContentSlot->SetPadding(FMargin(30.f, 14.f));
+	}
+
+	UHorizontalBoxSlot* DeclineSlot = ButtonRow->AddChildToHorizontalBox(DeclineButton);
+	DeclineSlot->SetPadding(FMargin(0.f, 0.f, 16.f, 0.f));
+
+	// 接受：实心琥珀主按钮（内容自适应宽度）
+	UButton* AcceptButton = WidgetTree->ConstructWidget<UButton>();
+	{
+		FButtonStyle Style;
+		Style.SetNormal(FSlateRoundedBoxBrush(Amber, 4.f));
+		Style.SetHovered(FSlateRoundedBoxBrush(AmberHover, 4.f));
+		Style.SetPressed(FSlateRoundedBoxBrush(AmberPress, 4.f));
+		Style.SetNormalPadding(FMargin(0.f));
+		Style.SetPressedPadding(FMargin(0.f));
+		AcceptButton->SetStyle(Style);
+	}
+	AcceptButton->OnClicked.AddDynamic(this, &UWeaponLobbyFallbackDialog::HandleAcceptClicked);
+	AcceptButton->AddChild(MakeDialogText(WidgetTree, TEXT("以 Local P2P 继续"), TEXT("Bold"), 15.f, OnAmber, 40));
+	if (UButtonSlot* AcceptContentSlot = Cast<UButtonSlot>(AcceptButton->GetContentSlot()))
+	{
+		AcceptContentSlot->SetPadding(FMargin(30.f, 14.f));
+	}
+
+	ButtonRow->AddChildToHorizontalBox(AcceptButton);
+}
+
+void UWeaponLobbyFallbackDialog::ShowFallbackDialog(UWidget* InOwningMenu, UWidget* InCreateButton)
+{
+	OwningMenu = InOwningMenu;
+	CreateButton = InCreateButton;
+	AddToViewport(200);
+}
+
+void UWeaponLobbyFallbackDialog::HandleAcceptClicked()
+{
+	OnFallbackChosen.Broadcast(true);
+	RemoveFromParent();
+}
+
+void UWeaponLobbyFallbackDialog::HandleDeclineClicked()
+{
+	OnFallbackChosen.Broadcast(false);
+	RemoveFromParent();
+}
+
+// =====================================================================================
+//  创建房间：中心优先 + LocalP2P 回退
+// =====================================================================================
+
+void UWeaponMainMenuWidget::HandleCreateRoomClicked()
+{
+	if (RoomCreateState != EWeaponRoomCreateState::Idle)
+	{
+		return;
+	}
+
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (!Central)
+	{
+		// 中心子系统不存在（异常环境）时直接走 LocalP2P。
+		StartHostingGame();
+		return;
+	}
+
+	BeginConnectingCentral();
+}
+
+void UWeaponMainMenuWidget::HandleCentralJoinClicked()
+{
+	if (RoomCreateState != EWeaponRoomCreateState::Idle || !CentralJoinCodeInput)
+	{
+		return;
+	}
+
+	const FString JoinCode = CentralJoinCodeInput->GetText().ToString().TrimStartAndEnd();
+	if (JoinCode.IsEmpty())
+	{
+		SetRoomStatus(TEXT("请输入房主分享的 Central 房间号。"));
+		return;
+	}
+
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (!Central)
+	{
+		SetRoomStatus(TEXT("中心连接子系统不可用。"));
+		return;
+	}
+
+	RoomCreateState = EWeaponRoomCreateState::JoiningCentral;
+	SetRoomStatus(TEXT("正在连接中心服务器并校验房间号…"));
+	if (CreateRoomButton)
+	{
+		CreateRoomButton->SetIsEnabled(false);
+	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(false);
+	}
+
+	Central->StartCentralConnect();
+	// URL 配置错误等同步失败会通过委托把状态恢复为 Idle。
+	if (RoomCreateState != EWeaponRoomCreateState::JoiningCentral)
+	{
+		return;
+	}
+
+	FString JoinError;
+	if (!Central->JoinCentralMatch(JoinCode, JoinError))
+	{
+		RoomCreateState = EWeaponRoomCreateState::Idle;
+		if (CreateRoomButton)
+		{
+			CreateRoomButton->SetIsEnabled(true);
+		}
+		if (CentralJoinButton)
+		{
+			CentralJoinButton->SetIsEnabled(true);
+		}
+		SetRoomStatus(JoinError.IsEmpty() ? TEXT("中心房间加入请求被拒绝。") : JoinError);
+	}
+}
+
+void UWeaponMainMenuWidget::BeginConnectingCentral()
+{
+	RoomCreateState = EWeaponRoomCreateState::ConnectingCentral;
+	SetRoomStatus(TEXT("正在连接中心服务器…"));
+
+	if (CreateRoomButton)
+	{
+		CreateRoomButton->SetIsEnabled(false);
+	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(false);
+	}
+
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (Central)
+	{
+		Central->StartCentralConnect();
+		if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
+		{
+			return;
+		}
+
+		// 发起创建 Match；认证未完成时 CreateCentralMatch 会排队，认证成功后自动补发。
+		FString CreateError;
+		if (!Central->CreateCentralMatch(CreateError))
+		{
+			PromptLocalP2PFallback(CreateError.IsEmpty() ? TEXT("无法创建中心 Match") : CreateError);
+			return;
+		}
+	}
+
+	// 等待控制认证和 MatchId；超时未就绪则询问 LocalP2P 回退。
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().SetTimer(
+			CentralWaitTimer,
+			this,
+			&UWeaponMainMenuWidget::HandleCentralWaitTimeout,
+			CentralWaitTimeoutSeconds,
+			false);
+	}
+}
+
+void UWeaponMainMenuWidget::HandleCentralConnectivityChanged(
+	EWeaponCentralConnectivityState NewState,
+	FString Message)
+{
+	if (RoomCreateState == EWeaponRoomCreateState::JoiningCentral)
+	{
+		switch (NewState)
+		{
+		case EWeaponCentralConnectivityState::Failed:
+		case EWeaponCentralConnectivityState::Expired:
+			RoomCreateState = EWeaponRoomCreateState::Idle;
+			if (CreateRoomButton)
+			{
+				CreateRoomButton->SetIsEnabled(true);
+			}
+			if (CentralJoinButton)
+			{
+				CentralJoinButton->SetIsEnabled(true);
+			}
+			SetRoomStatus(FString::Printf(TEXT("加入中心房间失败：%s"), *Message));
+			break;
+
+		case EWeaponCentralConnectivityState::Connected:
+		{
+			const UWeaponCentralConnectivitySubsystem* Central =
+				GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+			SetRoomStatus(Central && !Central->GetCentralJoinCode().IsEmpty()
+				? TEXT("房间号有效，正在等待房主连接端点…")
+				: TEXT("中心认证完成，正在加入房间…"));
+			break;
+		}
+
+		case EWeaponCentralConnectivityState::DirectConnected:
+		case EWeaponCentralConnectivityState::Relayed:
+			SetRoomStatus(TEXT("已找到房主，正在进入房间…"));
+			break;
+
+		default:
+			break;
+		}
+		return;
+	}
+
+	if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
+	{
+		return;
+	}
+
+	switch (NewState)
+	{
+	case EWeaponCentralConnectivityState::Failed:
+	case EWeaponCentralConnectivityState::Expired:
+		// 中心明确失败：立即停止等待并询问 LocalP2P。
+		PromptLocalP2PFallback(Message);
+		break;
+
+	case EWeaponCentralConnectivityState::Connected:
+	case EWeaponCentralConnectivityState::DirectConnected:
+	case EWeaponCentralConnectivityState::Relayed:
+		// 新建 Host 以控制认证 + MatchId 为启动门槛；后续 Lease / Checkpoint
+		// 在玩法世界内继续收敛，不阻塞房间创建。
+		CheckCentralReadyAndMaybeStart();
+		break;
+
+	default:
+		// 其他状态（握手进行中）继续等待。
+		break;
+	}
+}
+
+void UWeaponMainMenuWidget::CheckCentralReadyAndMaybeStart()
+{
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (!Central)
+	{
+		PromptLocalP2PFallback(TEXT("中心子系统不可用"));
+		return;
+	}
+
+	if (Central->IsCentralMatchReady())
+	{
+		StartHostingGame();
+	}
+	// 否则继续等待认证或 Create Match 响应。
+}
+
+void UWeaponMainMenuWidget::HandleCentralWaitTimeout()
+{
+	if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
+	{
+		return;
+	}
+
+	PromptLocalP2PFallback(TEXT("等待中心服务器超时"));
+}
+
+void UWeaponMainMenuWidget::PromptLocalP2PFallback(const FString& Reason)
+{
+	if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
+	{
+		return;
+	}
+
+	RoomCreateState = EWeaponRoomCreateState::FallbackPrompt;
+	SetRoomStatus(FString::Printf(TEXT("中心连接失败：%s"), *Reason));
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(CentralWaitTimer);
+	}
+
+	if (FallbackDialog)
+	{
+		return;
+	}
+
+	FallbackDialog = CreateWidget<UWeaponLobbyFallbackDialog>(this, UWeaponLobbyFallbackDialog::StaticClass());
+	if (FallbackDialog)
+	{
+		FallbackDialog->ShowFallbackDialog(this, CreateRoomButton);
+		FallbackDialog->OnFallbackChosen.AddDynamic(this, &UWeaponMainMenuWidget::HandleFallbackChosen);
+	}
+}
+
+void UWeaponMainMenuWidget::HandleFallbackChosen(bool bAccepted)
+{
+	if (FallbackDialog)
+	{
+		FallbackDialog->OnFallbackChosen.RemoveDynamic(this, &UWeaponMainMenuWidget::HandleFallbackChosen);
+		FallbackDialog = nullptr;
+	}
+
+	if (bAccepted)
+	{
+		StartHostingGame();
+	}
+	else
+	{
+		// 拒绝：留在主菜单，恢复创建按钮与状态。
+		RoomCreateState = EWeaponRoomCreateState::Idle;
+		if (CreateRoomButton)
+		{
+			CreateRoomButton->SetIsEnabled(true);
+		}
+		if (CentralJoinButton)
+		{
+			CentralJoinButton->SetIsEnabled(true);
+		}
+		SetRoomStatus(TEXT("已取消创建房间。"));
+	}
+}
+
+void UWeaponMainMenuWidget::StartHostingGame()
+{
+	RoomCreateState = EWeaponRoomCreateState::Idle;
+
+	if (UWorld* World = GetWorld())
+	{
+		World->GetTimerManager().ClearTimer(CentralWaitTimer);
+	}
+	if (CreateRoomButton)
+	{
+		CreateRoomButton->SetIsEnabled(true);
+	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(true);
+	}
+
+	UWeaponSessionSubsystem* Session = GetSessionSubsystem();
+	if (!Session)
+	{
+		SetRoomStatus(TEXT("Session 子系统不可用。"));
+		return;
+	}
+
+	SetRoomStatus(TEXT("正在创建房间…"));
+	if (!Session->HostLanGameOnMap(4, TEXT("LDR 房间"), FName(WeaponMainMenuStyle::GameplayLevelPath)))
+	{
+		SetRoomStatus(TEXT("创建请求被拒绝，稍后再试。"));
 	}
 }

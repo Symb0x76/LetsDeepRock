@@ -20,4 +20,13 @@ class AWeaponMainMenuGameMode : public AGameModeBase
 public:
 
 	AWeaponMainMenuGameMode();
+
+	/** 菜单没有 PlayerStart；返回 WorldSettings 作为无日志的控制器初始位置锚点。 */
+	virtual AActor* FindPlayerStart_Implementation(AController* Player, const FString& IncomingName) override;
+
+	/** 菜单关卡没有 Pawn；吞掉 GameModeBase 的默认 RestartPlayer 流程。 */
+	virtual void RestartPlayer(AController* NewPlayer) override;
+
+	/** 菜单使用纯 UMG，不创建 AHUD。 */
+	virtual void InitializeHUDForPlayer_Implementation(APlayerController* NewPlayer) override;
 };
