@@ -50,6 +50,15 @@ void UGridMapRenderer::FlushDirtyChunks()
 	TArray<FIntPoint> Pending = DirtyChunks.Array();
 	DirtyChunks.Reset();
 	for (const FIntPoint ChunkCoord : Pending) { RebuildChunk(ChunkCoord); }
+	if (LastFlushChunkCount > 0)
+	{
+		const int32 TreeInstanceCount = GetInstanceCountForType(EGridTileType::Tree);
+		const int32 RockInstanceCount = GetInstanceCountForType(EGridTileType::Rock);
+		const int32 LargeTreeInstanceCount = GetInstanceCountForType(EGridTileType::LargeTree);
+		UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Renderer Dirty区块刷新完成：刷新区块=%d，活动区块=%d，HISM组件=%d，Tree实例=%d，Rock实例=%d，LargeTree实例=%d，总实例=%d。"),
+			LastFlushChunkCount, GetActiveChunkCount(), GetHISMComponentCount(), TreeInstanceCount,
+			RockInstanceCount, LargeTreeInstanceCount, TreeInstanceCount + RockInstanceCount + LargeTreeInstanceCount);
+	}
 }
 
 void UGridMapRenderer::RemoveTileInstance(const int32 GridX, const int32 GridY)

@@ -117,6 +117,7 @@ void AGridMapManager::GenerateMap()
 	{
 		return;
 	}
+	const double GenerationStartSeconds = FPlatformTime::Seconds();
 
 	FGridMapBaselineState NewState;
 	NewState.SchemaVersion = 2;
@@ -153,6 +154,17 @@ void AGridMapManager::GenerateMap()
 	NextTileRevision = 0;
 
 	ForceNetUpdate();
+	const double GenerationElapsedMilliseconds = (FPlatformTime::Seconds() - GenerationStartSeconds) * 1000.0;
+	const int32 ActiveChunkCount = MapRenderer ? MapRenderer->GetActiveChunkCount() : 0;
+	const int32 HISMComponentCount = MapRenderer ? MapRenderer->GetHISMComponentCount() : 0;
+	const int32 TreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Tree) : 0;
+	const int32 RockInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Rock) : 0;
+	const int32 LargeTreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::LargeTree) : 0;
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] 服务器地图生成并发布成功：耗时=%.3fms，GenerationVersion=%d，EffectiveSeed=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，ResultHash=%llu，Renderer活动区块=%d，HISM组件=%d，Tree实例=%d，Rock实例=%d，LargeTree实例=%d，总实例=%d。"),
+		GenerationElapsedMilliseconds, NewState.GenerationVersion, NewState.EffectiveSeed, NewState.AlgorithmVersion,
+		NewState.TemplateSetVersion, NewState.Recipe.Rooms.Num(), NewState.Recipe.Connections.Num(),
+		static_cast<unsigned long long>(NewState.ResultHash), ActiveChunkCount, HISMComponentCount,
+		TreeInstanceCount, RockInstanceCount, LargeTreeInstanceCount, TreeInstanceCount + RockInstanceCount + LargeTreeInstanceCount);
 }
 
 bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FString& OutError) const
@@ -190,7 +202,15 @@ bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FStr
 		SavedDelta.Revision = Delta.Revision;
 	}
 
-	return ValidateRecoveryState(OutState, OutError);
+	if (!ValidateRecoveryState(OutState, OutError))
+	{
+		return false;
+	}
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Recovery状态捕获成功：Seed=%d，GenerationVersion=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，Delta=%d，ResultHash=%llu。"),
+		OutState.EffectiveSeed, OutState.GenerationVersion, OutState.AlgorithmVersion, OutState.TemplateSetVersion,
+		OutState.Recipe.Rooms.Num(), OutState.Recipe.Connections.Num(), OutState.TileDeltas.Num(),
+		static_cast<unsigned long long>(OutState.ResultHash));
+	return true;
 }
 
 bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
@@ -353,6 +373,10 @@ bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, F
 
 	ApplyAllReplicatedDeltas();
 	ForceNetUpdate();
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Recovery状态恢复成功：Seed=%d，GenerationVersion=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，Delta=%d，ResultHash=%llu。"),
+		State.EffectiveSeed, State.GenerationVersion, State.AlgorithmVersion, State.TemplateSetVersion,
+		State.Recipe.Rooms.Num(), State.Recipe.Connections.Num(), State.TileDeltas.Num(),
+		static_cast<unsigned long long>(State.ResultHash));
 	return true;
 }
 
@@ -417,8 +441,16 @@ bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FStri
 		MapRenderer->BuildFromMapData(MapData);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
-		State.GenerationVersion, State.EffectiveSeed);
+	const FGridMapGenerationRecipe& BuiltRecipe = NewGenerator->GetGeneratedRecipe();
+	const int32 ActiveChunkCount = MapRenderer ? MapRenderer->GetActiveChunkCount() : 0;
+	const int32 HISMComponentCount = MapRenderer ? MapRenderer->GetHISMComponentCount() : 0;
+	const int32 TreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Tree) : 0;
+	const int32 RockInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Rock) : 0;
+	const int32 LargeTreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::LargeTree) : 0;
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Baseline构建完成：GenerationVersion=%d，Seed=%d，ResultHash=%llu，Recipe房间=%d，Recipe连接=%d，Renderer活动区块=%d，HISM组件=%d，Tree实例=%d，Rock实例=%d，LargeTree实例=%d，总实例=%d。"),
+		State.GenerationVersion, State.EffectiveSeed, static_cast<unsigned long long>(State.ResultHash),
+		BuiltRecipe.Rooms.Num(), BuiltRecipe.Connections.Num(), ActiveChunkCount, HISMComponentCount,
+		TreeInstanceCount, RockInstanceCount, LargeTreeInstanceCount, TreeInstanceCount + RockInstanceCount + LargeTreeInstanceCount);
 	return true;
 }
 
@@ -1028,7 +1060,7 @@ void AGridMapManager::FlushNavigationDirtyChunks()
 
 	const float TileSize = MapData->GetConfig().TileSize;
 	constexpr float NavigationDirtyHalfHeight = 10000.0f;
-	NavigationDirtyTracker.Flush(true, [NavSys, TileSize](const FIntPoint& ChunkCoord)
+	const int32 FlushedChunkCount = NavigationDirtyTracker.Flush(true, [NavSys, TileSize](const FIntPoint& ChunkCoord)
 	{
 		const FVector Min(
 			ChunkCoord.X * GridMapChunkSize * TileSize,
@@ -1040,6 +1072,10 @@ void AGridMapManager::FlushNavigationDirtyChunks()
 			NavigationDirtyHalfHeight);
 		NavSys->AddDirtyArea(FBox(Min, Max), ENavigationDirtyFlag::All);
 	});
+	if (FlushedChunkCount > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] 服务端导航Dirty区块已提交：区块数=%d。"), FlushedChunkCount);
+	}
 }
 
 int32 AGridMapManager::GetDefaultHealthForType(EGridTileType TileType) const
