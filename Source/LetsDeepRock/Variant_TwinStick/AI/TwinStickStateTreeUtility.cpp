@@ -27,3 +27,5 @@ FText FStateTreeGetPlayerTask::GetDescription(const FGuid& ID, FStateTreeDataVie
 	return LOCTEXT("StateTreeTaskGetPlayerDescription", "<b>Get Player</b>");
 }
 #endif // WITH_EDITOR
+
+#undef LOCTEXT_NAMESPACE
