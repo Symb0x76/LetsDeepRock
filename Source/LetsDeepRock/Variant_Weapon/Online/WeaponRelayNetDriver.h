@@ -32,6 +32,9 @@ public:
 	/** 供外部轮询推进 TURN 事务(每帧调用)。 */
 	void TickRelay();
 
+	/** TURN 分配失败已降级为直连时返回 true。 */
+	bool IsRelayFallbackDirect();
+
 private:
 	FString TurnServerAddr;
 	FString TurnUsername;

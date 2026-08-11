@@ -45,3 +45,12 @@ void UWeaponRelayNetDriver::TickRelay()
 		Relay->Tick();
 	}
 }
+
+bool UWeaponRelayNetDriver::IsRelayFallbackDirect()
+{
+	if (FWeaponRelaySocket* Relay = static_cast<FWeaponRelaySocket*>(GetSocket()))
+	{
+		return Relay->IsFallbackDirect();
+	}
+	return false;
+}

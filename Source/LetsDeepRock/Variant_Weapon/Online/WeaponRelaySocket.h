@@ -92,6 +92,9 @@ public:
 	EWeaponRelaySocketState GetState() const { return State; }
 	const FInternetAddr* GetRelayedAddress() const { return RelayedAddress.IsValid() ? RelayedAddress.Get() : nullptr; }
 
+	/** TURN 分配失败且从未 Ready 时,透传底层 UDP 直连(优雅降级)。 */
+	bool IsFallbackDirect() const { return bFallbackDirect; }
+
 private:
 	// TURN 事务
 	bool SendStunTransaction(const TArray<uint8>& Message);
@@ -100,6 +103,8 @@ private:
 	void OnChannelBindResponse(const uint8* Data, int32 Size);
 	void OnDataIndication(const uint8* Data, int32 Size);
 	void SendAuthenticatedAllocate();
+	/** 统一失败入口:从未 Ready 时同时置降级标志。 */
+	void EnterFailedState();
 
 	// 底层 socket
 	FSocket* Underlying = nullptr;
@@ -130,6 +135,9 @@ private:
 	// 事务超时
 	double TransactionStartTime = 0.0;
 	bool bTransactionPending = false;
+
+	// 优雅降级:Allocate 失败且从未 Ready 时置位,此后所有 I/O 透传底层 UDP
+	bool bFallbackDirect = false;
 
 	bool bNonBlocking = true;
 };

@@ -256,7 +256,17 @@ void FWeaponRelaySocket::Tick()
 	{
 		UE_LOG(LogWeaponRelay, Error, TEXT("TURN transaction timed out (state %d)"), static_cast<int32>(State));
 		bTransactionPending = false;
-		State = EWeaponRelaySocketState::Failed;
+		EnterFailedState();
+	}
+}
+
+void FWeaponRelaySocket::EnterFailedState()
+{
+	State = EWeaponRelaySocketState::Failed;
+	if (!bChannelBound)
+	{
+		bFallbackDirect = true;
+		UE_LOG(LogWeaponRelay, Warning, TEXT("TURN failure before channel bind; falling back to direct UDP"));
 	}
 }
 
@@ -333,6 +343,12 @@ bool FWeaponRelaySocket::SendTo(const uint8* Data, int32 Count, int32& BytesSent
 		return false;
 	}
 
+	// 优雅降级:Allocate 失败且从未 Ready,直接透传底层 UDP 到真实对端
+	if (bFallbackDirect)
+	{
+		return Underlying->SendTo(Data, Count, BytesSent, Destination);
+	}
+
 	if (State == EWeaponRelaySocketState::Ready && bChannelBound && BoundPeerAddr.IsValid())
 	{
 		// ChannelData: 2-byte channel + 2-byte length + payload
@@ -364,6 +380,16 @@ bool FWeaponRelaySocket::SendTo(const uint8* Data, int32 Count, int32& BytesSent
 
 bool FWeaponRelaySocket::RecvFrom(uint8* Data, int32 BufferSize, int32& BytesRead, FInternetAddr& Source, ESocketReceiveFlags::Type Flags)
 {
+	// 优雅降级:透传底层 UDP,返回真实源地址
+	if (bFallbackDirect)
+	{
+		if (!Underlying)
+		{
+			return false;
+		}
+		return Underlying->RecvFrom(Data, BufferSize, BytesRead, Source, Flags);
+	}
+
 	// Drain buffered payload (e.g. from a Send Indication) first.
 	if (ReadBufferOffset < ReadBuffer.Num())
 	{
@@ -504,11 +530,26 @@ bool FWeaponRelaySocket::Wait(ESocketWaitConditions::Type Condition, FTimespan W
 
 ESocketConnectionState FWeaponRelaySocket::GetConnectionState()
 {
+	// 降级直连时与普通 UDP 一致:底层 socket 决定连接状态
+	if (bFallbackDirect)
+	{
+		return Underlying ? Underlying->GetConnectionState() : SCS_NotConnected;
+	}
 	return (State == EWeaponRelaySocketState::Ready) ? SCS_Connected : SCS_NotConnected;
 }
 
 void FWeaponRelaySocket::GetAddress(FInternetAddr& OutAddr)
 {
+	// 降级直连:返回底层真实本地地址(而不是 TURN relayed address),
+	// 否则 InitListen 会拿服务器端口当本地端口,Host 发布的 endpoint 就是错的
+	if (bFallbackDirect)
+	{
+		if (Underlying)
+		{
+			Underlying->GetAddress(OutAddr);
+		}
+		return;
+	}
 	if (RelayedAddress.IsValid())
 	{
 		OutAddr = *RelayedAddress;
@@ -521,6 +562,10 @@ void FWeaponRelaySocket::GetAddress(FInternetAddr& OutAddr)
 
 bool FWeaponRelaySocket::GetPeerAddress(FInternetAddr& OutAddr)
 {
+	if (bFallbackDirect)
+	{
+		return Underlying ? Underlying->GetPeerAddress(OutAddr) : false;
+	}
 	if (BoundPeerAddr.IsValid())
 	{
 		OutAddr = *BoundPeerAddr;
@@ -670,13 +715,13 @@ void FWeaponRelaySocket::OnAllocateResponse(const uint8* Data, int32 Size)
 		}
 
 		UE_LOG(LogWeaponRelay, Error, TEXT("Allocate rejected by TURN server"));
-		State = EWeaponRelaySocketState::Failed;
+		EnterFailedState();
 		return;
 	}
 
 	if (MsgType != WeaponRelayStun::AllocateSuccess)
 	{
-		State = EWeaponRelaySocketState::Failed;
+		EnterFailedState();
 		return;
 	}
 
@@ -705,7 +750,7 @@ void FWeaponRelaySocket::OnAllocateResponse(const uint8* Data, int32 Size)
 	}
 
 	UE_LOG(LogWeaponRelay, Error, TEXT("Allocate success without XOR-RELAYED-ADDRESS"));
-	State = EWeaponRelaySocketState::Failed;
+	EnterFailedState();
 }
 
 void FWeaponRelaySocket::SendAuthenticatedAllocate()
@@ -770,7 +815,7 @@ void FWeaponRelaySocket::OnChannelBindResponse(const uint8* Data, int32 Size)
 	else
 	{
 		UE_LOG(LogWeaponRelay, Error, TEXT("ChannelBind rejected"));
-		State = EWeaponRelaySocketState::Failed;
+		EnterFailedState();
 	}
 }
 
