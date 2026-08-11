@@ -73,6 +73,15 @@ public:
 	/** Host: 用中心已确认的 direct endpoint 触发客户端 reconnect。 */
 	bool TriggerDirectReconnect(const FString& Address, FString& OutError);
 
+	/** 向 Coordinator 请求本 peer 的短期 TURN relay 凭证并缓存,供 ConfigureRelayNetDriver 使用。 */
+	bool RequestRelayCredentials(FString& OutError);
+
+	/** 用缓存的 relay 凭证配置当前 NetDriver(连接前调用)。 */
+	bool ConfigureRelayNetDriver(FString& OutError);
+
+	/** 是否已缓存有效的 relay 凭证。 */
+	bool HasRelayCredentials() const { return RelayCredentialsCached.IsValid(); }
+
 	/** Host: 创建 Match(中心分配 MatchId + JoinCode)。 */
 	bool CreateCentralMatch(FString& OutError);
 
@@ -214,6 +223,15 @@ private:
 
 	// 暂存缓冲区:只存事件原文,不存判断结论;MatchId 建立后重放时走完整 fence
 	TArray<FString> StashedEvents;
+
+	// Coordinator 下发的短期 TURN relay 凭证缓存(Relay 路径 fallback 用)
+	struct FRelayCredentialsCache
+	{
+		FString Username;
+		FString Password;
+		FString RelayAddr;
+	};
+	TSharedPtr<FRelayCredentialsCache> RelayCredentialsCached;
 
 	UPROPERTY()
 	FGuid MatchId;
