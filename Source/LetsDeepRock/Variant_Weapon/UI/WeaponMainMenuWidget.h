@@ -5,14 +5,18 @@
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
 #include "Components/Button.h"
+#include "Engine/TimerHandle.h"
+#include "Online/WeaponCentralConnectivityTypes.h"
 #include "Online/WeaponSessionSubsystem.h"
 #include "WeaponMainMenuWidget.generated.h"
 
 class UCanvasPanel;
+class UEditableTextBox;
 class UPanelWidget;
 class UTextBlock;
 class UVerticalBox;
 class UWidgetSwitcher;
+class UWeaponCentralConnectivitySubsystem;
 class UWeaponSessionSubsystem;
 
 /** 房间行 Join 按钮点击事件，携带 FindLanGames 返回的结果索引。 */
@@ -59,6 +63,53 @@ private:
 	{
 		OnRoomJoinClicked.Broadcast(ResultIndex);
 	}
+};
+
+/** 创建房间的推进状态：先连中心，失败可回退 LocalP2P。 */
+UENUM()
+enum class EWeaponRoomCreateState : uint8
+{
+	Idle,
+	ConnectingCentral,
+	JoiningCentral,
+	FallbackPrompt,
+};
+
+/**
+ *  中心连接失败后的 LocalP2P 回退确认弹窗。
+ *
+ *  纯 C++ UMG 模态层，创建后 AddToViewport 置于主菜单之上，点击"接受"或"拒绝"后销毁自身。
+ */
+UCLASS()
+class UWeaponLobbyFallbackDialog : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+	/** 显示"是否以 LocalP2P 模式继续？"；接受继续创建房间，拒绝留在主菜单。 */
+	void ShowFallbackDialog(UWidget* InOwningMenu, UWidget* InCreateButton);
+
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnFallbackChosen, bool, bAccepted);
+
+	/** 用户选择结果广播给宿主菜单。 */
+	UPROPERTY()
+	FOnFallbackChosen OnFallbackChosen;
+
+protected:
+	virtual void NativeOnInitialized() override;
+
+private:
+	UFUNCTION()
+	void HandleAcceptClicked();
+
+	UFUNCTION()
+	void HandleDeclineClicked();
+
+	UPROPERTY()
+	TObjectPtr<UWidget> OwningMenu = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UWidget> CreateButton = nullptr;
 };
 
 /**
@@ -158,6 +209,10 @@ private:
 	UFUNCTION()
 	void HandleRefreshRoomsClicked();
 
+	/** 使用玩家输入的 Central JoinCode 加入互联网房间。 */
+	UFUNCTION()
+	void HandleCentralJoinClicked();
+
 	UFUNCTION()
 	void HandleRoomJoinClicked(int32 ResultIndex);
 
@@ -172,6 +227,31 @@ private:
 	/** 订阅 UWeaponSessionSubsystem::OnJoinComplete */
 	UFUNCTION()
 	void HandleJoinSessionComplete(bool bWasSuccessful, FString Message);
+
+	/** 订阅 UWeaponCentralConnectivitySubsystem::OnConnectivityChanged */
+	UFUNCTION()
+	void HandleCentralConnectivityChanged(EWeaponCentralConnectivityState NewState, FString Message);
+
+	/** LocalP2P 回退弹窗的选择结果 */
+	UFUNCTION()
+	void HandleFallbackChosen(bool bAccepted);
+
+	// ---- 创建房间流程 ----
+
+	/** 进入"连接中心"状态：发起中心认证，并启动就绪等待计时。 */
+	void BeginConnectingCentral();
+
+	/** 中心控制认证 + MatchId 就绪则进入游戏；Lease / Checkpoint 在玩法世界内继续收敛。 */
+	void CheckCentralReadyAndMaybeStart();
+
+	/** 就绪或用户接受回退后，真正发起 HostLanGameOnMap。 */
+	void StartHostingGame();
+
+	/** 超时 / 中心失败 / 用户拒绝时进入回退询问弹窗。 */
+	void PromptLocalP2PFallback(const FString& Reason);
+
+	/** 中心等待计时到点（尚未就绪）→ 弹窗询问 LocalP2P。 */
+	void HandleCentralWaitTimeout();
 
 	// ---- 辅助 ----
 
@@ -203,6 +283,31 @@ private:
 	/** 组队面板：状态提示文本 */
 	UPROPERTY()
 	TObjectPtr<UTextBlock> RoomStatusText;
+
+	/** 回退确认弹窗实例（仅创建流程中非空） */
+	UPROPERTY()
+	TObjectPtr<UWeaponLobbyFallbackDialog> FallbackDialog;
+
+	/** 组队面板的"创建房间"按钮（流程期间禁用防重复点击） */
+	UPROPERTY()
+	TObjectPtr<UButton> CreateRoomButton;
+
+	/** 组队面板：玩家输入的 Central JoinCode。 */
+	UPROPERTY()
+	TObjectPtr<UEditableTextBox> CentralJoinCodeInput;
+
+	/** 组队面板：按 JoinCode 加入中心房间。 */
+	UPROPERTY()
+	TObjectPtr<UButton> CentralJoinButton;
+
+	/** 当前创建房间流程状态 */
+	EWeaponRoomCreateState RoomCreateState = EWeaponRoomCreateState::Idle;
+
+	/** 中心认证与 Match 创建等待超时计时器 */
+	FTimerHandle CentralWaitTimer;
+
+	/** 中心就绪等待超时秒数 */
+	static constexpr float CentralWaitTimeoutSeconds = 10.0f;
 
 	static constexpr int32 IdlePageIndex = 0;
 	static constexpr int32 TeamPageIndex = 1;

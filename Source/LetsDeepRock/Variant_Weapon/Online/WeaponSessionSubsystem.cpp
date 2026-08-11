@@ -325,7 +325,29 @@ void UWeaponSessionSubsystem::HandleCreateSessionComplete(const FName SessionNam
 	}
 
 	SetOperation(EWeaponSessionOperation::Idle);
-	const bool bSuccess = bWasSuccessful && SessionName == WeaponSession::GameSessionName;
+	bool bSuccess = bWasSuccessful && SessionName == WeaponSession::GameSessionName;
+	if (bSuccess && Sessions.IsValid())
+	{
+		FNamedOnlineSession* HostedSession = Sessions->GetNamedSession(WeaponSession::GameSessionName);
+		if (!HostedSession || !HostedSession->OwningUserId.IsValid())
+		{
+			bSuccess = false;
+			UE_LOG(LogWeaponSession, Warning, TEXT("The created LAN Session has no valid owner."));
+		}
+		else if (!HostedSession->SessionSettings.bIsDedicated &&
+			!Sessions->RegisterPlayer(
+				WeaponSession::GameSessionName,
+				*HostedSession->OwningUserId,
+				/*bWasInvited=*/false))
+		{
+			bSuccess = false;
+			UE_LOG(LogWeaponSession, Warning, TEXT("Failed to register the Listen Host in the LAN Session."));
+		}
+		else if (!HostedSession->SessionSettings.bIsDedicated)
+		{
+			UE_LOG(LogWeaponSession, Log, TEXT("Listen Host registered in the LAN Session player count."));
+		}
+	}
 	if (bCreatingRecoverySession)
 	{
 		bCreatingRecoverySession = false;

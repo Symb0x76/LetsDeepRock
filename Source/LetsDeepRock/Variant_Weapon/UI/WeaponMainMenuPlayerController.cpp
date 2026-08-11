@@ -36,6 +36,9 @@ void AWeaponMainMenuPlayerController::ShowMainMenu()
 	MainMenuWidget = CreateWidget<UWeaponMainMenuWidget>(this, MainMenuWidgetClass);
 	if (MainMenuWidget)
 	{
+		// SetWidgetToFocus 的目标必须支持键盘焦点，否则 Slate 会报告
+		// "Attempting to focus Non-Focusable widget SObjectWidget"。
+		MainMenuWidget->SetIsFocusable(true);
 		MainMenuWidget->AddToViewport();
 
 		// 主菜单是模态界面：只接收 UI 输入，并把焦点交给菜单本体，键盘导航才能生效

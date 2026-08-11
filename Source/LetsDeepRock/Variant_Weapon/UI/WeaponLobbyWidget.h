@@ -4,6 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+#include "Online/WeaponCentralConnectivityTypes.h"
+#include "WeaponGameState.h"
+#include "WeaponPlayerState.h"
 #include "WeaponLobbyWidget.generated.h"
 
 class UBorder;
@@ -14,6 +17,7 @@ class UPanelWidget;
 class UTextBlock;
 class UVerticalBox;
 class UWidgetSwitcher;
+class UWeaponCentralConnectivitySubsystem;
 class UWeaponTalentTreeWidget;
 
 /** 房间 UI 的两种呈现形态：常驻小窗 / 全屏面板。 */
@@ -50,6 +54,19 @@ enum class EWeaponLobbyPrimaryAction : uint8
 
 	/** 房主已准备且其他人全部就绪 —— "开始游戏" */
 	StartGame,
+};
+
+/** 联机信息行：标签 + 值文本，行内容由 RefreshSessionInfo 填充。 */
+USTRUCT()
+struct FWeaponLobbySessionInfoRow
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> Label = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> Value = nullptr;
 };
 
 /** 一行队伍名单所需要刷新的控件引用集合。 */
@@ -100,8 +117,11 @@ struct FWeaponLobbyRosterRow
  *  - Expanded：全屏房间面板，内部再分 Roster / MissionSelect 两页。
  *
  *  网络：
- *  准备状态读取 WeaponPlayerState 的复制 LobbyState，并通过 RequestSetPlayerReady 提交意图；
- *  Listen Server 房主在全员准备后可请求服务器切换到任务地图。
+ *  准备状态走真实网络链路：本地玩家通过 AWeaponPlayerState::RequestSetPlayerReady 提交意图，
+ *  服务端校验后写入复制属性，OnLobbyStateChanged / OnMatchPhaseChanged 广播驱动 RefreshLobbyState；
+ *  Listen Server 房主且全员就绪时调用 AWeaponGameMode::TryStartLobbyTravel 切换到任务地图。
+ *  房主判定要求本地 PlayerController 持有权威且当前世界为 Listen Server，
+ *  队友准备状态读取已复制的 PlayerState。0.25s 低频轮询仅兜底远程玩家 join/leave/ready 变化。
  */
 UCLASS()
 class UWeaponLobbyWidget : public UUserWidget
@@ -205,6 +225,9 @@ private:
 	UFUNCTION()
 	void HandlePrimaryActionClicked();
 
+	/** 把本地玩家的准备意图提交给网络层（本地写请求函数，服务端校验并广播）。 */
+	void RequestLocalReady(bool bNewIsReady);
+
 	/** 占位：装备 / 天赋 / 职业三个入口本次不接实际页面。 */
 	UFUNCTION()
 	void HandleLoadoutButtonClicked();
@@ -212,19 +235,36 @@ private:
 	UFUNCTION()
 	void HandleTalentButtonClicked();
 
-	// ================= 大厅状态 =================
+	// ================= 网络状态 =================
 
 	/** 本地是否为 Listen Server 房主。 */
 	bool IsLocalHost() const;
 
-	/** 从本地 WeaponPlayerState 的复制 LobbyState 读取准备状态。 */
-	bool IsLocalPlayerReady() const;
-
 	/** 除本地玩家外，其余已连接玩家是否全部准备；没有队友时视为满足。 */
 	bool AreOtherPlayersReady() const;
 
+	/** 本地玩家的网络 ready 状态（读复制后的 PlayerState）。 */
+	bool IsLocalPlayerReady() const;
+
 	/** 依据准备状态与房主身份解析主操作按钮语义。 */
 	EWeaponLobbyPrimaryAction ResolvePrimaryAction() const;
+
+	/** 网络回调：任一 PlayerState 的 ready 变化 / 战局阶段变化后刷新整个面板。 */
+	UFUNCTION()
+	void HandleLobbyStateChanged(FWeaponPlayerLobbyState OldState, FWeaponPlayerLobbyState NewState);
+
+	UFUNCTION()
+	void HandleMatchPhaseChanged(EWeaponMatchPhase NewPhase);
+
+	/** 中心控制面状态变化（握手进度 / Direct/Relay 建立）后刷新联机信息行。 */
+	UFUNCTION()
+	void HandleCentralConnectivityChanged(EWeaponCentralConnectivityState NewState, FString Message);
+
+	/** 接管对本地 PlayerState 网络事件的监听（重复创建/重建时先解绑旧的）。 */
+	void BindLobbyEvents();
+
+	/** 刷新联机信息行（模式 / 角色 / 房间号 / 端口，读 Central 与 World URL）。 */
+	void RefreshSessionInfo();
 
 	/** 切换分页 */
 	void SetActivePage(EWeaponLobbyPage NewPage);
@@ -259,6 +299,18 @@ private:
 	UPROPERTY()
 	TObjectPtr<UTextBlock> HeaderPhaseText = nullptr;
 
+	/** 小窗上的联机模式标签（LOCAL P2P / CENTRAL） */
+	UPROPERTY()
+	TObjectPtr<UTextBlock> DockModeText = nullptr;
+
+	/** 全屏面板顶栏下方的联机信息行（模式 / 角色 / 房间号 / 端口） */
+	UPROPERTY()
+	TObjectPtr<UVerticalBox> SessionInfoBox = nullptr;
+
+	/** 联机信息键值对（标签与值文本），行内容由 RefreshSessionInfo 填充 */
+	UPROPERTY()
+	TArray<FWeaponLobbySessionInfoRow> SessionInfoRows;
+
 	UPROPERTY()
 	TArray<FWeaponLobbyRosterRow> RosterRows;
 
@@ -283,6 +335,9 @@ private:
 
 	/** 无网络回调时的兜底轮询计时器 */
 	float RefreshAccumulator = 0.0f;
+
+	/** 网络委托已绑定（重复重建时先解绑旧的，避免重复监听） */
+	bool bEventsBound = false;
 
 	static constexpr int32 RosterSlotCount = 4;
 	static constexpr int32 RosterPageIndex = 0;
