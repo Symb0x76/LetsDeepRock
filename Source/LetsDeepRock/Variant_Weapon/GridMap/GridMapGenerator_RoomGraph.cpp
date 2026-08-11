@@ -11,12 +11,12 @@ struct FTemplateEntry { FString Path; UGridMapRoomAsset* Room = nullptr; };
 void HashByte(uint64& Hash, const uint8 Value) { Hash ^= Value; Hash *= 1099511628211ull; }
 void HashInt(uint64& Hash, const int64 Value)
 {
-	for (int32 Shift = 0; Shift < 64; Shift += 8) { HashByte(Hash, static_cast<uint8>(static_cast<uint64>(Value) >> Shift)); }
+	for (int32 Shift = 0; Shift < 64; Shift += 8) { GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(static_cast<uint64>(Value) >> Shift)); }
 }
 void HashString(uint64& Hash, const FString& Value)
 {
-	FTCHARToUTF8 Utf8(*Value); HashInt(Hash, Utf8.Length());
-	for (int32 Index = 0; Index < Utf8.Length(); ++Index) { HashByte(Hash, static_cast<uint8>(Utf8.Get()[Index])); }
+	FTCHARToUTF8 Utf8(*Value); GridMapRoomGraph::HashInt(Hash, Utf8.Length());
+	for (int32 Index = 0; Index < Utf8.Length(); ++Index) { GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(Utf8.Get()[Index])); }
 }
 FIntPoint ExitCenter(const FGridMapRoomExit& Exit)
 {
@@ -105,16 +105,16 @@ uint64 UGridMapGenerator_RoomGraph::ComputeTemplateContentHash(const UGridMapRoo
 {
 	using namespace GridMapRoomGraph;
 	uint64 Hash = 14695981039346656037ull;
-	HashInt(Hash, Room.TemplateVersion); HashByte(Hash, static_cast<uint8>(Room.RoomType));
-	HashInt(Hash, Room.Size.X); HashInt(Hash, Room.Size.Y); HashInt(Hash, FMath::RoundToInt64(Room.TileSize * 1000.0));
-	HashInt(Hash, Room.Tiles.Num()); for (const EGridTileType Tile : Room.Tiles) { HashByte(Hash, static_cast<uint8>(Tile)); }
+	GridMapRoomGraph::HashInt(Hash, Room.TemplateVersion); GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(Room.RoomType));
+	GridMapRoomGraph::HashInt(Hash, Room.Size.X); GridMapRoomGraph::HashInt(Hash, Room.Size.Y); GridMapRoomGraph::HashInt(Hash, FMath::RoundToInt64(Room.TileSize * 1000.0));
+	GridMapRoomGraph::HashInt(Hash, Room.Tiles.Num()); for (const EGridTileType Tile : Room.Tiles) { GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(Tile)); }
 	TArray<FGridMapRoomExit> Exits = Room.Exits;
 	Exits.Sort([](const FGridMapRoomExit& A, const FGridMapRoomExit& B) { return A.Id.LexicalLess(B.Id); });
-	HashInt(Hash, Exits.Num());
+	GridMapRoomGraph::HashInt(Hash, Exits.Num());
 	for (const FGridMapRoomExit& Exit : Exits)
 	{
-		HashString(Hash, Exit.Id.ToString()); HashInt(Hash, Exit.Start.X); HashInt(Hash, Exit.Start.Y); HashInt(Hash, Exit.Width);
-		HashByte(Hash, static_cast<uint8>(Exit.Direction)); HashString(Hash, Exit.ConnectionTag.ToString());
+		GridMapRoomGraph::HashString(Hash, Exit.Id.ToString()); GridMapRoomGraph::HashInt(Hash, Exit.Start.X); GridMapRoomGraph::HashInt(Hash, Exit.Start.Y); GridMapRoomGraph::HashInt(Hash, Exit.Width);
+		GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(Exit.Direction)); GridMapRoomGraph::HashString(Hash, Exit.ConnectionTag.ToString());
 	}
 	TArray<FGridMapRoomMarker> Markers = Room.Markers;
 	Markers.Sort([](const FGridMapRoomMarker& A, const FGridMapRoomMarker& B)
@@ -123,12 +123,12 @@ uint64 UGridMapGenerator_RoomGraph::ComputeTemplateContentHash(const UGridMapRoo
 		if (A.Yaw != B.Yaw) { return A.Yaw < B.Yaw; } if (A.Group != B.Group) { return A.Group.LexicalLess(B.Group); }
 		if (A.Weight != B.Weight) { return A.Weight < B.Weight; } return A.Radius < B.Radius;
 	});
-	HashInt(Hash, Markers.Num());
+	GridMapRoomGraph::HashInt(Hash, Markers.Num());
 	for (const FGridMapRoomMarker& Marker : Markers)
 	{
-		HashByte(Hash, static_cast<uint8>(Marker.Type)); HashInt(Hash, Marker.GridCoord.X); HashInt(Hash, Marker.GridCoord.Y);
-		HashInt(Hash, FMath::RoundToInt64(Marker.Yaw * 1000.0)); HashString(Hash, Marker.Group.ToString());
-		HashInt(Hash, FMath::RoundToInt64(Marker.Weight * 1000.0)); HashInt(Hash, FMath::RoundToInt64(Marker.Radius * 1000.0));
+		GridMapRoomGraph::HashByte(Hash, static_cast<uint8>(Marker.Type)); GridMapRoomGraph::HashInt(Hash, Marker.GridCoord.X); GridMapRoomGraph::HashInt(Hash, Marker.GridCoord.Y);
+		GridMapRoomGraph::HashInt(Hash, FMath::RoundToInt64(Marker.Yaw * 1000.0)); GridMapRoomGraph::HashString(Hash, Marker.Group.ToString());
+		GridMapRoomGraph::HashInt(Hash, FMath::RoundToInt64(Marker.Weight * 1000.0)); GridMapRoomGraph::HashInt(Hash, FMath::RoundToInt64(Marker.Radius * 1000.0));
 	}
 	return Hash;
 }

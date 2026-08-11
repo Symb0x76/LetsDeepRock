@@ -22,6 +22,7 @@ class UGrenadeTrajectoryPreviewComponent;
 struct FCharacterAttributeRow;
 class UWeaponGrenadeDataAsset;
 class UVisionSourceComponent;
+class UNavigationInvokerComponent;
 class AWeaponPlayerState;
 class ADrone;
 struct FGrenadeBallisticsOutput;
@@ -54,6 +55,10 @@ class AWeaponCharacter : public ACharacter, public IAbilitySystemInterface
 	/** 角色锥形视野来源。 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UVisionSourceComponent> VisionSource;
+
+	/** 围绕玩家按需生成动态导航。半径可直接在组件上调整。 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Components", meta = (AllowPrivateAccess = "true"))
+	TObjectPtr<UNavigationInvokerComponent> NavigationInvoker;
 
 protected:
 

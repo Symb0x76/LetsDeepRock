@@ -29,7 +29,7 @@ bool FGridRendererUncarvedEmpty::RunTest(const FString& Parameters)
 {
 	using namespace GridMapRendererChunkTests; UGridMapData* M = Map(); M->Fill(EGridTileType::Uncarved); UGridMapRenderer* R = Renderer(M);
 	TestEqual(TEXT("Uncarved 零实例"), R->GetTotalInstanceCount(), 0); TestEqual(TEXT("空区块不进入活动缓存"), R->GetActiveChunkCount(), 0);
-	TestEqual(TEXT("无活动类型不创建 HISM"), R->GetHISMComponentCount(), 0); return true;
+	TestEqual(TEXT("Uncarved 不创建可影响导航的 HISM 障碍实例"), R->GetHISMComponentCount(), 0); return true;
 }
 
 RENDERER_CHUNK_TEST(FGridRendererExplicitTypes, "LetsDeepRock.GridMap.Stage4B.ExplicitTypeCounts")

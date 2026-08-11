@@ -38,7 +38,7 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Renderer")
 	float LargeTreeHeight = 150.0f;
 
-	static constexpr int32 ChunkSize = 64;
+	static constexpr int32 ChunkSize = GridMapChunkSize;
 
 	void BuildFromMapData(UGridMapData* MapData);
 	void MarkDirtyChunk(int32 GridX, int32 GridY);

@@ -108,6 +108,7 @@ void AGridMapManager::Tick(float DeltaSeconds)
 	}
 
 	if (MapRenderer) { MapRenderer->FlushDirtyChunks(); }
+	FlushNavigationDirtyChunks();
 }
 
 void AGridMapManager::GenerateMap()
@@ -414,14 +415,6 @@ bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FStri
 	if (MapRenderer)
 	{
 		MapRenderer->BuildFromMapData(MapData);
-	}
-
-	if (HasAuthority())
-	{
-		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
-		{
-			NavSys->Build();
-		}
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
@@ -897,27 +890,6 @@ void AGridMapManager::DrawVisionDebug() const
 	}
 }
 
-void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
-{
-	MarkVisionDirty();
-	// 移除渲染实例（同时移除碰撞，因为 HISM 碰撞和实例绑定）
-	if (MapRenderer)
-	{
-		MapRenderer->RemoveTileInstance(GridX, GridY);
-	}
-
-	// 局部更新 NavMesh
-	if (MapData)
-	{
-		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
-		{
-			const FVector Extent(MapData->GetConfig().TileSize);
-			NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
-		}
-	}
-}
-
 bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
 	const FVector& WorldLocation, EGridTileType BuildType)
 {
@@ -1020,9 +992,12 @@ void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
 	Tile->MaxHealth = Delta.MaxHealth;
 	MarkVisionDirty();
 
-	if (bTypeChanged && MapRenderer)
+	if (bTypeChanged)
 	{
-		MapRenderer->MarkDirtyChunk(Delta.GridX, Delta.GridY);
+		if (MapRenderer)
+		{
+			MapRenderer->MarkDirtyChunk(Delta.GridX, Delta.GridY);
+		}
 		MarkTileNavigationDirty(Delta.GridX, Delta.GridY);
 	}
 
@@ -1035,17 +1010,36 @@ void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
 
 void AGridMapManager::MarkTileNavigationDirty(int32 GridX, int32 GridY)
 {
+	NavigationDirtyTracker.MarkTile(GridX, GridY, HasAuthority() && MapData != nullptr);
+}
+
+void AGridMapManager::FlushNavigationDirtyChunks()
+{
 	if (!HasAuthority() || !MapData)
+	{
+		NavigationDirtyTracker.Flush(false, [](const FIntPoint&) {});
+		return;
+	}
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	if (!NavSys)
 	{
 		return;
 	}
 
-	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	const float TileSize = MapData->GetConfig().TileSize;
+	constexpr float NavigationDirtyHalfHeight = 10000.0f;
+	NavigationDirtyTracker.Flush(true, [NavSys, TileSize](const FIntPoint& ChunkCoord)
 	{
-		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		const FVector Extent(MapData->GetConfig().TileSize);
-		NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
-	}
+		const FVector Min(
+			ChunkCoord.X * GridMapChunkSize * TileSize,
+			ChunkCoord.Y * GridMapChunkSize * TileSize,
+			-NavigationDirtyHalfHeight);
+		const FVector Max(
+			(ChunkCoord.X + 1) * GridMapChunkSize * TileSize,
+			(ChunkCoord.Y + 1) * GridMapChunkSize * TileSize,
+			NavigationDirtyHalfHeight);
+		NavSys->AddDirtyArea(FBox(Min, Max), ENavigationDirtyFlag::All);
+	});
 }
 
 int32 AGridMapManager::GetDefaultHealthForType(EGridTileType TileType) const

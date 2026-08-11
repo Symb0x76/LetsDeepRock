@@ -143,7 +143,9 @@ private:
 
 	void ApplyAllReplicatedDeltas();
 	void MarkTileNavigationDirty(int32 GridX, int32 GridY);
+	void FlushNavigationDirtyChunks();
 	int32 GetDefaultHealthForType(EGridTileType TileType) const;
+	FGridNavigationDirtyTracker NavigationDirtyTracker;
 
 	/** 仅本地维护的当前队伍可见位图，不参与复制。 */
 	TBitArray<> VisibleTiles;
@@ -174,6 +176,4 @@ private:
 	bool HasLineOfSight(int32 SourceX, int32 SourceY, int32 TargetX, int32 TargetY) const;
 	void DrawVisionDebug() const;
 
-	/** 内部：破坏格子后的清理工作（移除渲染实例、更新 NavMesh） */
-	void OnTileDestroyedInternal(int32 GridX, int32 GridY);
 };

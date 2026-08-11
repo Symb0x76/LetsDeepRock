@@ -16,6 +16,7 @@
 #include "WeaponGameState.h"
 #include "AIController.h"
 #include "BrainComponent.h"
+#include "NavigationInvokerComponent.h"
 
 ANPCBase::ANPCBase()
 {
@@ -27,6 +28,8 @@ ANPCBase::ANPCBase()
 	ResistanceSet = CreateDefaultSubobject<UWeaponResistanceSet>(TEXT("ResistanceSet"));
 	MovementSet = CreateDefaultSubobject<UWeaponMovementSet>(TEXT("MovementSet"));
 	StatusEffectComponent = CreateDefaultSubobject<UStatusEffectComponent>(TEXT("StatusEffectComponent"));
+	NavigationInvoker = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvoker"));
+	NavigationInvoker->SetGenerationRadii(6000.0f, 8000.0f);
 }
 
 void ANPCBase::EndPlay(const EEndPlayReason::Type EndPlayReason)

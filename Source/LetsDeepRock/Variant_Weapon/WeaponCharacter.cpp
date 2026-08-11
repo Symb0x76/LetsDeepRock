@@ -37,6 +37,7 @@
 #include "Engine/World.h"
 #include "InputCoreTypes.h"
 #include "UObject/ConstructorHelpers.h"
+#include "NavigationInvokerComponent.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -61,6 +62,8 @@ AWeaponCharacter::AWeaponCharacter()
 	Camera->SetFieldOfView(75.0f);
 
 	VisionSource = CreateDefaultSubobject<UVisionSourceComponent>(TEXT("VisionSource"));
+	NavigationInvoker = CreateDefaultSubobject<UNavigationInvokerComponent>(TEXT("NavigationInvoker"));
+	NavigationInvoker->SetGenerationRadii(6000.0f, 8000.0f);
 
 	// 配置角色移动（俯视角约束到平面）
 	GetCharacterMovement()->GravityScale = 1.5f;
