@@ -1162,6 +1162,28 @@ void UWeaponMainMenuWidget::HandleCentralWaitTimeout()
 		return;
 	}
 
+	// 中心仍在认证/建 Match(未 Failed)时,超时不代表失败:
+	// 远程网络下认证管线 3 步 HTTP + Create 可能超过首轮超时。
+	// 继续等待而不是立即弹 LocalP2P 回退。
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (Central &&
+		(Central->GetConnectivityState() == EWeaponCentralConnectivityState::Authenticating ||
+		 (Central->GetConnectivityState() == EWeaponCentralConnectivityState::Connected &&
+		  !Central->IsCentralMatchReady())))
+	{
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(
+				CentralWaitTimer,
+				this,
+				&UWeaponMainMenuWidget::HandleCentralWaitTimeout,
+				CentralWaitTimeoutSeconds,
+				false);
+			return;
+		}
+	}
+
 	PromptLocalP2PFallback(TEXT("等待中心服务器超时"));
 }
 
