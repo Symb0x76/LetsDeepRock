@@ -358,11 +358,20 @@ int32 UWeaponEquipmentComponent::GetCurrentMagazineSize() const
 
 float UWeaponEquipmentComponent::GetReloadTimeRemaining() const
 {
-	if (!GetOwner() || !GetOwner()->HasAuthority())
+	if (!EquipmentState.bIsReloading || !GetWorld())
 	{
 		return 0.0f;
 	}
-	return EquipmentState.bIsReloading && GetWorld() ? GetWorld()->GetTimerManager().GetTimerRemaining(ReloadTimerHandle) : 0.0f;
+	// 服务器用计时器精度；客机用复制的时间戳插值（与 WeaponGameState 相位截止时间同一基准）。
+	if (GetOwner() && GetOwner()->HasAuthority())
+	{
+		return GetWorld()->GetTimerManager().GetTimerRemaining(ReloadTimerHandle);
+	}
+	if (const AGameStateBase* GameState = GetWorld()->GetGameState())
+	{
+		return FMath::Max(0.0f, EquipmentState.ReloadEndServerTime - GameState->GetServerWorldTimeSeconds());
+	}
+	return 0.0f;
 }
 
 void UWeaponEquipmentComponent::StartReload()
@@ -419,6 +428,10 @@ void UWeaponEquipmentComponent::StartReload()
 	}
 
 	EquipmentState.bIsReloading = true;
+	if (const AGameStateBase* GameState = GetWorld()->GetGameState())
+	{
+		EquipmentState.ReloadEndServerTime = GameState->GetServerWorldTimeSeconds() + ReloadDuration;
+	}
 	GetOwner()->ForceNetUpdate();
 	#if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload started Weapon=%s Magazine=%d/%d Reserve=%d Duration=%.3f"),
@@ -451,6 +464,7 @@ void UWeaponEquipmentComponent::FinishReload()
 		AmmoState.ReserveAmmo -= AmmoToLoad;
 	}
 	EquipmentState.bIsReloading = false;
+	EquipmentState.ReloadEndServerTime = 0.0f;
 	GetOwner()->ForceNetUpdate();
 	#if !UE_BUILD_SHIPPING
 	UE_LOG(LogTemp, Log, TEXT("[FireTrace] Reload completed Weapon=%s Magazine=%d Reserve=%d"),
@@ -466,6 +480,7 @@ void UWeaponEquipmentComponent::CancelReload()
 		GetWorld()->GetTimerManager().ClearTimer(ReloadTimerHandle);
 	}
 	EquipmentState.bIsReloading = false;
+	EquipmentState.ReloadEndServerTime = 0.0f;
 	if (bWasReloading && GetOwner())
 	{
 		GetOwner()->ForceNetUpdate();
@@ -695,6 +710,7 @@ bool UWeaponEquipmentComponent::RestoreSnapshotState(const FWeaponEquipmentSnaps
 	EquipmentState.WeaponAmmoStates = InState.WeaponAmmoStates;
 	EquipmentState.CurrentWeaponIndex = INDEX_NONE;
 	EquipmentState.bIsReloading = false; // 快照不恢复计时器，避免无可靠剩余时间时卡死。
+	EquipmentState.ReloadEndServerTime = 0.0f;
 	CurrentWeaponData = nullptr;
 	if (InState.CurrentWeaponIndex != INDEX_NONE)
 	{
