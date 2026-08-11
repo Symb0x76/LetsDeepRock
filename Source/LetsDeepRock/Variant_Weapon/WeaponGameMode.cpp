@@ -30,6 +30,7 @@ constexpr float WeaponFallbackSpawnSpacing = 250.0f;
 
 AWeaponGameMode::AWeaponGameMode()
 {
+	bUseSeamlessTravel = true;
 	HUDClass = AWeaponHUD::StaticClass();
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
@@ -1159,6 +1160,28 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 	}
 
 	return true;
+}
+
+bool AWeaponGameMode::TryStartLobbyTravel()
+{
+	UWorld* World = GetWorld();
+	const AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !World || World->GetNetMode() != NM_ListenServer || !WeaponGameState ||
+		bLobbyTravelRequested || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting ||
+		WeaponGameState->GetConnectedPlayerCount() < MinPlayersToStart || !CanStartWeaponMatch())
+	{
+		return false;
+	}
+
+	bLobbyTravelRequested = true;
+	if (World->ServerTravel(TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen")))
+	{
+		return true;
+	}
+
+	bLobbyTravelRequested = false;
+	UE_LOG(LogLetsDeepRock, Error, TEXT("Lobby ServerTravel to GridMap Stage 4 failed."));
+	return false;
 }
 
 void AWeaponGameMode::BeginWeaponMatch()

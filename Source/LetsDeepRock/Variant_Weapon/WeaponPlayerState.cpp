@@ -71,6 +71,18 @@ void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	DOREPLIFETIME(AWeaponPlayerState, ProfessionLoadout);
 }
 
+void AWeaponPlayerState::CopyProperties(APlayerState* PlayerState)
+{
+	Super::CopyProperties(PlayerState);
+
+	if (AWeaponPlayerState* NewWeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState))
+	{
+		NewWeaponPlayerState->LobbyState = LobbyState;
+		NewWeaponPlayerState->TeamId = TeamId;
+		NewWeaponPlayerState->ProfessionLoadout = ProfessionLoadout;
+	}
+}
+
 bool AWeaponPlayerState::SetProfessionLoadout(FName ProfessionId, FName PrimaryWeaponId, FName SecondaryWeaponId)
 {
 	if (!HasAuthority() || !UProfessionSaveGame::IsProfessionSelectionValid(this, ProfessionId, PrimaryWeaponId, SecondaryWeaponId))
@@ -182,6 +194,11 @@ void AWeaponPlayerState::SetPlayerReady(const bool bNewIsReady)
 
 	OnLobbyStateChanged.Broadcast(OldState, LobbyState);
 	ForceNetUpdate();
+
+	if (AWeaponGameMode* WeaponGameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+	{
+		WeaponGameMode->HandlePlayerReadyChanged();
+	}
 }
 
 void AWeaponPlayerState::OnRep_LobbyState(const FWeaponPlayerLobbyState OldState)

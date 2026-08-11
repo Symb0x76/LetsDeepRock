@@ -82,6 +82,7 @@ public:
 	//~ IAbilitySystemInterface
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void CopyProperties(APlayerState* PlayerState) override;
 
 	UFUNCTION(BlueprintPure, Category = "Vision")
 	int32 GetTeamId() const { return TeamId; }

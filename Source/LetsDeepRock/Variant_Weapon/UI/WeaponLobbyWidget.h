@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -100,10 +100,8 @@ struct FWeaponLobbyRosterRow
  *  - Expanded：全屏房间面板，内部再分 Roster / MissionSelect 两页。
  *
  *  网络：
- *  本次只做表现层原型。准备状态使用本地 bLocalReadyPrototype，不发起任何 RPC / Session 调用；
- *  房主判定读取本地 PlayerController 的 authority，队友准备状态读取已复制的 PlayerState。
- *  接网时把 HandlePrimaryActionClicked 内的本地写入替换为真实请求，并在复制回调里调用
- *  RefreshLobbyState() 即可，布局代码无需改动。
+ *  准备状态读取 WeaponPlayerState 的复制 LobbyState，并通过 RequestSetPlayerReady 提交意图；
+ *  Listen Server 房主在全员准备后可请求服务器切换到任务地图。
  */
 UCLASS()
 class UWeaponLobbyWidget : public UUserWidget
@@ -214,13 +212,13 @@ private:
 	UFUNCTION()
 	void HandleTalentButtonClicked();
 
-	// ================= 本地原型状态 =================
+	// ================= 大厅状态 =================
 
-	/** 当前本地玩家是否已准备（纯本地原型状态，不同步） */
-	bool bLocalReadyPrototype = false;
-
-	/** 本地是否为房主：读取 PlayerController 的 authority，不新增任何网络行为。 */
+	/** 本地是否为 Listen Server 房主。 */
 	bool IsLocalHost() const;
+
+	/** 从本地 WeaponPlayerState 的复制 LobbyState 读取准备状态。 */
+	bool IsLocalPlayerReady() const;
 
 	/** 除本地玩家外，其余已连接玩家是否全部准备；没有队友时视为满足。 */
 	bool AreOtherPlayersReady() const;

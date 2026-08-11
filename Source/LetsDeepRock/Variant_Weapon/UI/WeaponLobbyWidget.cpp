@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponLobbyWidget.h"
 #include "WeaponTalentTreeWidget.h"
@@ -29,6 +29,7 @@
 #include "Styling/CoreStyle.h"
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateTypes.h"
+#include "WeaponGameMode.h"
 #include "WeaponGameState.h"
 #include "WeaponPlayerState.h"
 
@@ -144,8 +145,7 @@ void UWeaponLobbyWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
-	// 本次不接网络回调，用低频轮询保证人数 / 队友准备态能跟上复制。
-	// 接网后可以删掉这段，改由 RefreshLobbyState() 被复制回调直接驱动。
+	// 用低频轮询保证人数与复制的准备状态及时刷新。
 	RefreshAccumulator += InDeltaTime;
 	if (RefreshAccumulator >= 0.25f)
 	{
@@ -1122,6 +1122,7 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	const int32 ConnectedCount = WeaponGameState ? WeaponGameState->GetConnectedPlayerCount() : 1;
 
 	const APlayerState* LocalPlayerState = GetOwningPlayerState();
+	const bool bLocalReady = IsLocalPlayerReady();
 
 	// ---- 小窗 ----
 	if (DockCountText)
@@ -1130,12 +1131,12 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	}
 	if (DockStatusText)
 	{
-		DockStatusText->SetText(FText::FromString(bLocalReadyPrototype ? TEXT("已准备") : TEXT("待命")));
-		DockStatusText->SetColorAndOpacity(FSlateColor(bLocalReadyPrototype ? Ready : Amber));
+		DockStatusText->SetText(FText::FromString(bLocalReady ? TEXT("已准备") : TEXT("待命")));
+		DockStatusText->SetColorAndOpacity(FSlateColor(bLocalReady ? Ready : Amber));
 	}
 	if (DockAccentBar)
 	{
-		DockAccentBar->SetBrushColor(bLocalReadyPrototype ? Ready : Amber);
+		DockAccentBar->SetBrushColor(bLocalReady ? Ready : Amber);
 	}
 
 	// ---- 顶栏 ----
@@ -1187,19 +1188,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 		const bool bOccupied = Player != nullptr;
 		const bool bIsLocal = bOccupied && Player == LocalPlayerState;
 
-		// 本地玩家用本地原型状态，其他人读复制值。
-		bool bIsReady = false;
-		if (bOccupied)
-		{
-			if (bIsLocal)
-			{
-				bIsReady = bLocalReadyPrototype;
-			}
-			else if (const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(Player))
-			{
-				bIsReady = WeaponPS->GetIsPlayerReady();
-			}
-		}
+		const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(Player);
+		const bool bIsReady = WeaponPS && WeaponPS->GetLobbyState().bIsReady;
 
 		if (Row.RowBackground)
 		{
@@ -1310,7 +1300,13 @@ bool UWeaponLobbyWidget::IsLocalHost() const
 {
 	// Listen Host 的本地 PlayerController 持有 authority；纯客户端没有。
 	const APlayerController* PC = GetOwningPlayer();
-	return PC && PC->HasAuthority();
+	return PC && PC->HasAuthority() && GetWorld() && GetWorld()->GetNetMode() == NM_ListenServer;
+}
+
+bool UWeaponLobbyWidget::IsLocalPlayerReady() const
+{
+	const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(GetOwningPlayerState());
+	return WeaponPS && WeaponPS->GetLobbyState().bIsReady;
 }
 
 bool UWeaponLobbyWidget::AreOtherPlayersReady() const
@@ -1343,7 +1339,7 @@ bool UWeaponLobbyWidget::AreOtherPlayersReady() const
 
 EWeaponLobbyPrimaryAction UWeaponLobbyWidget::ResolvePrimaryAction() const
 {
-	if (!bLocalReadyPrototype)
+	if (!IsLocalPlayerReady())
 	{
 		return EWeaponLobbyPrimaryAction::Ready;
 	}
@@ -1383,18 +1379,35 @@ void UWeaponLobbyWidget::HandleMissionBackClicked()
 
 void UWeaponLobbyWidget::HandlePrimaryActionClicked()
 {
+	AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(GetOwningPlayerState());
+
 	switch (ResolvePrimaryAction())
 	{
 	case EWeaponLobbyPrimaryAction::Ready:
-		bLocalReadyPrototype = true;
+		if (WeaponPS)
+		{
+			WeaponPS->RequestSetPlayerReady(true);
+		}
 		break;
 
 	case EWeaponLobbyPrimaryAction::Unready:
-		bLocalReadyPrototype = false;
+		if (WeaponPS)
+		{
+			WeaponPS->RequestSetPlayerReady(false);
+		}
 		break;
 
 	case EWeaponLobbyPrimaryAction::StartGame:
-		// 原型阶段不发起开局；接网后在这里调用真正的开始流程。
+		if (!IsLocalHost())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Only the Listen Server host can start the lobby game."));
+			break;
+		}
+		if (AWeaponGameMode* WeaponGameMode = GetWorld()->GetAuthGameMode<AWeaponGameMode>();
+			!WeaponGameMode || !WeaponGameMode->TryStartLobbyTravel())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Lobby start request was rejected by the server."));
+		}
 		break;
 	}
 
