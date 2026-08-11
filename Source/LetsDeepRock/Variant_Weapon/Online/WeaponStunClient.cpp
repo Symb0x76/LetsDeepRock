@@ -102,7 +102,9 @@ bool FWeaponStunClient::QueryReflexiveAddress(
 	}
 
 	TSharedRef<FInternetAddr> ServerAddr = SocketSubsystem->CreateInternetAddr();
-	if (!SocketSubsystem->GetHostByName(TCHAR_TO_ANSI(*ServerHost), *ServerAddr))
+	// GetHostByName 返回 ESocketErrors:SE_NO_ERROR(=0)表示成功,
+	// 不能用 ! 判断(成功值 0 会被误判为失败)。
+	if (SocketSubsystem->GetHostByName(TCHAR_TO_ANSI(*ServerHost), *ServerAddr) != SE_NO_ERROR)
 	{
 		UE_LOG(LogWeaponStunClient, Warning, TEXT("QueryReflexiveAddress: cannot resolve %s"), *ServerHost);
 		return false;

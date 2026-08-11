@@ -694,12 +694,19 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 		return;
 	}
 
-	// 有 relay 凭证时,Host 的 Listen socket 已走 TURN(仅经 TURN 可达),
-	// 只发布 relayed 候选;否则发布 direct 候选(内网 + STUN 反射)。
+	// 有 relay 凭证时,Host 的 Listen socket 应已走 TURN(仅经 TURN 可达)。
+	// 若 relayed 地址尚未就绪(TURN Allocate 未完成),降级发布 direct 候选,
+	// 保证客户端始终能拿到候选;heartbeat 周期会补发 relayed。
 	if (HasRelayCredentials())
 	{
-		PublishRelayedHostCandidate();
-		return;
+		const FString RelayedAddr = GetRelayedHostCandidateAddress();
+		if (!RelayedAddr.IsEmpty())
+		{
+			PublishRelayedHostCandidate();
+			return;
+		}
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("Relay credentials ready but relayed address not yet allocated; publishing direct candidates as fallback"));
 	}
 
 	// 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
@@ -722,17 +729,21 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 	NominateHostEndpoint(Address, Port);
 }
 
-void UWeaponCentralConnectivitySubsystem::PublishRelayedHostCandidate()
+FString UWeaponCentralConnectivitySubsystem::GetRelayedHostCandidateAddress() const
 {
 	UWorld* World = GetWorld();
 	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
 	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
 	if (!RelayDriver)
 	{
-		return;
+		return FString();
 	}
+	return RelayDriver->GetRelayedAddressString();
+}
 
-	const FString RelayedAddr = RelayDriver->GetRelayedAddressString();
+void UWeaponCentralConnectivitySubsystem::PublishRelayedHostCandidate()
+{
+	const FString RelayedAddr = GetRelayedHostCandidateAddress();
 	if (RelayedAddr.IsEmpty())
 	{
 		return;
@@ -943,10 +954,16 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 			const TSharedRef<TJsonReader<>> Reader =
 				TJsonReaderFactory<>::Create(Resp->GetContentAsString());
 			const TArray<TSharedPtr<FJsonValue>>* Candidates = nullptr;
-			if (!FJsonSerializer::Deserialize(Reader, Json) ||
-				!Json->TryGetArrayField(TEXT("candidates"), Candidates))
+			if (!FJsonSerializer::Deserialize(Reader, Json))
 			{
 				UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Host candidate response parse failed"));
+				ScheduleHostCandidatePoll();
+				return;
+			}
+			// candidates 缺失或为 null(Go 端历史版本把空列表序列化为 null)
+			// 都视为空列表继续轮询,而不是判定为解析失败。
+			if (!Json->TryGetArrayField(TEXT("candidates"), Candidates))
+			{
 				ScheduleHostCandidatePoll();
 				return;
 			}
@@ -1218,6 +1235,14 @@ bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutEr
 		RelayCredentialsCached->RelayAddr,
 		RelayCredentialsCached->Username,
 		RelayCredentialsCached->Password);
+
+	// Host:若 Listen socket 在凭证到达前已创建(未走 TURN),热升级为
+	// relay socket(RecreateSocket 仅客户端可用,Host 用 UpgradeSocketToRelay)。
+	if (World->GetNetMode() == NM_ListenServer)
+	{
+		RelayDriver->UpgradeSocketToRelay();
+	}
+
 	UE_LOG(LogWeaponCentralConnectivity, Log,
 		TEXT("Relay NetDriver configured with TURN server %s"), *RelayCredentialsCached->RelayAddr);
 	return true;
@@ -1577,8 +1602,10 @@ void UWeaponCentralConnectivitySubsystem::HandleSessionSuccess(const FString& To
 	// 把"控制连接就绪"事实交给状态机
 	PublishBackendReadiness();
 
-	// 打开 WebSocket 事件通道
-	OpenEventChannel();
+	// 注意:此处不打开事件通道——MatchId 尚未建立(认证期间的 Match 动作
+	// 只是排队),OpenEventChannel 依赖 CentralMatchIdString,此刻调用
+	// 必然打 "no active MatchId" 警告。Match 建立后(HandleMatchCreated/
+	// HandleMatchJoined)会以正确的 MatchId 打开。
 
 	// 执行认证期间排队的 Match 动作(创建/加入)
 	ExecutePendingMatchAction();
