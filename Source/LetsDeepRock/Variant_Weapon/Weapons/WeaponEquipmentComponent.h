@@ -41,6 +41,10 @@ struct FWeaponEquipmentReplicatedState
 
 	UPROPERTY()
 	bool bIsReloading = false;
+
+	/** 换弹结束的服务器时间戳（GetServerWorldTimeSeconds 基准）；0 表示未在换弹。 */
+	UPROPERTY()
+	float ReloadEndServerTime = 0.0f;
 };
 
 USTRUCT()
