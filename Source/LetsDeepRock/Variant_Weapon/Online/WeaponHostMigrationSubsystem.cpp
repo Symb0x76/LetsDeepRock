@@ -2208,6 +2208,12 @@ bool UWeaponHostMigrationSubsystem::CaptureAndDistributeSnapshot(FString& OutErr
 	{
 		return false;
 	}
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] 主机快照捕获成功：Payload字节=%d，最大快照字节=%d，分块数=%d，Delta=%d，EffectiveSeed=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，ResultHash=%llu。"),
+		Envelope.PayloadByteCount, GetMaxSnapshotBytes(), Envelope.ChunkCount,
+		SaveGame->Snapshot.GridMap.TileDeltas.Num(), SaveGame->Snapshot.GridMap.EffectiveSeed,
+		SaveGame->Snapshot.GridMap.AlgorithmVersion, SaveGame->Snapshot.GridMap.TemplateSetVersion,
+		SaveGame->Snapshot.GridMap.Recipe.Rooms.Num(), SaveGame->Snapshot.GridMap.Recipe.Connections.Num(),
+		static_cast<unsigned long long>(SaveGame->Snapshot.GridMap.ResultHash));
 
 	OutgoingTransfer = FOutgoingPayloadTransfer();
 	OutgoingTransfer.Envelope = Envelope;

@@ -112,10 +112,15 @@ except Exception as e:
         """
         code = '''import unreal
 import json
+import os
 
+editor_subsystem = None
+world = None
+game_world = None
 try:
-    world = unreal.EditorLevelLibrary.get_editor_world()
-    game_world = unreal.EditorLevelLibrary.get_game_world()
+    editor_subsystem = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
+    world = editor_subsystem.get_editor_world()
+    game_world = editor_subsystem.get_game_world()
 
     # 尝试获取关卡路径
     current_level_path = "Unknown"
@@ -130,13 +135,17 @@ try:
         "current_level": current_level_path,
         "current_level_name": str(world.get_name()) if world else "None",
         "is_playing": game_world is not None,
-        "project_name": str(unreal.SystemLibrary.get_project_name()),
+        "project_name": os.path.splitext(os.path.basename(str(unreal.Paths.get_project_file_path())))[0],
         "engine_version": str(unreal.SystemLibrary.get_engine_version()),
         "has_world": world is not None,
     }
     print(json.dumps(result, default=str))
 except Exception as e:
     print(json.dumps({"success": False, "message": str(e)}))
+finally:
+    del game_world
+    del world
+    del editor_subsystem
 '''
         result = await connection.execute_python(code)
         return unwrap_result(result)

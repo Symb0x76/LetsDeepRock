@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponLobbyWidget.h"
 #include "WeaponTalentTreeWidget.h"
@@ -1300,9 +1300,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 		const bool bOccupied = Player != nullptr;
 		const bool bIsLocal = bOccupied && Player == LocalPlayerState;
 
-		// 本地玩家与远程玩家统一读复制后的真实 ready 状态。
-		const bool bIsReady = bOccupied &&
-			(Player == LocalPlayerState ? bLocalReady : Cast<AWeaponPlayerState>(Player)->GetIsPlayerReady());
+		const AWeaponPlayerState* WeaponPS = Cast<AWeaponPlayerState>(Player);
+		const bool bIsReady = WeaponPS && WeaponPS->GetLobbyState().bIsReady;
 
 		if (Row.RowBackground)
 		{
@@ -1468,7 +1467,7 @@ bool UWeaponLobbyWidget::IsLocalHost() const
 {
 	// Listen Host 的本地 PlayerController 持有 authority；纯客户端没有。
 	const APlayerController* PC = GetOwningPlayer();
-	return PC && PC->HasAuthority();
+	return PC && PC->HasAuthority() && GetWorld() && GetWorld()->GetNetMode() == NM_ListenServer;
 }
 
 bool UWeaponLobbyWidget::AreOtherPlayersReady() const
@@ -1559,10 +1558,15 @@ void UWeaponLobbyWidget::HandlePrimaryActionClicked()
 		break;
 
 	case EWeaponLobbyPrimaryAction::StartGame:
-		// 只有房主且全员就绪才会走到这里：发起开局倒计时。
-		if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
+		if (!IsLocalHost())
 		{
-			GameMode->TryStartWeaponMatch();
+			UE_LOG(LogTemp, Warning, TEXT("Only the Listen Server host can start the lobby game."));
+			break;
+		}
+		if (AWeaponGameMode* GameMode = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+			!GameMode || !GameMode->TryStartLobbyTravel())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Lobby start request was rejected by the server."));
 		}
 		break;
 	}

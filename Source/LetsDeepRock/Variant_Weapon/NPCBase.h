@@ -13,6 +13,7 @@ class UWeaponHealthSet;
 class UWeaponResistanceSet;
 class UWeaponMovementSet;
 class UStatusEffectComponent;
+class UNavigationInvokerComponent;
 
 /**
  *  GAS 自持 NPC 基类
@@ -62,6 +63,10 @@ protected:
 
 	UPROPERTY(VisibleAnywhere, Category = "StatusEffect")
 	TObjectPtr<UStatusEffectComponent> StatusEffectComponent;
+
+	/** 围绕主动移动 AI 按需生成动态导航。半径可直接在组件上调整。 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Navigation")
+	TObjectPtr<UNavigationInvokerComponent> NavigationInvoker;
 
 	/** 初始生命值（无 DataTable 配置时作为 fallback） */
 	UPROPERTY(EditAnywhere, Category = "Attributes", meta = (ClampMin = 1))

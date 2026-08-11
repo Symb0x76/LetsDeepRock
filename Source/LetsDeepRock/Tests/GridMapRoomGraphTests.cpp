@@ -49,6 +49,35 @@ UGridMapData* Map()
 	UGridMapData* Value = NewObject<UGridMapData>(); FGridMapConfig Config; Config.MapWidth = 160; Config.MapHeight = 80; Value->Initialize(Config); return Value;
 }
 
+UGridMapData* Map(const int32 Width, const int32 Height)
+{
+	UGridMapData* Value = NewObject<UGridMapData>(); FGridMapConfig Config; Config.MapWidth = Width; Config.MapHeight = Height; Value->Initialize(Config); return Value;
+}
+
+int32 CountType(const UGridMapData& MapValue, const EGridTileType Type)
+{
+	int32 Count = 0; for (const FGridTileData& Tile : MapValue.GetAllTiles()) { Count += Tile.TileType == Type; } return Count;
+}
+
+TSet<FIntPoint> Footprint(const FGridMapGenerationRecipe& Recipe)
+{
+	TSet<FIntPoint> Result;
+	for (const FGridMapRecipeRoom& RoomValue : Recipe.Rooms)
+	{
+		for (int32 Y = 0; Y < RoomValue.Size.Y; ++Y) { for (int32 X = 0; X < RoomValue.Size.X; ++X) { Result.Add(RoomValue.Origin + FIntPoint(X, Y)); } }
+	}
+	for (const FGridMapRecipeConnection& Connection : Recipe.Connections)
+	{
+		for (int32 Segment = 1; Segment < Connection.Points.Num(); ++Segment)
+		{
+			const FIntPoint A = Connection.Points[Segment - 1], B = Connection.Points[Segment];
+			const FIntPoint Step(FMath::Sign(B.X - A.X), FMath::Sign(B.Y - A.Y)); FIntPoint P = A;
+			for (;;) { for (int32 Offset = -(Connection.CorridorWidth / 2); Offset <= Connection.CorridorWidth / 2; ++Offset) { Result.Add({P.X + (Step.Y != 0 ? Offset : 0), P.Y + (Step.X != 0 ? Offset : 0)}); } if (P == B) { break; } P += Step; }
+		}
+	}
+	return Result;
+}
+
 uint64 GenerateHash(UGridMapGenerator_RoomGraph* GeneratorValue, UGridMapData* MapValue)
 {
 	if (!GeneratorValue->GenerateChecked(MapValue)) { return 0; }
@@ -139,6 +168,86 @@ ROOM_GRAPH_TEST(FGridMapRoomGraphTemplateHashRejectsChange, "LetsDeepRock.GridMa
 bool FGridMapRoomGraphTemplateHashRejectsChange::RunTest(const FString& Parameters)
 {
 	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* A = Generator(15); TestTrue(TEXT("初次生成成功"), A->GenerateChecked(Map())); const FGridMapGenerationRecipe Recipe = A->GetGeneratedRecipe(); A->TransientTemplates[0]->SetTile({1, 1}, EGridTileType::Tree); A->SetReplayRecipe(Recipe); TestFalse(TEXT("模板内容变化拒绝重放"), A->GenerateChecked(Map())); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapUncarvedSemantics, "LetsDeepRock.GridMap.Stage4A.UncarvedSemantics")
+bool FGridMapUncarvedSemantics::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapData* M = Map(); M->Fill(EGridTileType::Uncarved);
+	const FGridTileData* Tile = M->GetTile(0, 0); TestTrue(TEXT("Uncarved 不可通行"), Tile && !Tile->IsPassable());
+	TestTrue(TEXT("Uncarved 阻挡视野"), Tile && Tile->BlocksVision()); TestTrue(TEXT("Uncarved 不可破坏"), Tile && !Tile->IsDestructible());
+	TestEqual(TEXT("Uncarved 当前耐久为零"), Tile ? Tile->Health : -1, 0); TestEqual(TEXT("Uncarved 最大耐久为零"), Tile ? Tile->MaxHealth : -1, 0); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphLargeStable, "LetsDeepRock.GridMap.Stage4A.LargeFixedSeedStable")
+bool FGridMapRoomGraphLargeStable::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* A = Generator(4001); UGridMapData* MapA = Map(1000, 1000);
+	const uint64 HashA = GenerateHash(A, MapA); UGridMapData* MapB = Map(1000, 1000); const uint64 HashB = GenerateHash(A, MapB);
+	const int32 RockCount = CountType(*MapB, EGridTileType::Rock), UncarvedCount = CountType(*MapB, EGridTileType::Uncarved);
+	TestTrue(TEXT("1000x1000 固定 Seed 生成成功"), HashA != 0); TestEqual(TEXT("1000x1000 固定 Seed 结果稳定"), HashA, HashB);
+	TestTrue(TEXT("Rock 壳规模显著小于全图"), RockCount < 50000); TestTrue(TEXT("Uncarved 显著多于 Rock"), UncarvedCount > RockCount * 10); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphV2Replay, "LetsDeepRock.GridMap.Stage4A.V2ReplayHash")
+bool FGridMapRoomGraphV2Replay::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* G = Generator(4002); UGridMapData* A = Map(); const uint64 HashA = GenerateHash(G, A);
+	const FGridMapGenerationRecipe Recipe = G->GetGeneratedRecipe(); G->SetReplayRecipe(Recipe); UGridMapData* B = Map(); const uint64 HashB = GenerateHash(G, B);
+	TestEqual(TEXT("v2 Recipe 重放哈希一致"), HashA, HashB); TestTrue(TEXT("v2 保留大量未开凿区域"), CountType(*B, EGridTileType::Uncarved) > CountType(*B, EGridTileType::Rock)); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphV1Replay, "LetsDeepRock.GridMap.Stage4A.V1ReplayLegacyLayoutHash")
+bool FGridMapRoomGraphV1Replay::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* G = Generator(4003); G->AlgorithmVersion = 1; UGridMapData* A = Map(); const uint64 HashA = GenerateHash(G, A);
+	const FGridMapGenerationRecipe Recipe = G->GetGeneratedRecipe(); G->SetReplayRecipe(Recipe); UGridMapData* B = Map(); const uint64 HashB = GenerateHash(G, B);
+	TestEqual(TEXT("v1 Recipe 按 v1 重放保持哈希"), HashA, HashB); TestEqual(TEXT("v1 旧布局没有 Uncarved"), CountType(*B, EGridTileType::Uncarved), 0); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphUnsupportedVersion, "LetsDeepRock.GridMap.Stage4A.UnsupportedVersionFails")
+bool FGridMapRoomGraphUnsupportedVersion::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* G = Generator(4004); G->AlgorithmVersion = 3;
+	TestFalse(TEXT("不支持版本明确失败"), G->GenerateChecked(Map())); TestTrue(TEXT("失败原因说明版本限制"), G->GetLastError().Contains(TEXT("版本"))); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphRockBoundary, "LetsDeepRock.GridMap.Stage4A.ContinuousRockBoundary")
+bool FGridMapRoomGraphRockBoundary::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* G = Generator(4005); UGridMapData* M = Map(); TestTrue(TEXT("v2 生成成功"), G->GenerateChecked(M));
+	const TSet<FIntPoint> PlayableFootprint = Footprint(G->GetGeneratedRecipe());
+	for (const FIntPoint Cell : PlayableFootprint)
+	{
+		for (int32 Y = -1; Y <= 1; ++Y) { for (int32 X = -1; X <= 1; ++X) { const FIntPoint NeighborCoord = Cell + FIntPoint(X, Y); if (PlayableFootprint.Contains(NeighborCoord)) { continue; } const FGridTileData* Neighbor = M->GetTile(NeighborCoord.X, NeighborCoord.Y); TestTrue(TEXT("可玩 footprint 八邻域外侧为 Rock 壳"), !Neighbor || Neighbor->TileType == EGridTileType::Rock); } }
+	}
+	TestTrue(TEXT("生成了 Rock 边界"), CountType(*M, EGridTileType::Rock) > 0); return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapRoomGraphTemplateObstacleBoundary, "LetsDeepRock.GridMap.Stage4A.TemplateEdgeObstacleRockBoundary")
+bool FGridMapRoomGraphTemplateObstacleBoundary::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapGenerator_RoomGraph* G = Generator(4006);
+	for (UGridMapRoomAsset* Template : G->TransientTemplates) { Template->SetTile({1, 0}, EGridTileType::Tree); Template->SetTile({2, 0}, EGridTileType::LargeTree); }
+	UGridMapData* M = Map(); TestTrue(TEXT("含模板边缘可破坏障碍时生成成功"), G->GenerateChecked(M));
+	for (const FGridMapRecipeRoom& RecipeRoom : G->GetGeneratedRecipe().Rooms)
+	{
+		const FIntPoint TreeCell = RecipeRoom.Origin + FIntPoint(1, 0), LargeTreeCell = RecipeRoom.Origin + FIntPoint(2, 0);
+		TestEqual(TEXT("模板边缘 Tree 不被覆盖"), M->GetTile(TreeCell.X, TreeCell.Y)->TileType, EGridTileType::Tree);
+		TestEqual(TEXT("模板边缘 LargeTree 不被覆盖"), M->GetTile(LargeTreeCell.X, LargeTreeCell.Y)->TileType, EGridTileType::LargeTree);
+		TestEqual(TEXT("Tree 外侧仍有 Rock 壳"), M->GetTile(TreeCell.X, TreeCell.Y - 1)->TileType, EGridTileType::Rock);
+		TestEqual(TEXT("LargeTree 外侧仍有 Rock 壳"), M->GetTile(LargeTreeCell.X, LargeTreeCell.Y - 1)->TileType, EGridTileType::Rock);
+	}
+	return true;
+}
+
+ROOM_GRAPH_TEST(FGridMapLegacyGeneratorsNoUncarved, "LetsDeepRock.GridMap.Stage4A.LegacyGeneratorsNoUncarved")
+bool FGridMapLegacyGeneratorsNoUncarved::RunTest(const FString& Parameters)
+{
+	using namespace GridMapRoomGraphTests; UGridMapData* DefaultMap = Map(); NewObject<UGridMapGenerator_Default>()->Generate(DefaultMap);
+	UGridMapData* SimpleMap = Map(); NewObject<UGridMapGenerator_Simple>()->Generate(SimpleMap); UGridMapData* TestMap = Map(); NewObject<UGridMapGenerator_Test>()->Generate(TestMap);
+	TestEqual(TEXT("Default 不产生 Uncarved"), CountType(*DefaultMap, EGridTileType::Uncarved), 0); TestEqual(TEXT("Simple 不产生 Uncarved"), CountType(*SimpleMap, EGridTileType::Uncarved), 0);
+	TestEqual(TEXT("Test 不产生 Uncarved"), CountType(*TestMap, EGridTileType::Uncarved), 0); return true;
 }
 
 #undef ROOM_GRAPH_TEST

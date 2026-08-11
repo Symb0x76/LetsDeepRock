@@ -13,6 +13,8 @@ class LETSDEEPROCK_API UGridMapGenerator_RoomGraph : public UGridMapGenerator
 	GENERATED_BODY()
 
 public:
+	static constexpr int32 CurrentAlgorithmVersion = 2;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RoomGraph")
 	TArray<TSoftObjectPtr<UGridMapRoomAsset>> RoomTemplates;
 
@@ -21,7 +23,7 @@ public:
 	TArray<TObjectPtr<UGridMapRoomAsset>> TransientTemplates;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RoomGraph", meta = (ClampMin = "1"))
-	int32 AlgorithmVersion = 1;
+	int32 AlgorithmVersion = CurrentAlgorithmVersion;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "RoomGraph", meta = (ClampMin = "1"))
 	int32 TemplateSetVersion = 1;

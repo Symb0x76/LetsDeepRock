@@ -106,6 +106,9 @@ void AGridMapManager::Tick(float DeltaSeconds)
 	{
 		DrawVisionDebug();
 	}
+
+	if (MapRenderer) { MapRenderer->FlushDirtyChunks(); }
+	FlushNavigationDirtyChunks();
 }
 
 void AGridMapManager::GenerateMap()
@@ -114,6 +117,7 @@ void AGridMapManager::GenerateMap()
 	{
 		return;
 	}
+	const double GenerationStartSeconds = FPlatformTime::Seconds();
 
 	FGridMapBaselineState NewState;
 	NewState.SchemaVersion = 2;
@@ -150,6 +154,17 @@ void AGridMapManager::GenerateMap()
 	NextTileRevision = 0;
 
 	ForceNetUpdate();
+	const double GenerationElapsedMilliseconds = (FPlatformTime::Seconds() - GenerationStartSeconds) * 1000.0;
+	const int32 ActiveChunkCount = MapRenderer ? MapRenderer->GetActiveChunkCount() : 0;
+	const int32 HISMComponentCount = MapRenderer ? MapRenderer->GetHISMComponentCount() : 0;
+	const int32 TreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Tree) : 0;
+	const int32 RockInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Rock) : 0;
+	const int32 LargeTreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::LargeTree) : 0;
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] 服务器地图生成并发布成功：耗时=%.3fms，GenerationVersion=%d，EffectiveSeed=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，ResultHash=%llu，Renderer活动区块=%d，HISM组件=%d，Tree实例=%d，Rock实例=%d，LargeTree实例=%d，总实例=%d。"),
+		GenerationElapsedMilliseconds, NewState.GenerationVersion, NewState.EffectiveSeed, NewState.AlgorithmVersion,
+		NewState.TemplateSetVersion, NewState.Recipe.Rooms.Num(), NewState.Recipe.Connections.Num(),
+		static_cast<unsigned long long>(NewState.ResultHash), ActiveChunkCount, HISMComponentCount,
+		TreeInstanceCount, RockInstanceCount, LargeTreeInstanceCount, TreeInstanceCount + RockInstanceCount + LargeTreeInstanceCount);
 }
 
 bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FString& OutError) const
@@ -187,7 +202,15 @@ bool AGridMapManager::CaptureRecoveryState(FGridMapRecoveryState& OutState, FStr
 		SavedDelta.Revision = Delta.Revision;
 	}
 
-	return ValidateRecoveryState(OutState, OutError);
+	if (!ValidateRecoveryState(OutState, OutError))
+	{
+		return false;
+	}
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Recovery状态捕获成功：Seed=%d，GenerationVersion=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，Delta=%d，ResultHash=%llu。"),
+		OutState.EffectiveSeed, OutState.GenerationVersion, OutState.AlgorithmVersion, OutState.TemplateSetVersion,
+		OutState.Recipe.Rooms.Num(), OutState.Recipe.Connections.Num(), OutState.TileDeltas.Num(),
+		static_cast<unsigned long long>(OutState.ResultHash));
+	return true;
 }
 
 bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, FString& OutError)
@@ -213,7 +236,7 @@ bool AGridMapManager::ValidateRecoveryState(const FGridMapRecoveryState& State, 
 		return false;
 	}
 	const bool bRoomGraph = RecoveryGeneratorClass->IsChildOf(UGridMapGenerator_RoomGraph::StaticClass());
-	if (State.EffectiveSeed == 0 || (bRoomGraph && (State.AlgorithmVersion <= 0 || State.TemplateSetVersion <= 0
+	if (State.EffectiveSeed == 0 || (bRoomGraph && ((State.AlgorithmVersion != 1 && State.AlgorithmVersion != 2) || State.TemplateSetVersion <= 0
 		|| State.ResultHash == 0 || State.Recipe.Rooms.IsEmpty())))
 	{
 		OutError = TEXT("GridMap recovery deterministic baseline is incomplete");
@@ -350,6 +373,10 @@ bool AGridMapManager::RestoreRecoveryState(const FGridMapRecoveryState& State, F
 
 	ApplyAllReplicatedDeltas();
 	ForceNetUpdate();
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Recovery状态恢复成功：Seed=%d，GenerationVersion=%d，AlgorithmVersion=%d，TemplateSetVersion=%d，Recipe房间=%d，Recipe连接=%d，Delta=%d，ResultHash=%llu。"),
+		State.EffectiveSeed, State.GenerationVersion, State.AlgorithmVersion, State.TemplateSetVersion,
+		State.Recipe.Rooms.Num(), State.Recipe.Connections.Num(), State.TileDeltas.Num(),
+		static_cast<unsigned long long>(State.ResultHash));
 	return true;
 }
 
@@ -372,6 +399,23 @@ bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FStri
 	}
 	NewGenerator->SetEffectiveSeed(State.EffectiveSeed);
 	NewGenerator->SetReplayRecipe(State.Recipe);
+	if (UGridMapGenerator_RoomGraph* RoomGraph = Cast<UGridMapGenerator_RoomGraph>(NewGenerator))
+	{
+		const bool bNewGeneration = State.Recipe.IsEmpty() && State.ResultHash == 0 && !State.bGenerated;
+		if (bNewGeneration)
+		{
+			RoomGraph->AlgorithmVersion = UGridMapGenerator_RoomGraph::CurrentAlgorithmVersion;
+		}
+		else
+		{
+			if (State.AlgorithmVersion != 1 && State.AlgorithmVersion != 2)
+			{
+				if (OutError) { *OutError = TEXT("GridMap RoomGraph 算法版本不受支持"); }
+				return false;
+			}
+			RoomGraph->AlgorithmVersion = State.AlgorithmVersion;
+		}
+	}
 	if (!NewGenerator->GenerateChecked(NewMapData))
 	{
 		if (OutError) { *OutError = NewGenerator->GetLastError(); }
@@ -397,16 +441,16 @@ bool AGridMapManager::BuildBaselineMap(const FGridMapBaselineState& State, FStri
 		MapRenderer->BuildFromMapData(MapData);
 	}
 
-	if (HasAuthority())
-	{
-		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
-		{
-			NavSys->Build();
-		}
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("[GridMap] 基础地图世代 %d 构建完成，Seed=%d。"),
-		State.GenerationVersion, State.EffectiveSeed);
+	const FGridMapGenerationRecipe& BuiltRecipe = NewGenerator->GetGeneratedRecipe();
+	const int32 ActiveChunkCount = MapRenderer ? MapRenderer->GetActiveChunkCount() : 0;
+	const int32 HISMComponentCount = MapRenderer ? MapRenderer->GetHISMComponentCount() : 0;
+	const int32 TreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Tree) : 0;
+	const int32 RockInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::Rock) : 0;
+	const int32 LargeTreeInstanceCount = MapRenderer ? MapRenderer->GetInstanceCountForType(EGridTileType::LargeTree) : 0;
+	UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] Baseline构建完成：GenerationVersion=%d，Seed=%d，ResultHash=%llu，Recipe房间=%d，Recipe连接=%d，Renderer活动区块=%d，HISM组件=%d，Tree实例=%d，Rock实例=%d，LargeTree实例=%d，总实例=%d。"),
+		State.GenerationVersion, State.EffectiveSeed, static_cast<unsigned long long>(State.ResultHash),
+		BuiltRecipe.Rooms.Num(), BuiltRecipe.Connections.Num(), ActiveChunkCount, HISMComponentCount,
+		TreeInstanceCount, RockInstanceCount, LargeTreeInstanceCount, TreeInstanceCount + RockInstanceCount + LargeTreeInstanceCount);
 	return true;
 }
 
@@ -621,7 +665,8 @@ void AGridMapManager::SampleVisionSourceState()
 	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
 	{
 		UVisionSourceComponent* Source = *It;
-		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId
+			|| !FMath::IsFinite(Source->Range) || Source->Range <= 0.0f)
 		{
 			continue;
 		}
@@ -699,7 +744,8 @@ void AGridMapManager::RebuildLocalVisibility()
 	for (TObjectIterator<UVisionSourceComponent> It; It; ++It)
 	{
 		UVisionSourceComponent* Source = *It;
-		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId)
+		if (Source->GetWorld() != GetWorld() || !Source->IsRegistered() || !Source->bActive || Source->TeamId != LocalTeamId
+			|| !FMath::IsFinite(Source->Range) || Source->Range <= 0.0f)
 		{
 			continue;
 		}
@@ -712,14 +758,11 @@ void AGridMapManager::RebuildLocalVisibility()
 			continue;
 		}
 
-		const bool bUnlimited = Source->Range <= 0.0f;
-		const int32 GridRadius = bUnlimited
-			? FMath::Max(Config.MapWidth, Config.MapHeight)
-			: FMath::CeilToInt(Source->Range / Config.TileSize) + 1;
-		const int32 MinX = bUnlimited ? 0 : FMath::Max(0, SourceX - GridRadius);
-		const int32 MaxX = bUnlimited ? Config.MapWidth - 1 : FMath::Min(Config.MapWidth - 1, SourceX + GridRadius);
-		const int32 MinY = bUnlimited ? 0 : FMath::Max(0, SourceY - GridRadius);
-		const int32 MaxY = bUnlimited ? Config.MapHeight - 1 : FMath::Min(Config.MapHeight - 1, SourceY + GridRadius);
+		const int32 GridRadius = FMath::CeilToInt(Source->Range / Config.TileSize) + 1;
+		const int32 MinX = FMath::Max(0, SourceX - GridRadius);
+		const int32 MaxX = FMath::Min(Config.MapWidth - 1, SourceX + GridRadius);
+		const int32 MinY = FMath::Max(0, SourceY - GridRadius);
+		const int32 MaxY = FMath::Min(Config.MapHeight - 1, SourceY + GridRadius);
 		const float RangeSq = Source->Range * Source->Range;
 		const float ConeThreshold = FMath::Cos(FMath::DegreesToRadians(Source->HalfAngle));
 		FVector2D Forward(Source->GetVisionDirection().X, Source->GetVisionDirection().Y);
@@ -732,7 +775,7 @@ void AGridMapManager::RebuildLocalVisibility()
 				const FVector TileCenter = MapData->GridToWorld(X, Y);
 				const FVector2D ToTile(TileCenter.X - SourceLocation.X, TileCenter.Y - SourceLocation.Y);
 				const float DistanceSq = ToTile.SizeSquared();
-				if (!bUnlimited && DistanceSq > RangeSq)
+				if (DistanceSq > RangeSq)
 				{
 					continue;
 				}
@@ -879,27 +922,6 @@ void AGridMapManager::DrawVisionDebug() const
 	}
 }
 
-void AGridMapManager::OnTileDestroyedInternal(int32 GridX, int32 GridY)
-{
-	MarkVisionDirty();
-	// 移除渲染实例（同时移除碰撞，因为 HISM 碰撞和实例绑定）
-	if (MapRenderer)
-	{
-		MapRenderer->RemoveTileInstance(GridX, GridY);
-	}
-
-	// 局部更新 NavMesh
-	if (MapData)
-	{
-		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
-		{
-			const FVector Extent(MapData->GetConfig().TileSize);
-			NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
-		}
-	}
-}
-
 bool AGridMapManager::TryBuildTileAtWorldLocation(AActor* RequestingActor,
 	const FVector& WorldLocation, EGridTileType BuildType)
 {
@@ -984,6 +1006,7 @@ void AGridMapManager::ApplyAllReplicatedDeltas()
 			ApplyTileState(Delta);
 		}
 	}
+	if (MapRenderer) { MapRenderer->FlushDirtyChunks(); }
 }
 
 void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
@@ -1001,9 +1024,12 @@ void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
 	Tile->MaxHealth = Delta.MaxHealth;
 	MarkVisionDirty();
 
-	if (bTypeChanged && MapRenderer)
+	if (bTypeChanged)
 	{
-		MapRenderer->RefreshTileInstance(MapData, Delta.GridX, Delta.GridY);
+		if (MapRenderer)
+		{
+			MapRenderer->MarkDirtyChunk(Delta.GridX, Delta.GridY);
+		}
 		MarkTileNavigationDirty(Delta.GridX, Delta.GridY);
 	}
 
@@ -1016,16 +1042,39 @@ void AGridMapManager::ApplyTileState(const FGridTileDeltaItem& Delta)
 
 void AGridMapManager::MarkTileNavigationDirty(int32 GridX, int32 GridY)
 {
+	NavigationDirtyTracker.MarkTile(GridX, GridY, HasAuthority() && MapData != nullptr);
+}
+
+void AGridMapManager::FlushNavigationDirtyChunks()
+{
 	if (!HasAuthority() || !MapData)
+	{
+		NavigationDirtyTracker.Flush(false, [](const FIntPoint&) {});
+		return;
+	}
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld());
+	if (!NavSys)
 	{
 		return;
 	}
 
-	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(GetWorld()))
+	const float TileSize = MapData->GetConfig().TileSize;
+	constexpr float NavigationDirtyHalfHeight = 10000.0f;
+	const int32 FlushedChunkCount = NavigationDirtyTracker.Flush(true, [NavSys, TileSize](const FIntPoint& ChunkCoord)
 	{
-		const FVector WorldPos = MapData->GridToWorld(GridX, GridY);
-		const FVector Extent(MapData->GetConfig().TileSize);
-		NavSys->AddDirtyArea(FBox(WorldPos - Extent, WorldPos + Extent), ENavigationDirtyFlag::All);
+		const FVector Min(
+			ChunkCoord.X * GridMapChunkSize * TileSize,
+			ChunkCoord.Y * GridMapChunkSize * TileSize,
+			-NavigationDirtyHalfHeight);
+		const FVector Max(
+			(ChunkCoord.X + 1) * GridMapChunkSize * TileSize,
+			(ChunkCoord.Y + 1) * GridMapChunkSize * TileSize,
+			NavigationDirtyHalfHeight);
+		NavSys->AddDirtyArea(FBox(Min, Max), ENavigationDirtyFlag::All);
+	});
+	if (FlushedChunkCount > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[GridMap][Stage4D] 服务端导航Dirty区块已提交：区块数=%d。"), FlushedChunkCount);
 	}
 }
 

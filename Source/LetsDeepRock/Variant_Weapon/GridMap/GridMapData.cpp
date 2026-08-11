@@ -23,6 +23,17 @@ void UGridMapData::Initialize(const FGridMapConfig& InConfig)
 	}
 }
 
+void UGridMapData::Fill(const EGridTileType Type)
+{
+	const int32 Health = GetHealthForType(Type);
+	for (FGridTileData& Tile : Tiles)
+	{
+		Tile.TileType = Type;
+		Tile.Health = Health;
+		Tile.MaxHealth = Health;
+	}
+}
+
 const FGridTileData* UGridMapData::GetTile(int32 X, int32 Y) const
 {
 	if (!IsValidCoord(X, Y))

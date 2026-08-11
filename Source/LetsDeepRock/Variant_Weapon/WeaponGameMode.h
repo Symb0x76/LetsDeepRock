@@ -77,6 +77,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Match")
 	bool TryStartWeaponMatch();
 
+	/** Listen Server 大厅开局入口；服务端复核全员准备后携带客户端切图。 */
+	UFUNCTION(BlueprintCallable, Category = "Match")
+	bool TryStartLobbyTravel();
+
 	/** 由服务端胜负/任务逻辑调用，进入结算阶段。 */
 	UFUNCTION(BlueprintCallable, Category = "Match")
 	void EndWeaponMatch();
@@ -163,6 +167,7 @@ private:
 	uint64 RosterRevision = 0;
 	float FrozenMatchPhaseRemaining = 0.0f;
 	bool bRecoveryWorldRequested = false;
+	bool bLobbyTravelRequested = false;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();

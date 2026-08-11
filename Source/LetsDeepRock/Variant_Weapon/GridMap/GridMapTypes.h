@@ -9,6 +9,44 @@
 class AGridMapManager;
 class UGridMapGenerator;
 
+/** Renderer 与导航脏区共同使用的固定区块尺寸。 */
+inline constexpr int32 GridMapChunkSize = 64;
+
+/** 仅服务端使用的同帧导航脏区块合并器。 */
+struct FGridNavigationDirtyTracker
+{
+	void MarkTile(int32 GridX, int32 GridY, bool bAuthoritative)
+	{
+		if (bAuthoritative)
+		{
+			DirtyChunks.Add(FIntPoint(GridX / GridMapChunkSize, GridY / GridMapChunkSize));
+		}
+	}
+
+	template <typename FlushFunction>
+	int32 Flush(bool bAuthoritative, FlushFunction&& FlushChunk)
+	{
+		if (!bAuthoritative)
+		{
+			DirtyChunks.Reset();
+			return 0;
+		}
+
+		const TArray<FIntPoint> PendingChunks = DirtyChunks.Array();
+		DirtyChunks.Reset();
+		for (const FIntPoint& ChunkCoord : PendingChunks)
+		{
+			FlushChunk(ChunkCoord);
+		}
+		return PendingChunks.Num();
+	}
+
+	int32 Num() const { return DirtyChunks.Num(); }
+
+private:
+	TSet<FIntPoint> DirtyChunks;
+};
+
 /**
  * 地面格子类型枚举
  */
@@ -18,7 +56,8 @@ enum class EGridTileType : uint8
 	Empty = 0		UMETA(DisplayName = "空地"),
 	Tree = 1		UMETA(DisplayName = "一般树木"),
 	Rock = 2		UMETA(DisplayName = "岩石"),
-	LargeTree = 3	UMETA(DisplayName = "高大树木")
+	LargeTree = 3	UMETA(DisplayName = "高大树木"),
+	Uncarved = 4	UMETA(DisplayName = "未开凿区域")
 };
 
 /**

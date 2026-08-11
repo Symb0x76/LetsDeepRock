@@ -1,4 +1,4 @@
-﻿// Copyright Epic Games, Inc. All Rights Reserved.
+// Copyright Epic Games, Inc. All Rights Reserved.
 
 #pragma once
 
@@ -119,8 +119,8 @@ struct FWeaponLobbyRosterRow
  *  网络：
  *  准备状态走真实网络链路：本地玩家通过 AWeaponPlayerState::RequestSetPlayerReady 提交意图，
  *  服务端校验后写入复制属性，OnLobbyStateChanged / OnMatchPhaseChanged 广播驱动 RefreshLobbyState；
- *  房主且全员就绪时调用 AWeaponGameMode::TryStartWeaponMatch 发起开局倒计时。
- *  房主判定读取本地 PlayerController 的 authority（Listen Host 本地 PC 持有权威），
+ *  Listen Server 房主且全员就绪时调用 AWeaponGameMode::TryStartLobbyTravel 切换到任务地图。
+ *  房主判定要求本地 PlayerController 持有权威且当前世界为 Listen Server，
  *  队友准备状态读取已复制的 PlayerState。0.25s 低频轮询仅兜底远程玩家 join/leave/ready 变化。
  */
 UCLASS()
@@ -237,7 +237,7 @@ private:
 
 	// ================= 网络状态 =================
 
-	/** 本地是否为房主：读取 PlayerController 的 authority（Listen Host 的本地 PC 持有权威）。 */
+	/** 本地是否为 Listen Server 房主。 */
 	bool IsLocalHost() const;
 
 	/** 除本地玩家外，其余已连接玩家是否全部准备；没有队友时视为满足。 */

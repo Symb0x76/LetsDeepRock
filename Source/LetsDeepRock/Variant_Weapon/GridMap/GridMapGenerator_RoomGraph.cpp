@@ -139,22 +139,23 @@ bool UGridMapGenerator_RoomGraph::GenerateChecked(UGridMapData* MapData)
 {
 	LastError.Reset(); GeneratedRecipe = FGridMapGenerationRecipe(); LastRoomBounds.Reset(); bLastTopologyReachable = false;
 	if (!MapData || EffectiveSeed == 0) { LastError = TEXT("RoomGraph 需要有效地图和非零 EffectiveSeed"); return false; }
+	if (AlgorithmVersion != 1 && AlgorithmVersion != 2) { LastError = TEXT("RoomGraph 仅支持算法版本 1 和 2"); return false; }
 	if (CorridorWidth < 1 || CorridorWidth > 5 || CorridorWidth % 2 == 0) { LastError = TEXT("RoomGraph CorridorWidth 仅允许 1、3、5"); return false; }
-	auto ResetToRock = [this, MapData]()
+	auto ResetMap = [this, MapData]()
 	{
-		for (int32 Y = 0; Y < MapData->GetConfig().MapHeight; ++Y) { for (int32 X = 0; X < MapData->GetConfig().MapWidth; ++X) { WriteTile(MapData, X, Y, EGridTileType::Rock); } }
+		MapData->Fill(AlgorithmVersion == 1 ? EGridTileType::Rock : EGridTileType::Uncarved);
 	};
-	ResetToRock();
+	ResetMap();
 	if (!ReplayRecipe.IsEmpty())
 	{
-		if (Replay(MapData, ReplayRecipe)) { return true; } ResetToRock(); GeneratedRecipe = FGridMapGenerationRecipe(); return false;
+		if (Replay(MapData, ReplayRecipe)) { return true; } ResetMap(); GeneratedRecipe = FGridMapGenerationRecipe(); return false;
 	}
 	for (int32 Attempt = 0; Attempt < WholeMapRetries; ++Attempt)
 	{
-		ResetToRock(); FRandomStream Random(EffectiveSeed + Attempt * 7919);
+		ResetMap(); FRandomStream Random(EffectiveSeed + Attempt * 7919);
 		if (BuildNewRecipe(MapData, Random)) { return true; }
 	}
-	ResetToRock(); GeneratedRecipe = FGridMapGenerationRecipe(); return false;
+	ResetMap(); GeneratedRecipe = FGridMapGenerationRecipe(); return false;
 }
 
 bool UGridMapGenerator_RoomGraph::BuildNewRecipe(UGridMapData* MapData, FRandomStream& Random)
@@ -286,7 +287,39 @@ bool UGridMapGenerator_RoomGraph::Replay(UGridMapData* MapData, const FGridMapGe
 	{
 		for (int32 Segment = 1; Segment < C.Points.Num(); ++Segment) { const FIntPoint A = C.Points[Segment - 1], B = C.Points[Segment]; const FIntPoint Step(FMath::Sign(B.X - A.X), FMath::Sign(B.Y - A.Y)); FIntPoint P = A; for (;;) { for (int32 O = -(C.CorridorWidth / 2); O <= C.CorridorWidth / 2; ++O) { Visit({P.X + (Step.Y != 0 ? O : 0), P.Y + (Step.X != 0 ? O : 0)}); } if (P == B) { break; } P += Step; } }
 	};
-	for (const FGridMapRecipeConnection& C : Recipe.Connections) { ForLine(C, [this, MapData](const FIntPoint P) { WriteTile(MapData, P.X, P.Y, EGridTileType::Empty); }); }
+	TSet<FIntPoint> Footprint;
+	if (AlgorithmVersion == CurrentAlgorithmVersion)
+	{
+		for (const FIntRect& Bounds : LastRoomBounds)
+		{
+			for (int32 Y = Bounds.Min.Y; Y < Bounds.Max.Y; ++Y) { for (int32 X = Bounds.Min.X; X < Bounds.Max.X; ++X) { Footprint.Add({X, Y}); } }
+		}
+	}
+	for (const FGridMapRecipeConnection& C : Recipe.Connections)
+	{
+		ForLine(C, [this, MapData, &Footprint](const FIntPoint P)
+		{
+			WriteTile(MapData, P.X, P.Y, EGridTileType::Empty);
+			if (AlgorithmVersion == CurrentAlgorithmVersion) { Footprint.Add(P); }
+		});
+	}
+	if (AlgorithmVersion == 2)
+	{
+		TSet<FIntPoint> BoundaryCells;
+		for (const FIntPoint Cell : Footprint)
+		{
+			for (int32 OffsetY = -1; OffsetY <= 1; ++OffsetY)
+			{
+				for (int32 OffsetX = -1; OffsetX <= 1; ++OffsetX)
+				{
+					const FIntPoint NeighborCoord = Cell + FIntPoint(OffsetX, OffsetY);
+					const FGridTileData* Neighbor = MapData->GetTile(NeighborCoord.X, NeighborCoord.Y);
+					if (!Footprint.Contains(NeighborCoord) && Neighbor && Neighbor->TileType == EGridTileType::Uncarved) { BoundaryCells.Add(NeighborCoord); }
+				}
+			}
+		}
+		for (const FIntPoint Cell : BoundaryCells) { WriteTile(MapData, Cell.X, Cell.Y, EGridTileType::Rock); }
+	}
 	const FGridMapRecipeMarker* Spawn = GeneratedRecipe.Markers.FindByPredicate([](const FGridMapRecipeMarker& M) { return M.Type == static_cast<uint8>(EGridMapMarkerType::PlayerSpawn); });
 	if (!Spawn || !MapData->GetTile(Spawn->GridCoord.X, Spawn->GridCoord.Y)->IsPassable()) { LastError = TEXT("RoomGraph BFS 起点不可通行"); return false; }
 	TSet<FIntPoint> Reachable; TArray<FIntPoint> Queue = { Spawn->GridCoord }; Reachable.Add(Spawn->GridCoord);
