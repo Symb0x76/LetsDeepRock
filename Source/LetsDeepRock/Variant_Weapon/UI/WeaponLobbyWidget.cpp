@@ -1442,12 +1442,12 @@ void UWeaponLobbyWidget::RefreshSessionInfo()
 	SessionInfoRows[1].Value->SetText(FText::FromString(RoleText));
 	SessionInfoRows[1].Value->SetColorAndOpacity(FSlateColor(bIsHost ? Amber : TextPrimary));
 
-	// 房间号：Central 模式显示 MatchId；Local P2P 显示本地地址。
+	// 房间号：Central 模式显示玩家可分享的 JoinCode，而不是内部 MatchId UUID。
 	FString RoomText;
 	if (bCentralMode && Central)
 	{
-		const FString& MatchId = Central->GetCentralMatchIdString();
-		RoomText = MatchId.IsEmpty() ? TEXT("匹配中…") : MatchId;
+		const FString& JoinCode = Central->GetCentralJoinCode();
+		RoomText = JoinCode.IsEmpty() ? TEXT("房间号生成中…") : JoinCode;
 	}
 	else if (World)
 	{

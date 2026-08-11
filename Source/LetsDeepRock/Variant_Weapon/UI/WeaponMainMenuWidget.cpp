@@ -9,6 +9,7 @@
 #include "Components/ButtonSlot.h"
 #include "Components/CanvasPanel.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/SafeZone.h"
@@ -411,7 +412,36 @@ void UWeaponMainMenuWidget::BuildTeamPage()
 	UHorizontalBoxSlot* RefreshSlot = ActionRow->AddChildToHorizontalBox(RefreshButton);
 	RefreshSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
 
-	RoomStatusText = MakeText(TEXT("点击刷新房间，搜索同一局域网内的队伍。"), TEXT("Regular"), 16.f, TextSecondary);
+	UVerticalBoxSlot* CentralLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("中心服务器房间号"), TEXT("Bold"), 17.f, Amber, 100));
+	CentralLabelSlot->SetPadding(FMargin(0.f, 24.f, 0.f, 10.f));
+
+	UHorizontalBox* CentralJoinRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* CentralJoinRowSlot = Page->AddChildToVerticalBox(CentralJoinRow);
+	CentralJoinRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	CentralJoinCodeInput = WidgetTree->ConstructWidget<UEditableTextBox>();
+	FEditableTextBoxStyle JoinCodeStyle =
+		FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
+	JoinCodeStyle.SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 16.f));
+	JoinCodeStyle.SetForegroundColor(FSlateColor(TextPrimary));
+	JoinCodeStyle.SetBackgroundColor(FSlateColor(PanelInner));
+	CentralJoinCodeInput->SetWidgetStyle(JoinCodeStyle);
+	CentralJoinCodeInput->SetHintText(FText::FromString(TEXT("输入房主分享的 JoinCode")));
+	CentralJoinCodeInput->SetMinDesiredWidth(320.f);
+	CentralJoinCodeInput->SetSelectAllTextWhenFocused(true);
+	CentralJoinCodeInput->SetClearKeyboardFocusOnCommit(false);
+	UHorizontalBoxSlot* JoinCodeInputSlot = CentralJoinRow->AddChildToHorizontalBox(CentralJoinCodeInput);
+	JoinCodeInputSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	JoinCodeInputSlot->SetVerticalAlignment(VAlign_Fill);
+
+	CentralJoinButton = MakeActionButton(TEXT("按房间号加入"), false);
+	CentralJoinButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleCentralJoinClicked);
+	UHorizontalBoxSlot* CentralJoinButtonSlot = CentralJoinRow->AddChildToHorizontalBox(CentralJoinButton);
+	CentralJoinButtonSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+	CentralJoinButtonSlot->SetVerticalAlignment(VAlign_Fill);
+
+	RoomStatusText = MakeText(TEXT("输入 Central 房间号，或刷新同一局域网内的房间。"), TEXT("Regular"), 16.f, TextSecondary);
 	UVerticalBoxSlot* StatusSlot = Page->AddChildToVerticalBox(RoomStatusText);
 	StatusSlot->SetPadding(FMargin(0.f, 18.f, 0.f, 0.f));
 
@@ -937,6 +967,62 @@ void UWeaponMainMenuWidget::HandleCreateRoomClicked()
 	BeginConnectingCentral();
 }
 
+void UWeaponMainMenuWidget::HandleCentralJoinClicked()
+{
+	if (RoomCreateState != EWeaponRoomCreateState::Idle || !CentralJoinCodeInput)
+	{
+		return;
+	}
+
+	const FString JoinCode = CentralJoinCodeInput->GetText().ToString().TrimStartAndEnd();
+	if (JoinCode.IsEmpty())
+	{
+		SetRoomStatus(TEXT("请输入房主分享的 Central 房间号。"));
+		return;
+	}
+
+	UWeaponCentralConnectivitySubsystem* Central =
+		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+	if (!Central)
+	{
+		SetRoomStatus(TEXT("中心连接子系统不可用。"));
+		return;
+	}
+
+	RoomCreateState = EWeaponRoomCreateState::JoiningCentral;
+	SetRoomStatus(TEXT("正在连接中心服务器并校验房间号…"));
+	if (CreateRoomButton)
+	{
+		CreateRoomButton->SetIsEnabled(false);
+	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(false);
+	}
+
+	Central->StartCentralConnect();
+	// URL 配置错误等同步失败会通过委托把状态恢复为 Idle。
+	if (RoomCreateState != EWeaponRoomCreateState::JoiningCentral)
+	{
+		return;
+	}
+
+	FString JoinError;
+	if (!Central->JoinCentralMatch(JoinCode, JoinError))
+	{
+		RoomCreateState = EWeaponRoomCreateState::Idle;
+		if (CreateRoomButton)
+		{
+			CreateRoomButton->SetIsEnabled(true);
+		}
+		if (CentralJoinButton)
+		{
+			CentralJoinButton->SetIsEnabled(true);
+		}
+		SetRoomStatus(JoinError.IsEmpty() ? TEXT("中心房间加入请求被拒绝。") : JoinError);
+	}
+}
+
 void UWeaponMainMenuWidget::BeginConnectingCentral()
 {
 	RoomCreateState = EWeaponRoomCreateState::ConnectingCentral;
@@ -946,12 +1032,20 @@ void UWeaponMainMenuWidget::BeginConnectingCentral()
 	{
 		CreateRoomButton->SetIsEnabled(false);
 	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(false);
+	}
 
 	UWeaponCentralConnectivitySubsystem* Central =
 		GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
 	if (Central)
 	{
 		Central->StartCentralConnect();
+		if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
+		{
+			return;
+		}
 
 		// 发起创建 Match；认证未完成时 CreateCentralMatch 会排队，认证成功后自动补发。
 		FString CreateError;
@@ -978,6 +1072,45 @@ void UWeaponMainMenuWidget::HandleCentralConnectivityChanged(
 	EWeaponCentralConnectivityState NewState,
 	FString Message)
 {
+	if (RoomCreateState == EWeaponRoomCreateState::JoiningCentral)
+	{
+		switch (NewState)
+		{
+		case EWeaponCentralConnectivityState::Failed:
+		case EWeaponCentralConnectivityState::Expired:
+			RoomCreateState = EWeaponRoomCreateState::Idle;
+			if (CreateRoomButton)
+			{
+				CreateRoomButton->SetIsEnabled(true);
+			}
+			if (CentralJoinButton)
+			{
+				CentralJoinButton->SetIsEnabled(true);
+			}
+			SetRoomStatus(FString::Printf(TEXT("加入中心房间失败：%s"), *Message));
+			break;
+
+		case EWeaponCentralConnectivityState::Connected:
+		{
+			const UWeaponCentralConnectivitySubsystem* Central =
+				GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponCentralConnectivitySubsystem>() : nullptr;
+			SetRoomStatus(Central && !Central->GetCentralJoinCode().IsEmpty()
+				? TEXT("房间号有效，正在等待房主连接端点…")
+				: TEXT("中心认证完成，正在加入房间…"));
+			break;
+		}
+
+		case EWeaponCentralConnectivityState::DirectConnected:
+		case EWeaponCentralConnectivityState::Relayed:
+			SetRoomStatus(TEXT("已找到房主，正在进入房间…"));
+			break;
+
+		default:
+			break;
+		}
+		return;
+	}
+
 	if (RoomCreateState != EWeaponRoomCreateState::ConnectingCentral)
 	{
 		return;
@@ -1080,6 +1213,10 @@ void UWeaponMainMenuWidget::HandleFallbackChosen(bool bAccepted)
 		{
 			CreateRoomButton->SetIsEnabled(true);
 		}
+		if (CentralJoinButton)
+		{
+			CentralJoinButton->SetIsEnabled(true);
+		}
 		SetRoomStatus(TEXT("已取消创建房间。"));
 	}
 }
@@ -1095,6 +1232,10 @@ void UWeaponMainMenuWidget::StartHostingGame()
 	if (CreateRoomButton)
 	{
 		CreateRoomButton->SetIsEnabled(true);
+	}
+	if (CentralJoinButton)
+	{
+		CentralJoinButton->SetIsEnabled(true);
 	}
 
 	UWeaponSessionSubsystem* Session = GetSessionSubsystem();

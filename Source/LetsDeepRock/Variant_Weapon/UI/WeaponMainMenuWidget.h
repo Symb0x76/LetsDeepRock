@@ -11,6 +11,7 @@
 #include "WeaponMainMenuWidget.generated.h"
 
 class UCanvasPanel;
+class UEditableTextBox;
 class UPanelWidget;
 class UTextBlock;
 class UVerticalBox;
@@ -70,6 +71,7 @@ enum class EWeaponRoomCreateState : uint8
 {
 	Idle,
 	ConnectingCentral,
+	JoiningCentral,
 	FallbackPrompt,
 };
 
@@ -207,6 +209,10 @@ private:
 	UFUNCTION()
 	void HandleRefreshRoomsClicked();
 
+	/** 使用玩家输入的 Central JoinCode 加入互联网房间。 */
+	UFUNCTION()
+	void HandleCentralJoinClicked();
+
 	UFUNCTION()
 	void HandleRoomJoinClicked(int32 ResultIndex);
 
@@ -285,6 +291,14 @@ private:
 	/** 组队面板的"创建房间"按钮（流程期间禁用防重复点击） */
 	UPROPERTY()
 	TObjectPtr<UButton> CreateRoomButton;
+
+	/** 组队面板：玩家输入的 Central JoinCode。 */
+	UPROPERTY()
+	TObjectPtr<UEditableTextBox> CentralJoinCodeInput;
+
+	/** 组队面板：按 JoinCode 加入中心房间。 */
+	UPROPERTY()
+	TObjectPtr<UButton> CentralJoinButton;
 
 	/** 当前创建房间流程状态 */
 	EWeaponRoomCreateState RoomCreateState = EWeaponRoomCreateState::Idle;

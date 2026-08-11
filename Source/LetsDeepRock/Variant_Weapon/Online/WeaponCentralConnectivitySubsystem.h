@@ -60,6 +60,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Central Connectivity")
 	const FString& GetCentralMatchIdString() const { return CentralMatchIdString; }
 
+	/** 玩家可分享/输入的中心房间号；与内部 MatchId 分离。 */
+	UFUNCTION(BlueprintPure, Category = "Central Connectivity")
+	const FString& GetCentralJoinCode() const { return CentralJoinCode; }
+
 	UPROPERTY(BlueprintAssignable, Category = "Central Connectivity")
 	FOnWeaponCentralConnectivityChanged OnConnectivityChanged;
 
@@ -88,10 +92,40 @@ private:
 	// Match 生命周期(中心分配 MatchId)
 	void SendCreateMatchRequest();
 	void SendJoinMatchRequest(const FString& JoinCode);
-	void HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode);
-	void HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role);
+	void HandleMatchCreated(
+		const FGuid& InMatchId,
+		const FString& RawMatchId,
+		const FString& JoinCode,
+		const FString& HostPeerId,
+		uint64 InAuthorityEpoch,
+		uint64 InRosterRevision);
+	void HandleMatchJoined(
+		const FGuid& InMatchId,
+		const FString& RawMatchId,
+		const FString& Role,
+		const FString& JoinCode,
+		const FString& HostPeerId,
+		uint64 InAuthorityEpoch,
+		uint64 InRosterRevision);
 	void ExecutePendingMatchAction();
 	void FailMatchAction(const FString& Message);
+	void ResetMatchTransportState();
+
+	// Host endpoint publication: listen Session ready -> Lease -> candidate -> nomination.
+	void HandleLanHostComplete(bool bWasSuccessful, const FString& Message);
+	void ClaimHostLease();
+	void SendLeaseHeartbeat();
+	void PublishHostEndpoint();
+	void NominateHostEndpoint(const FString& Address, int32 Port);
+	bool ResolveHostEndpoint(FString& OutAddress, int32& OutPort, FString& OutError) const;
+
+	// Late join cannot depend on an already-consumed WebSocket event; poll persisted candidates.
+	void BeginHostEndpointWait();
+	void RequestHostCandidates();
+	void ScheduleHostCandidatePoll();
+	void StopHostEndpointWait();
+	void HandleHostEndpointWaitTimeout();
+	static FString FormatEndpointAddress(const FString& Address, int32 Port);
 
 	// 待认证完成后的 Match 动作(异步认证与 Match 请求脱节)
 	enum class EPendingMatchAction : uint8
@@ -118,6 +152,7 @@ private:
 	bool ValidateEventFence(const FGuid& EventMatchId, uint64 EventEpoch);
 	void HandleEventStashed(const FString& RawEvent);
 	void ReplayStashedEvents();
+	void ResetEventSocket();
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Reconnect")
 	float ReconnectBaseDelaySeconds = 1.0f;
@@ -133,6 +168,23 @@ private:
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
 	FString StunServerUrl = TEXT("stun:symb0x76.top:3478");
+
+	/** Optional public DNS/IP for the listen Host. Blank falls back to the local interface address (LAN only). */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	FString AdvertisedHostAddress;
+
+	/** Optional externally forwarded UDP port. Zero uses the actual IpNetDriver listen port. */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	int32 AdvertisedHostPort = 0;
+
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	float LeaseHeartbeatIntervalSeconds = 10.0f;
+
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	float HostEndpointPollIntervalSeconds = 1.0f;
+
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	float HostEndpointWaitTimeoutSeconds = 20.0f;
 
 	UPROPERTY()
 	TArray<uint8> DevicePrivateKey;
@@ -151,8 +203,12 @@ private:
 
 	// 非 UObject 智能指针成员:不能是 UPROPERTY(UHT 不认模板),纯 C++ 成员即可
 	TSharedPtr<IWebSocket> EventSocket;
+	FString EventSocketMatchIdString;
 
 	FTimerHandle ReconnectTimerHandle;
+	FTimerHandle LeaseHeartbeatTimerHandle;
+	FTimerHandle HostEndpointPollTimerHandle;
+	FTimerHandle HostEndpointWaitTimerHandle;
 	int32 ReconnectAttempt = 0;
 	double ReconnectDeadlineSeconds = 0.0;
 
@@ -167,6 +223,16 @@ private:
 	UPROPERTY()
 	FString CentralMatchIdString;
 
+	/** Coordinator 分配给玩家使用的短 JoinCode，不参与协议 fencing。 */
+	UPROPERTY()
+	FString CentralJoinCode;
+
+	UPROPERTY()
+	FString CurrentMatchRole;
+
+	UPROPERTY()
+	FString PublishedCandidateId;
+
 	UPROPERTY()
 	uint64 AuthorityEpoch = 0;
 
@@ -180,6 +246,10 @@ private:
 
 	EWeaponCentralConnectivityState ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
 	EWeaponCentralAuthState AuthState = EWeaponCentralAuthState::None;
+	bool bCreatedCentralMatch = false;
+	bool bLeaseClaimInFlight = false;
+	bool bCandidateRequestInFlight = false;
+	bool bWaitingForHostEndpoint = false;
 	bool bCentralControlReady = false;
 	bool bCentralLeaseReady = false;
 	bool bCentralCheckpointReady = false;

@@ -15,12 +15,18 @@
 #include "WebSocketsModule.h"
 #include "Dom/JsonObject.h"
 #include "Engine/GameInstance.h"
+#include "Engine/NetDriver.h"
+#include "Engine/World.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformFileManager.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "SocketSubsystem.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 #include "Misc/Base64.h"
 #include "TimerManager.h"
+#include "UObject/Package.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeaponCentralConnectivity, Log, All);
 
@@ -35,6 +41,12 @@ void UWeaponCentralConnectivitySubsystem::Initialize(FSubsystemCollectionBase& C
 		HostMigration = GI->GetSubsystem<UWeaponHostMigrationSubsystem>();
 		SessionSubsystem = GI->GetSubsystem<UWeaponSessionSubsystem>();
 		SnapshotCoordinator = GI->GetSubsystem<UWeaponSnapshotCoordinator>();
+		if (SessionSubsystem.IsValid())
+		{
+			SessionSubsystem->OnLanHostComplete.AddUObject(
+				this,
+				&UWeaponCentralConnectivitySubsystem::HandleLanHostComplete);
+		}
 	}
 
 	ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
@@ -43,6 +55,18 @@ void UWeaponCentralConnectivitySubsystem::Initialize(FSubsystemCollectionBase& C
 
 void UWeaponCentralConnectivitySubsystem::Deinitialize()
 {
+	if (SessionSubsystem.IsValid())
+	{
+		SessionSubsystem->OnLanHostComplete.RemoveAll(this);
+	}
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(ReconnectTimerHandle);
+		GI->GetTimerManager().ClearTimer(LeaseHeartbeatTimerHandle);
+		GI->GetTimerManager().ClearTimer(HostEndpointPollTimerHandle);
+		GI->GetTimerManager().ClearTimer(HostEndpointWaitTimerHandle);
+	}
+	ResetEventSocket();
 	ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
 	Super::Deinitialize();
 }
@@ -113,7 +137,7 @@ bool UWeaponCentralConnectivitySubsystem::NormalizeAndValidateCoordinatorBaseUrl
 
 bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError) const
 {
-	if (!MatchId.IsValid())
+	if (!MatchId.IsValid() || CentralMatchIdString.IsEmpty())
 	{
 		OutError = TEXT("No active MatchId; cannot upload candidate");
 		return false;
@@ -128,7 +152,7 @@ bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEn
 	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
 	Request->SetURL(FString::Printf(
 		TEXT("%s/v1/matches/%s/peers/%s/candidates"),
-		*CoordinatorBaseUrl, *MatchId.ToString(), *Candidate.PeerId));
+		*CoordinatorBaseUrl, *CentralMatchIdString, *Candidate.PeerId));
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
 	Request->SetHeader(TEXT("Connection"), TEXT("close"));
@@ -158,6 +182,7 @@ bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEn
 
 bool UWeaponCentralConnectivitySubsystem::CreateCentralMatch(FString& OutError)
 {
+	CentralJoinCode.Reset();
 	if (AccessToken.IsEmpty())
 	{
 		// 认证尚未完成:排队,HandleSessionSuccess 后执行
@@ -171,19 +196,21 @@ bool UWeaponCentralConnectivitySubsystem::CreateCentralMatch(FString& OutError)
 
 bool UWeaponCentralConnectivitySubsystem::JoinCentralMatch(const FString& JoinCode, FString& OutError)
 {
-	if (JoinCode.IsEmpty())
+	const FString NormalizedJoinCode = JoinCode.TrimStartAndEnd();
+	if (NormalizedJoinCode.IsEmpty())
 	{
 		OutError = TEXT("Empty join code");
 		return false;
 	}
+	CentralJoinCode.Reset();
 	if (AccessToken.IsEmpty())
 	{
 		// 认证尚未完成:排队,HandleSessionSuccess 后执行
 		PendingMatchAction = EPendingMatchAction::Join;
-		PendingJoinCode = JoinCode;
+		PendingJoinCode = NormalizedJoinCode;
 		return true;
 	}
-	SendJoinMatchRequest(JoinCode);
+	SendJoinMatchRequest(NormalizedJoinCode);
 	return true;
 }
 
@@ -241,13 +268,28 @@ void UWeaponCentralConnectivitySubsystem::SendCreateMatchRequest()
 		const FString RawMatchId = Json->GetStringField(TEXT("matchId"));
 		const FGuid CreatedMatchId(RawMatchId);
 		const FString JoinCode = Json->GetStringField(TEXT("joinCode"));
-		HandleMatchCreated(CreatedMatchId, RawMatchId, JoinCode);
+		FString HostPeerId;
+		Json->TryGetStringField(TEXT("hostDeviceId"), HostPeerId);
+		const uint64 MatchEpoch = static_cast<uint64>(Json->GetNumberField(TEXT("authorityEpoch")));
+		const uint64 MatchRosterRevision = static_cast<uint64>(Json->GetNumberField(TEXT("rosterRevision")));
+		HandleMatchCreated(
+			CreatedMatchId,
+			RawMatchId,
+			JoinCode,
+			HostPeerId,
+			MatchEpoch,
+			MatchRosterRevision);
 	});
 	Request->ProcessRequest();
 }
 
 void UWeaponCentralConnectivitySubsystem::FailMatchAction(const FString& Message)
 {
+	StopHostEndpointWait();
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(LeaseHeartbeatTimerHandle);
+	}
 	PendingMatchAction = EPendingMatchAction::None;
 	PendingJoinCode.Reset();
 	ConnectivityState = EWeaponCentralConnectivityState::Failed;
@@ -266,13 +308,13 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 	Request->SetContentAsString(FString::Printf(TEXT("{\"joinCode\":\"%s\"}"), *JoinCode));
 
-	Request->OnProcessRequestComplete().BindLambda([this](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, bool bWasSuccessful)
+	Request->OnProcessRequestComplete().BindLambda([this, JoinCode](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, bool bWasSuccessful)
 	{
 		if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch failed (HTTP %d): %s"),
+			FailMatchAction(FString::Printf(TEXT("Join Match failed (HTTP %d): %s"),
 				Resp.IsValid() ? Resp->GetResponseCode() : 0,
-				Resp.IsValid() ? *Resp->GetContentAsString() : TEXT("(no response)"));
+				Resp.IsValid() ? *Resp->GetContentAsString() : TEXT("(no response)")));
 			return;
 		}
 
@@ -280,14 +322,14 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 		const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Resp->GetContentAsString());
 		if (!FJsonSerializer::Deserialize(Reader, Json))
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch response parse failed"));
+			FailMatchAction(TEXT("Join Match response parse failed"));
 			return;
 		}
 
 		const TSharedPtr<FJsonObject>* MatchObj = nullptr;
 		if (!Json->TryGetObjectField(TEXT("match"), MatchObj) || !MatchObj->IsValid())
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch response missing match"));
+			FailMatchAction(TEXT("Join Match response missing match"));
 			return;
 		}
 
@@ -295,16 +337,33 @@ void UWeaponCentralConnectivitySubsystem::SendJoinMatchRequest(const FString& Jo
 		const FString RawMatchId = (*MatchObj)->GetStringField(TEXT("matchId"));
 		const FGuid JoinedMatchId(RawMatchId);
 		const FString Role = Json->GetStringField(TEXT("role"));
-		HandleMatchJoined(JoinedMatchId, RawMatchId, Role);
+		FString HostPeerId;
+		(*MatchObj)->TryGetStringField(TEXT("hostDeviceId"), HostPeerId);
+		const uint64 MatchEpoch = static_cast<uint64>((*MatchObj)->GetNumberField(TEXT("authorityEpoch")));
+		const uint64 MatchRosterRevision = static_cast<uint64>((*MatchObj)->GetNumberField(TEXT("rosterRevision")));
+		HandleMatchJoined(
+			JoinedMatchId,
+			RawMatchId,
+			Role,
+			JoinCode,
+			HostPeerId,
+			MatchEpoch,
+			MatchRosterRevision);
 	});
 	Request->ProcessRequest();
 }
 
-void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatchId, const FString& RawMatchId, const FString& JoinCode)
+void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(
+	const FGuid& InMatchId,
+	const FString& RawMatchId,
+	const FString& JoinCode,
+	const FString& HostPeerId,
+	const uint64 InAuthorityEpoch,
+	const uint64 InRosterRevision)
 {
-	if (!InMatchId.IsValid() || RawMatchId.IsEmpty())
+	if (!InMatchId.IsValid() || RawMatchId.IsEmpty() || JoinCode.IsEmpty())
 	{
-		FailMatchAction(TEXT("Create Match returned an invalid MatchId"));
+		FailMatchAction(TEXT("Create Match returned an invalid MatchId or JoinCode"));
 		return;
 	}
 
@@ -321,8 +380,15 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatc
 		return;
 	}
 
+	ResetMatchTransportState();
 	MatchId = InMatchId;
 	CentralMatchIdString = RawMatchId;
+	CentralJoinCode = JoinCode;
+	CurrentMatchRole = TEXT("Host");
+	ExpectedHostPeerId = HostPeerId.IsEmpty() ? DeviceId : HostPeerId;
+	AuthorityEpoch = InAuthorityEpoch;
+	RosterRevision = InRosterRevision;
+	bCreatedCentralMatch = true;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central match created: %s (join code %s)"),
 		*CentralMatchIdString, *JoinCode);
 
@@ -336,22 +402,497 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(const FGuid& InMatc
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Central Match ready"));
 }
 
-void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(const FGuid& InMatchId, const FString& RawMatchId, const FString& Role)
+void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(
+	const FGuid& InMatchId,
+	const FString& RawMatchId,
+	const FString& Role,
+	const FString& JoinCode,
+	const FString& HostPeerId,
+	const uint64 InAuthorityEpoch,
+	const uint64 InRosterRevision)
 {
-	if (!InMatchId.IsValid())
+	if (!InMatchId.IsValid() || RawMatchId.IsEmpty() || JoinCode.IsEmpty() || HostPeerId.IsEmpty())
 	{
-		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("JoinMatch returned invalid MatchId"));
+		FailMatchAction(TEXT("Join Match returned an invalid MatchId, JoinCode, or Host identity"));
 		return;
 	}
 
+	if (!SnapshotCoordinator.IsValid())
+	{
+		FailMatchAction(TEXT("Snapshot Coordinator is unavailable"));
+		return;
+	}
+
+	FString AdoptError;
+	if (!SnapshotCoordinator->AdoptActiveMatchId(InMatchId, AdoptError))
+	{
+		FailMatchAction(FString::Printf(TEXT("Cannot adopt central MatchId: %s"), *AdoptError));
+		return;
+	}
+
+	ResetMatchTransportState();
 	MatchId = InMatchId;
 	CentralMatchIdString = RawMatchId;
+	CentralJoinCode = JoinCode;
+	CurrentMatchRole = Role;
+	ExpectedHostPeerId = HostPeerId;
+	AuthorityEpoch = InAuthorityEpoch;
+	RosterRevision = InRosterRevision;
+	bCreatedCentralMatch = false;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central match joined: %s (role %s)"),
 		*CentralMatchIdString, *Role);
 
 	// MatchId 建立 → 重放暂存事件 + 打开事件通道
 	ReplayStashedEvents();
 	OpenEventChannel();
+
+	ConnectivityState = EWeaponCentralConnectivityState::Connected;
+	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Central Match joined; waiting for host endpoint"));
+	BeginHostEndpointWait();
+}
+
+void UWeaponCentralConnectivitySubsystem::ResetMatchTransportState()
+{
+	StopHostEndpointWait();
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(LeaseHeartbeatTimerHandle);
+	}
+	ResetEventSocket();
+	bCentralLeaseReady = false;
+	bCentralCheckpointReady = false;
+	bCreatedCentralMatch = false;
+	bLeaseClaimInFlight = false;
+	bCandidateRequestInFlight = false;
+	PublishedCandidateId.Reset();
+	ExpectedHostPeerId.Reset();
+	CurrentMatchRole.Reset();
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleLanHostComplete(
+	const bool bWasSuccessful,
+	const FString& Message)
+{
+	if (!bCreatedCentralMatch || CurrentMatchRole != TEXT("Host"))
+	{
+		return;
+	}
+	if (!bWasSuccessful)
+	{
+		FailMatchAction(FString::Printf(TEXT("Listen Host failed before endpoint publication: %s"), *Message));
+		return;
+	}
+
+	ClaimHostLease();
+}
+
+void UWeaponCentralConnectivitySubsystem::ClaimHostLease()
+{
+	if (bLeaseClaimInFlight || !bCreatedCentralMatch || !MatchId.IsValid() ||
+		CentralMatchIdString.IsEmpty() || DeviceId.IsEmpty() || AccessToken.IsEmpty())
+	{
+		return;
+	}
+
+	bLeaseClaimInFlight = true;
+	const uint64 ExpectedEpoch = AuthorityEpoch + 1;
+	FHttpModule& Http = FHttpModule::Get();
+	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
+	Request->SetURL(FString::Printf(
+		TEXT("%s/v1/matches/%s/lease/claim"),
+		*CoordinatorBaseUrl,
+		*CentralMatchIdString));
+	Request->SetVerb(TEXT("POST"));
+	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
+	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	Request->SetContentAsString(FString::Printf(
+		TEXT("{\"peerId\":\"%s\",\"expectedEpoch\":%llu}"),
+		*DeviceId,
+		ExpectedEpoch));
+
+	Request->OnProcessRequestComplete().BindLambda(
+		[this](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, const bool bWasSuccessful)
+		{
+			bLeaseClaimInFlight = false;
+			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 201)
+			{
+				FailMatchAction(FString::Printf(
+					TEXT("Host Lease claim failed (HTTP %d): %s"),
+					Resp.IsValid() ? Resp->GetResponseCode() : 0,
+					Resp.IsValid() ? *Resp->GetContentAsString() : TEXT("(no response)")));
+				return;
+			}
+
+			TSharedPtr<FJsonObject> Json;
+			const TSharedRef<TJsonReader<>> Reader =
+				TJsonReaderFactory<>::Create(Resp->GetContentAsString());
+			if (!FJsonSerializer::Deserialize(Reader, Json))
+			{
+				FailMatchAction(TEXT("Host Lease response parse failed"));
+				return;
+			}
+
+			FString LeaseHostPeerId;
+			Json->TryGetStringField(TEXT("hostPeerId"), LeaseHostPeerId);
+			if (!LeaseHostPeerId.IsEmpty())
+			{
+				ExpectedHostPeerId = LeaseHostPeerId;
+			}
+			FWeaponCentralHostLease Lease;
+			Lease.MatchId = MatchId;
+			Lease.AuthorityEpoch = static_cast<uint64>(Json->GetNumberField(TEXT("authorityEpoch")));
+			HandleLeaseGranted(Lease);
+			PublishHostEndpoint();
+
+			if (UGameInstance* GI = GetGameInstance())
+			{
+				GI->GetTimerManager().SetTimer(
+					LeaseHeartbeatTimerHandle,
+					this,
+					&UWeaponCentralConnectivitySubsystem::SendLeaseHeartbeat,
+					FMath::Max(1.0f, LeaseHeartbeatIntervalSeconds),
+					true);
+			}
+		});
+	Request->ProcessRequest();
+}
+
+void UWeaponCentralConnectivitySubsystem::SendLeaseHeartbeat()
+{
+	if (!bCreatedCentralMatch || !bCentralLeaseReady || AccessToken.IsEmpty() ||
+		CentralMatchIdString.IsEmpty() || AuthorityEpoch == 0)
+	{
+		return;
+	}
+
+	FHttpModule& Http = FHttpModule::Get();
+	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
+	Request->SetURL(FString::Printf(
+		TEXT("%s/v1/matches/%s/lease/heartbeat"),
+		*CoordinatorBaseUrl,
+		*CentralMatchIdString));
+	Request->SetVerb(TEXT("POST"));
+	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
+	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	Request->SetContentAsString(FString::Printf(
+		TEXT("{\"peerId\":\"%s\",\"expectedEpoch\":%llu}"),
+		*DeviceId,
+		AuthorityEpoch));
+	Request->OnProcessRequestComplete().BindLambda(
+		[this](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, const bool bWasSuccessful)
+		{
+			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+			{
+				bCentralLeaseReady = false;
+				UE_LOG(
+					LogWeaponCentralConnectivity,
+					Warning,
+					TEXT("Host Lease heartbeat failed (HTTP %d)"),
+					Resp.IsValid() ? Resp->GetResponseCode() : 0);
+				PublishBackendReadiness();
+				return;
+			}
+
+			// Candidate rows expire after two minutes. Refreshing on every heartbeat
+			// keeps late JoinCode users independent of one transient WS event.
+			PublishHostEndpoint();
+		});
+	Request->ProcessRequest();
+}
+
+bool UWeaponCentralConnectivitySubsystem::ResolveHostEndpoint(
+	FString& OutAddress,
+	int32& OutPort,
+	FString& OutError) const
+{
+	OutAddress = AdvertisedHostAddress.TrimStartAndEnd();
+	OutPort = AdvertisedHostPort;
+	FParse::Value(FCommandLine::Get(), TEXT("WeaponCentralAdvertisedHost="), OutAddress);
+	FParse::Value(FCommandLine::Get(), TEXT("WeaponCentralAdvertisedPort="), OutPort);
+	OutAddress.TrimStartAndEndInline();
+
+	UWorld* World = GetWorld();
+	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
+	if (!World || !NetDriver || World->GetNetMode() != NM_ListenServer)
+	{
+		OutError = TEXT("The gameplay IpNetDriver is not listening");
+		return false;
+	}
+
+	if (OutPort <= 0)
+	{
+		const TSharedPtr<const FInternetAddr> LocalAddr = NetDriver->GetLocalAddr();
+		OutPort = LocalAddr.IsValid() ? LocalAddr->GetPort() : World->URL.Port;
+	}
+	if (OutPort <= 0 || OutPort > 65535)
+	{
+		OutError = FString::Printf(TEXT("Invalid listen port %d"), OutPort);
+		return false;
+	}
+
+	if (OutAddress.IsEmpty())
+	{
+		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+		if (!SocketSubsystem)
+		{
+			OutError = TEXT("Socket subsystem is unavailable");
+			return false;
+		}
+		bool bCanBindAll = false;
+		OutAddress = SocketSubsystem->GetLocalHostAddr(*GLog, bCanBindAll)->ToString(false);
+		UE_LOG(
+			LogWeaponCentralConnectivity,
+			Warning,
+			TEXT("AdvertisedHostAddress is empty; publishing LAN address %s. Cross-NAT join requires a public address/port mapping or a relay."),
+			*OutAddress);
+	}
+
+	if (OutAddress.IsEmpty() || OutAddress == TEXT("0.0.0.0") || OutAddress == TEXT("::"))
+	{
+		OutError = TEXT("No routable Host address is available");
+		return false;
+	}
+	return true;
+}
+
+void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
+{
+	if (!bCreatedCentralMatch || !bCentralLeaseReady || ExpectedHostPeerId.IsEmpty())
+	{
+		return;
+	}
+
+	FString Address;
+	int32 Port = 0;
+	FString Error;
+	if (!ResolveHostEndpoint(Address, Port, Error))
+	{
+		FailMatchAction(FString::Printf(TEXT("Cannot publish Host endpoint: %s"), *Error));
+		return;
+	}
+
+	if (PublishedCandidateId.IsEmpty())
+	{
+		PublishedCandidateId = FGuid::NewGuid().ToString(EGuidFormats::DigitsWithHyphensLower);
+	}
+	FWeaponCentralEndpointCandidate Candidate;
+	Candidate.MatchId = CentralMatchIdString;
+	Candidate.AuthorityEpoch = AuthorityEpoch;
+	Candidate.RosterRevision = RosterRevision;
+	Candidate.PeerId = ExpectedHostPeerId;
+	Candidate.CandidateId = PublishedCandidateId;
+	Candidate.Transport = TEXT("UDP");
+	Candidate.CandidateType = TEXT("Host");
+	Candidate.Address = Address;
+	Candidate.Port = Port;
+	Candidate.Priority = 100;
+	Candidate.Foundation = TEXT("listen");
+	if (!UploadCandidate(Candidate, Error))
+	{
+		FailMatchAction(FString::Printf(TEXT("Cannot upload Host endpoint: %s"), *Error));
+		return;
+	}
+
+	NominateHostEndpoint(Address, Port);
+}
+
+void UWeaponCentralConnectivitySubsystem::NominateHostEndpoint(
+	const FString& Address,
+	const int32 Port)
+{
+	FHttpModule& Http = FHttpModule::Get();
+	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
+	Request->SetURL(FString::Printf(
+		TEXT("%s/v1/matches/%s/connectivity/nominate"),
+		*CoordinatorBaseUrl,
+		*CentralMatchIdString));
+	Request->SetVerb(TEXT("POST"));
+	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
+	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	Request->SetContentAsString(FString::Printf(
+		TEXT("{\"authorityEpoch\":%llu,\"address\":\"%s\",\"port\":%d}"),
+		AuthorityEpoch,
+		*Address,
+		Port));
+	Request->OnProcessRequestComplete().BindLambda(
+		[this, Address, Port](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, const bool bWasSuccessful)
+		{
+			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+			{
+				UE_LOG(
+					LogWeaponCentralConnectivity,
+					Warning,
+					TEXT("Host endpoint nomination failed (HTTP %d): %s"),
+					Resp.IsValid() ? Resp->GetResponseCode() : 0,
+					Resp.IsValid() ? *Resp->GetContentAsString() : TEXT("(no response)"));
+				return;
+			}
+			UE_LOG(
+				LogWeaponCentralConnectivity,
+				Log,
+				TEXT("Host endpoint published: %s"),
+				*FormatEndpointAddress(Address, Port));
+		});
+	Request->ProcessRequest();
+}
+
+void UWeaponCentralConnectivitySubsystem::BeginHostEndpointWait()
+{
+	bWaitingForHostEndpoint = true;
+	bCandidateRequestInFlight = false;
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().SetTimer(
+			HostEndpointWaitTimerHandle,
+			this,
+			&UWeaponCentralConnectivitySubsystem::HandleHostEndpointWaitTimeout,
+			FMath::Max(1.0f, HostEndpointWaitTimeoutSeconds),
+			false);
+	}
+	RequestHostCandidates();
+}
+
+void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
+{
+	if (!bWaitingForHostEndpoint || bCandidateRequestInFlight || AccessToken.IsEmpty() ||
+		CentralMatchIdString.IsEmpty() || DeviceId.IsEmpty())
+	{
+		return;
+	}
+
+	bCandidateRequestInFlight = true;
+	FHttpModule& Http = FHttpModule::Get();
+	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
+	Request->SetURL(FString::Printf(
+		TEXT("%s/v1/matches/%s/peers/%s/candidates"),
+		*CoordinatorBaseUrl,
+		*CentralMatchIdString,
+		*DeviceId));
+	Request->SetVerb(TEXT("GET"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
+	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	Request->OnProcessRequestComplete().BindLambda(
+		[this](FHttpRequestPtr Req, const FHttpResponsePtr& Resp, const bool bWasSuccessful)
+		{
+			bCandidateRequestInFlight = false;
+			if (!bWaitingForHostEndpoint)
+			{
+				return;
+			}
+			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+			{
+				UE_LOG(
+					LogWeaponCentralConnectivity,
+					Warning,
+					TEXT("Host candidate query failed (HTTP %d)"),
+					Resp.IsValid() ? Resp->GetResponseCode() : 0);
+				ScheduleHostCandidatePoll();
+				return;
+			}
+
+			TSharedPtr<FJsonObject> Json;
+			const TSharedRef<TJsonReader<>> Reader =
+				TJsonReaderFactory<>::Create(Resp->GetContentAsString());
+			const TArray<TSharedPtr<FJsonValue>>* Candidates = nullptr;
+			if (!FJsonSerializer::Deserialize(Reader, Json) ||
+				!Json->TryGetArrayField(TEXT("candidates"), Candidates))
+			{
+				UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Host candidate response parse failed"));
+				ScheduleHostCandidatePoll();
+				return;
+			}
+
+			FWeaponCentralEndpointCandidate Best;
+			for (const TSharedPtr<FJsonValue>& Value : *Candidates)
+			{
+				const TSharedPtr<FJsonObject> CandidateJson = Value.IsValid() ? Value->AsObject() : nullptr;
+				if (!CandidateJson.IsValid())
+				{
+					continue;
+				}
+				FWeaponCentralEndpointCandidate Candidate;
+				CandidateJson->TryGetStringField(TEXT("peerId"), Candidate.PeerId);
+				CandidateJson->TryGetStringField(TEXT("candidateType"), Candidate.CandidateType);
+				CandidateJson->TryGetStringField(TEXT("transport"), Candidate.Transport);
+				CandidateJson->TryGetStringField(TEXT("address"), Candidate.Address);
+				Candidate.AuthorityEpoch = static_cast<uint64>(CandidateJson->GetNumberField(TEXT("authorityEpoch")));
+				Candidate.Port = static_cast<int32>(CandidateJson->GetNumberField(TEXT("port")));
+				Candidate.Priority = static_cast<uint32>(CandidateJson->GetNumberField(TEXT("priority")));
+
+				if ((!ExpectedHostPeerId.IsEmpty() && Candidate.PeerId != ExpectedHostPeerId) ||
+					Candidate.AuthorityEpoch < AuthorityEpoch || Candidate.Transport != TEXT("UDP") ||
+					Candidate.Address.IsEmpty() || Candidate.Port <= 0 || Candidate.Port > 65535)
+				{
+					continue;
+				}
+				if (Best.Address.IsEmpty() || Candidate.AuthorityEpoch > Best.AuthorityEpoch ||
+					(Candidate.AuthorityEpoch == Best.AuthorityEpoch && Candidate.Priority > Best.Priority))
+				{
+					Best = MoveTemp(Candidate);
+				}
+			}
+
+			if (!Best.Address.IsEmpty())
+			{
+				AuthorityEpoch = FMath::Max(AuthorityEpoch, Best.AuthorityEpoch);
+				HandleHostEndpointNominated(Best);
+				return;
+			}
+			ScheduleHostCandidatePoll();
+		});
+	Request->ProcessRequest();
+}
+
+void UWeaponCentralConnectivitySubsystem::ScheduleHostCandidatePoll()
+{
+	if (!bWaitingForHostEndpoint)
+	{
+		return;
+	}
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().SetTimer(
+			HostEndpointPollTimerHandle,
+			this,
+			&UWeaponCentralConnectivitySubsystem::RequestHostCandidates,
+			FMath::Max(0.25f, HostEndpointPollIntervalSeconds),
+			false);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::StopHostEndpointWait()
+{
+	bWaitingForHostEndpoint = false;
+	bCandidateRequestInFlight = false;
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(HostEndpointPollTimerHandle);
+		GI->GetTimerManager().ClearTimer(HostEndpointWaitTimerHandle);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleHostEndpointWaitTimeout()
+{
+	if (!bWaitingForHostEndpoint)
+	{
+		return;
+	}
+	StopHostEndpointWait();
+	FailMatchAction(TEXT("Timed out waiting for the Host endpoint"));
+}
+
+FString UWeaponCentralConnectivitySubsystem::FormatEndpointAddress(
+	const FString& Address,
+	const int32 Port)
+{
+	if (Address.Contains(TEXT(":")) && !Address.StartsWith(TEXT("[")))
+	{
+		return FString::Printf(TEXT("[%s]:%d"), *Address, Port);
+	}
+	return FString::Printf(TEXT("%s:%d"), *Address, Port);
 }
 
 bool UWeaponCentralConnectivitySubsystem::TriggerDirectReconnect(const FString& Address, FString& OutError)
@@ -417,17 +958,47 @@ void UWeaponCentralConnectivitySubsystem::PublishBackendReadiness()
 
 namespace
 {
-	const FString DeviceKeyFileName = TEXT("DeviceKey.bin");
-
-	FString GetDeviceKeyPath()
+	FString SanitizeDeviceKeySuffix(const FString& RawSuffix)
 	{
-		return FPaths::Combine(FPaths::ProjectSavedDir(), DeviceKeyFileName);
+		FString Result;
+		for (const TCHAR Character : RawSuffix)
+		{
+			if (FChar::IsAlnum(Character) || Character == TEXT('-') || Character == TEXT('_'))
+			{
+				Result.AppendChar(Character);
+			}
+		}
+		return Result;
 	}
 
-	bool LoadDeviceKeyPair(TArray<uint8>& OutPrivateKey, TArray<uint8>& OutPublicKey)
+	FString GetDeviceKeyPath(const UWorld* World)
+	{
+		FString Suffix;
+		FParse::Value(FCommandLine::Get(), TEXT("WeaponCentralDeviceKeySuffix="), Suffix);
+#if WITH_EDITOR
+		if (Suffix.IsEmpty() && World && World->GetOutermost())
+		{
+			const int32 PIEInstanceId = World->GetOutermost()->GetPIEInstanceID();
+			if (PIEInstanceId != INDEX_NONE)
+			{
+				Suffix = FString::Printf(TEXT("PIE-%d"), PIEInstanceId);
+			}
+		}
+#endif
+		Suffix = SanitizeDeviceKeySuffix(Suffix);
+		const FString FileName = Suffix.IsEmpty()
+			? TEXT("DeviceKey.bin")
+			: FString::Printf(TEXT("DeviceKey-%s.bin"), *Suffix);
+		return FPaths::Combine(FPaths::ProjectSavedDir(), FileName);
+	}
+
+	bool LoadDeviceKeyPair(
+		const UWorld* World,
+		TArray<uint8>& OutPrivateKey,
+		TArray<uint8>& OutPublicKey)
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-		const FString Path = GetDeviceKeyPath();
+		const FString Path = GetDeviceKeyPath(World);
 		if (!PlatformFile.FileExists(*Path))
 		{
 			return false;
@@ -462,10 +1033,13 @@ namespace
 		return true;
 	}
 
-	bool SaveDeviceKeyPair(const TArray<uint8>& PrivateKey, const TArray<uint8>& PublicKey)
+	bool SaveDeviceKeyPair(
+		const UWorld* World,
+		const TArray<uint8>& PrivateKey,
+		const TArray<uint8>& PublicKey)
 	{
 		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-		const FString Path = GetDeviceKeyPath();
+		const FString Path = GetDeviceKeyPath(World);
 
 		// bAppend=false:覆盖写入(不是追加);bAllowRead=true
 		TUniquePtr<IFileHandle> File(PlatformFile.OpenWrite(*Path, /*bAppend=*/false, /*bAllowRead=*/true));
@@ -494,9 +1068,13 @@ void UWeaponCentralConnectivitySubsystem::RunAuthPipeline()
 	// 加载已持久化的设备密钥对(重启复用);不存在才生成并保存
 	if (DevicePrivateKey.Num() == 0 || DevicePublicKey.Num() == 0)
 	{
-		if (LoadDeviceKeyPair(DevicePrivateKey, DevicePublicKey))
+		if (LoadDeviceKeyPair(GetWorld(), DevicePrivateKey, DevicePublicKey))
 		{
-			UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Device key pair loaded from disk"));
+			UE_LOG(
+				LogWeaponCentralConnectivity,
+				Log,
+				TEXT("Device key pair loaded from disk: %s"),
+				*GetDeviceKeyPath(GetWorld()));
 		}
 		else
 		{
@@ -505,12 +1083,16 @@ void UWeaponCentralConnectivitySubsystem::RunAuthPipeline()
 				FailAuthPipeline(TEXT("Failed to generate device key pair"));
 				return;
 			}
-			if (!SaveDeviceKeyPair(DevicePrivateKey, DevicePublicKey))
+			if (!SaveDeviceKeyPair(GetWorld(), DevicePrivateKey, DevicePublicKey))
 			{
 				FailAuthPipeline(TEXT("Failed to persist device key pair"));
 				return;
 			}
-			UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Device key pair generated and persisted"));
+			UE_LOG(
+				LogWeaponCentralConnectivity,
+				Log,
+				TEXT("Device key pair generated and persisted: %s"),
+				*GetDeviceKeyPath(GetWorld()));
 		}
 	}
 
@@ -713,10 +1295,14 @@ void UWeaponCentralConnectivitySubsystem::FailAuthPipeline(const FString& Messag
 
 void UWeaponCentralConnectivitySubsystem::OpenEventChannel()
 {
-	// 防重入:已有活跃 socket 时跳过(避免多调用点反复断开重连)
-	if (EventSocket.IsValid())
+	// 防重入只对同一个 Match 生效；跨 Match 必须关闭旧订阅。
+	if (EventSocket.IsValid() && EventSocketMatchIdString == CentralMatchIdString)
 	{
 		return;
+	}
+	if (EventSocket.IsValid())
+	{
+		ResetEventSocket();
 	}
 
 	// 从 CoordinatorBaseUrl 推导 WS URL:https → wss,http → ws
@@ -749,33 +1335,68 @@ void UWeaponCentralConnectivitySubsystem::OpenEventChannel()
 		UpgradeHeaders.Add(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 	}
 	EventSocket = WsModule.CreateWebSocket(WsUrl, TEXT(""), UpgradeHeaders);
+	EventSocketMatchIdString = CentralMatchIdString;
+	const FString SocketMatchId = EventSocketMatchIdString;
 
-	EventSocket->OnConnected().AddLambda([this]()
+	EventSocket->OnConnected().AddLambda([this, SocketMatchId]()
 	{
+		if (EventSocketMatchIdString != SocketMatchId)
+		{
+			return;
+		}
 		ReconnectAttempt = 0;
 		ConnectivityState = EWeaponCentralConnectivityState::Connected;
 		UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Event channel connected"));
 		OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Event channel connected"));
 	});
 
-	EventSocket->OnConnectionError().AddLambda([this](const FString& Error)
+	EventSocket->OnConnectionError().AddLambda([this, SocketMatchId](const FString& Error)
 	{
+		if (EventSocketMatchIdString != SocketMatchId)
+		{
+			return;
+		}
 		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Event channel error: %s"), *Error);
 		ScheduleReconnect();
 	});
 
-	EventSocket->OnClosed().AddLambda([this](int32 StatusCode, const FString& Reason, bool bWasClean)
+	EventSocket->OnClosed().AddLambda([this, SocketMatchId](int32 StatusCode, const FString& Reason, bool bWasClean)
 	{
+		if (EventSocketMatchIdString != SocketMatchId)
+		{
+			return;
+		}
 		UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Event channel closed: %d %s"), StatusCode, *Reason);
 		ScheduleReconnect();
 	});
 
-	EventSocket->OnMessage().AddLambda([this](const FString& Message)
+	EventSocket->OnMessage().AddLambda([this, SocketMatchId](const FString& Message)
 	{
-		HandleEventMessage(Message);
+		if (EventSocketMatchIdString == SocketMatchId)
+		{
+			HandleEventMessage(Message);
+		}
 	});
 
 	EventSocket->Connect();
+}
+
+void UWeaponCentralConnectivitySubsystem::ResetEventSocket()
+{
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(ReconnectTimerHandle);
+	}
+	if (EventSocket.IsValid())
+	{
+		EventSocket->OnConnected().Clear();
+		EventSocket->OnConnectionError().Clear();
+		EventSocket->OnClosed().Clear();
+		EventSocket->OnMessage().Clear();
+		EventSocket->Close();
+		EventSocket.Reset();
+	}
+	EventSocketMatchIdString.Reset();
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleEventMessage(const FString& Message)
@@ -837,6 +1458,13 @@ void UWeaponCentralConnectivitySubsystem::HandleEventDispatch(
 		Lease.AuthorityEpoch = EventEpoch;
 		HandleLeaseGranted(Lease);
 	}
+	else if (EventType == TEXT("LeaseRenewed"))
+	{
+		if (ExpectedHostPeerId.IsEmpty() || EventPeerId == ExpectedHostPeerId)
+		{
+			AuthorityEpoch = EventEpoch;
+		}
+	}
 	else if (EventType == TEXT("HostEndpointPublished"))
 	{
 		// peerId 校验:发布 endpoint 的必须与当前 Lease 的 Host 一致
@@ -858,6 +1486,14 @@ void UWeaponCentralConnectivitySubsystem::HandleEventDispatch(
 			Endpoint.Port = (*Payload)->GetIntegerField(TEXT("port"));
 		}
 		HandleHostEndpointNominated(Endpoint);
+	}
+	else if (EventType == TEXT("CandidateUpdated"))
+	{
+		if (bWaitingForHostEndpoint &&
+			(ExpectedHostPeerId.IsEmpty() || EventPeerId == ExpectedHostPeerId))
+		{
+			RequestHostCandidates();
+		}
 	}
 	else if (EventType == TEXT("CheckpointCommitted"))
 	{
@@ -935,13 +1571,27 @@ void UWeaponCentralConnectivitySubsystem::HandleLeaseGranted(const FWeaponCentra
 
 void UWeaponCentralConnectivitySubsystem::HandleHostEndpointNominated(const FWeaponCentralEndpointCandidate& Endpoint)
 {
-	// 已通过 fencing 的 direct endpoint → 触发 reconnect
-	FString Error;
-	if (!TriggerDirectReconnect(Endpoint.Address, Error))
+	if (!bWaitingForHostEndpoint)
 	{
-		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Reconnect failed: %s"), *Error);
 		return;
 	}
+	if (Endpoint.Port <= 0 || Endpoint.Port > 65535)
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Host endpoint rejected: invalid port %d"), Endpoint.Port);
+		return;
+	}
+
+	// 已通过 fencing 的 direct endpoint → 触发 reconnect
+	const FString DirectAddress = FormatEndpointAddress(Endpoint.Address, Endpoint.Port);
+	FString Error;
+	if (!TriggerDirectReconnect(DirectAddress, Error))
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Reconnect failed: %s"), *Error);
+		StopHostEndpointWait();
+		FailMatchAction(Error);
+		return;
+	}
+	StopHostEndpointWait();
 	ConnectivityState = EWeaponCentralConnectivityState::DirectConnected;
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Direct endpoint connected"));
 }
@@ -958,10 +1608,7 @@ void UWeaponCentralConnectivitySubsystem::HandleCheckpointCommitted(const FGuid&
 void UWeaponCentralConnectivitySubsystem::ScheduleReconnect()
 {
 	// 指数退避 + 超时放弃
-	if (EventSocket.IsValid())
-	{
-		EventSocket.Reset();
-	}
+	ResetEventSocket();
 
 	if (ReconnectAttempt == 0)
 	{
