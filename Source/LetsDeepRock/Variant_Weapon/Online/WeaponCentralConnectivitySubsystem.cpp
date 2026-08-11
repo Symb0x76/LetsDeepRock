@@ -10,6 +10,7 @@
 #include "HttpModule.h"
 #include "Interfaces/IHttpRequest.h"
 #include "Interfaces/IHttpResponse.h"
+#include "PlatformHttp.h"
 #include "IWebSocket.h"
 #include "WebSocketsModule.h"
 #include "Dom/JsonObject.h"
@@ -55,13 +56,59 @@ void UWeaponCentralConnectivitySubsystem::StartCentralConnect()
 		return;
 	}
 
-	ConnectivityState = EWeaponCentralConnectivityState::Authenticating;
 	AuthState = EWeaponCentralAuthState::None;
+	if (FString ConfigError; !NormalizeAndValidateCoordinatorBaseUrl(ConfigError))
+	{
+		FailAuthPipeline(ConfigError);
+		return;
+	}
+
+	ConnectivityState = EWeaponCentralConnectivityState::Authenticating;
 	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Starting central authentication"));
 
 	// RunAuthPipeline() 发起 challenge → register → session。
 	// 适配器不在这里做任何决策,只把事实交给 HostMigration。
 	RunAuthPipeline();
+}
+
+bool UWeaponCentralConnectivitySubsystem::NormalizeAndValidateCoordinatorBaseUrl(FString& OutError)
+{
+	CoordinatorBaseUrl.TrimStartAndEndInline();
+	while (CoordinatorBaseUrl.EndsWith(TEXT("/")))
+	{
+		CoordinatorBaseUrl.LeftChopInline(1);
+	}
+
+	if (!CoordinatorBaseUrl.StartsWith(TEXT("http://"), ESearchCase::IgnoreCase) &&
+		!CoordinatorBaseUrl.StartsWith(TEXT("https://"), ESearchCase::IgnoreCase))
+	{
+		OutError = FString::Printf(
+			TEXT("Invalid CoordinatorBaseUrl '%s': expected http:// or https:// URL"),
+			*CoordinatorBaseUrl);
+		return false;
+	}
+
+	for (const TCHAR Character : CoordinatorBaseUrl)
+	{
+		if (FChar::IsWhitespace(Character))
+		{
+			OutError = FString::Printf(
+				TEXT("Invalid CoordinatorBaseUrl '%s': whitespace is not allowed"),
+				*CoordinatorBaseUrl);
+			return false;
+		}
+	}
+
+	if (FPlatformHttp::GetUrlDomain(CoordinatorBaseUrl).IsEmpty())
+	{
+		OutError = FString::Printf(
+			TEXT("Invalid CoordinatorBaseUrl '%s': URL has no host"),
+			*CoordinatorBaseUrl);
+		return false;
+	}
+
+	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Coordinator base URL: %s"), *CoordinatorBaseUrl);
+	return true;
 }
 
 bool UWeaponCentralConnectivitySubsystem::UploadCandidate(const FWeaponCentralEndpointCandidate& Candidate, FString& OutError) const

@@ -77,6 +77,7 @@ public:
 
 private:
 	// 事实输入管线
+	bool NormalizeAndValidateCoordinatorBaseUrl(FString& OutError);
 	void RunAuthPipeline();                 // challenge → register → session
 	void SendChallengeRequest();            // POST /v1/devices/challenge
 	void SendRegisterRequest(const FString& Nonce); // POST /v1/devices/register
@@ -131,7 +132,7 @@ private:
 	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8443");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString StunServerUrl = TEXT("stun:coordinator.example.com:3478");
+	FString StunServerUrl = TEXT("stun:symb0x76.top:3478");
 
 	UPROPERTY()
 	TArray<uint8> DevicePrivateKey;
