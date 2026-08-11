@@ -4,6 +4,7 @@
 
 #include "WeaponCentralDeviceCrypto.h"
 #include "WeaponHostMigrationSubsystem.h"
+#include "WeaponRelayNetDriver.h"
 #include "WeaponSessionSubsystem.h"
 #include "WeaponSnapshotCoordinator.h"
 
@@ -919,6 +920,108 @@ bool UWeaponCentralConnectivitySubsystem::TriggerDirectReconnect(const FString& 
 	}
 
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Direct reconnect initiated to %s"), *Address);
+	return true;
+}
+
+// Relay 路径:TURN 凭证获取与 NetDriver 配置
+//
+// Host 仍按 direct 优先发布 endpoint;relay 是 direct 不可达时的 fallback。
+// 本层只负责把 Coordinator 下发的短期 TURN 凭证交给 relay NetDriver,
+// 不参与候选选择与切换决策。
+
+bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutError)
+{
+	if (!bCentralControlReady || !IsCentralMatchReady())
+	{
+		OutError = TEXT("Central match is not ready; cannot request relay credentials");
+		return false;
+	}
+
+	FHttpModule& Http = FHttpModule::Get();
+	const TSharedRef<IHttpRequest> Request = Http.CreateRequest();
+	Request->SetURL(FString::Printf(
+		TEXT("%s/v1/matches/%s/relay/credentials"),
+		*CoordinatorBaseUrl,
+		*CentralMatchIdString));
+	Request->SetVerb(TEXT("POST"));
+	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
+	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
+	Request->SetHeader(TEXT("Connection"), TEXT("close"));
+
+	// 异步:结果缓存到 RelayCredentialsCached,供 ConfigureRelayNetDriver 使用。
+	Request->OnProcessRequestComplete().BindLambda(
+		[this, &OutError](
+			FHttpRequestPtr Req,
+			const FHttpResponsePtr& Resp,
+			const bool bWasSuccessful)
+		{
+			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
+			{
+				OutError = FString::Printf(
+					TEXT("Relay credential request failed (HTTP %d)"),
+					Resp.IsValid() ? Resp->GetResponseCode() : 0);
+				return;
+			}
+
+			const FString Body = Resp->GetContentAsString();
+			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Body);
+			TSharedPtr<FJsonObject> Json;
+			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+			{
+				OutError = TEXT("Invalid relay credential response");
+				return;
+			}
+
+			RelayCredentialsCached = MakeShared<FRelayCredentialsCache>();
+			RelayCredentialsCached->Username = Json->GetStringField(TEXT("username"));
+			RelayCredentialsCached->Password = Json->GetStringField(TEXT("password"));
+			RelayCredentialsCached->RelayAddr = Json->GetStringField(TEXT("relayAddr"));
+
+			UE_LOG(LogWeaponCentralConnectivity, Log,
+				TEXT("Relay credentials obtained for match %s (TURN %s)"),
+				*CentralMatchIdString, *RelayCredentialsCached->RelayAddr);
+		});
+	Request->ProcessRequest();
+	return true;
+}
+
+bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutError)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		OutError = TEXT("No world available");
+		return false;
+	}
+
+	UNetDriver* NetDriver = World->GetNetDriver();
+	if (!NetDriver)
+	{
+		OutError = TEXT("No active NetDriver");
+		return false;
+	}
+
+	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
+	if (!RelayDriver)
+	{
+		OutError = FString::Printf(
+			TEXT("Active NetDriver is %s, not WeaponRelayNetDriver"),
+			*NetDriver->GetClass()->GetName());
+		return false;
+	}
+
+	if (!RelayCredentialsCached.IsValid())
+	{
+		OutError = TEXT("Relay credentials are not cached; call RequestRelayCredentials first");
+		return false;
+	}
+
+	RelayDriver->SetRelayConnectionInfo(
+		RelayCredentialsCached->RelayAddr,
+		RelayCredentialsCached->Username,
+		RelayCredentialsCached->Password);
+	UE_LOG(LogWeaponCentralConnectivity, Log,
+		TEXT("Relay NetDriver configured with TURN server %s"), *RelayCredentialsCached->RelayAddr);
 	return true;
 }
 
