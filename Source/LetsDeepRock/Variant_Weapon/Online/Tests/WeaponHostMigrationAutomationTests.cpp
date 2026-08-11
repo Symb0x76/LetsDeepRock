@@ -126,6 +126,7 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	GridMap.Config.LargeTreeHealth = 300;
 	GridMap.GeneratorClass = FSoftClassPath(UGridMapGenerator_Simple::StaticClass());
 	GridMap.EffectiveSeed = 12345;
+	GridMap.BaselineSchemaVersion = 2;
 	GridMap.bGenerated = true;
 	GridMap.TileDeltas.Reserve(TestGridDeltaCount);
 	for (int32 Index = 0; Index < TestGridDeltaCount; ++Index)

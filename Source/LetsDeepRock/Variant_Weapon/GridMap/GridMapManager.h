@@ -32,6 +32,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Config")
 	TSubclassOf<UGridMapGenerator> GeneratorClass;
 
+	/** 0 表示服务器生成一个非零随机种子；所有生成器统一使用最终种子。 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Config")
+	int32 RequestedSeed = 0;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "GridMap|Config")
 	bool bAutoGenerateOnBeginPlay = true;
 
@@ -129,7 +133,7 @@ private:
 	void OnRep_BaselineState();
 
 	/** 根据版本化描述在当前进程重建确定性基础地图。 */
-	void BuildBaselineMap(const FGridMapBaselineState& State);
+	bool BuildBaselineMap(const FGridMapBaselineState& State, FString* OutError = nullptr);
 
 	/** 服务器提交单格最新状态并标记 Fast Array ItemDirty。 */
 	void CommitTileState(int32 GridX, int32 GridY, EGridTileType TileType, int32 Health, int32 MaxHealth);

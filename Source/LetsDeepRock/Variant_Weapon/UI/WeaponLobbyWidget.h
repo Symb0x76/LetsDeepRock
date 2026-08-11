@@ -18,6 +18,7 @@ class UTextBlock;
 class UVerticalBox;
 class UWidgetSwitcher;
 class UWeaponCentralConnectivitySubsystem;
+class UWeaponTalentTreeWidget;
 
 /** 房间 UI 的两种呈现形态：常驻小窗 / 全屏面板。 */
 UENUM()
@@ -205,7 +206,7 @@ private:
 	UWidget* MakeHairline(const FLinearColor& Color, float Thickness = 1.0f);
 
 	/** 生成右上角的三个正方形功能按钮之一。 */
-	UWidget* MakeSquareActionButton(const FString& Label, const FString& Glyph);
+	UWidget* MakeSquareActionButton(const FString& Label, const FString& Glyph, bool bTalentButton = false);
 
 	// ================= 交互 =================
 
@@ -230,6 +231,9 @@ private:
 	/** 占位：装备 / 天赋 / 职业三个入口本次不接实际页面。 */
 	UFUNCTION()
 	void HandleLoadoutButtonClicked();
+
+	UFUNCTION()
+	void HandleTalentButtonClicked();
 
 	// ================= 网络状态 =================
 
@@ -321,6 +325,9 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UTextBlock> PrimaryActionHintText = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UWeaponTalentTreeWidget> TalentTreeWidget = nullptr;
 
 	EWeaponLobbyViewState ViewState = EWeaponLobbyViewState::Collapsed;
 

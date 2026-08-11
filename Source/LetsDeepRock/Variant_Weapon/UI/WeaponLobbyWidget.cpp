@@ -1,6 +1,7 @@
 ﻿// Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponLobbyWidget.h"
+#include "WeaponTalentTreeWidget.h"
 
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
@@ -796,7 +797,7 @@ UWidget* UWeaponLobbyWidget::BuildRosterColumn()
 			for (int32 Index = 0; Index < UE_ARRAY_COUNT(Specs); ++Index)
 			{
 				UHorizontalBoxSlot* ButtonSlot =
-					ActionRow->AddChildToHorizontalBox(MakeSquareActionButton(Specs[Index].Label, Specs[Index].Glyph));
+					ActionRow->AddChildToHorizontalBox(MakeSquareActionButton(Specs[Index].Label, Specs[Index].Glyph, Index == 1));
 				ButtonSlot->SetPadding(FMargin(Index == 0 ? 0.0f : 10.0f, 0.0f, 0.0f, 0.0f));
 				ButtonSlot->SetVerticalAlignment(VAlign_Top);
 			}
@@ -1581,7 +1582,19 @@ void UWeaponLobbyWidget::RequestLocalReady(bool bNewIsReady)
 
 void UWeaponLobbyWidget::HandleLoadoutButtonClicked()
 {
-	// 装备 / 天赋 / 职业三个入口本次只做视觉占位，不跳转页面。
+	// 装备 / 职业入口仍为视觉占位。
+}
+
+void UWeaponLobbyWidget::HandleTalentButtonClicked()
+{
+	if (!TalentTreeWidget)
+	{
+		TalentTreeWidget = CreateWidget<UWeaponTalentTreeWidget>(GetOwningPlayer());
+	}
+	if (TalentTreeWidget)
+	{
+		TalentTreeWidget->ShowTalentTree();
+	}
 }
 
 // =====================================================================================
@@ -1650,7 +1663,7 @@ UWidget* UWeaponLobbyWidget::MakeHairline(const FLinearColor& Color, float Thick
 	return Line;
 }
 
-UWidget* UWeaponLobbyWidget::MakeSquareActionButton(const FString& Label, const FString& Glyph)
+UWidget* UWeaponLobbyWidget::MakeSquareActionButton(const FString& Label, const FString& Glyph, bool bTalentButton)
 {
 	using namespace WeaponLobbyStyle;
 
@@ -1663,7 +1676,14 @@ UWidget* UWeaponLobbyWidget::MakeSquareActionButton(const FString& Label, const 
 		PanelRaisedColor,
 		FLinearColor(0.176f, 0.196f, 0.227f, 1.0f),
 		FLinearColor(0.780f, 0.525f, 0.098f, 1.0f));
-	Button->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleLoadoutButtonClicked);
+	if (bTalentButton)
+	{
+		Button->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleTalentButtonClicked);
+	}
+	else
+	{
+		Button->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleLoadoutButtonClicked);
+	}
 	ButtonSize->AddChild(Button);
 
 	UVerticalBox* Column = WidgetTree->ConstructWidget<UVerticalBox>();
