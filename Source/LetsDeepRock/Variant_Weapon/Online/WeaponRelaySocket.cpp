@@ -152,8 +152,8 @@ bool FWeaponRelaySocket::Allocate(const FString& InTurnServerAddr, const FString
 	}
 
 	ISocketSubsystem* Sockets = ISocketSubsystem::Get();
-	TSharedPtr<FInternetAddr> Addr = Sockets->GetAddressFromString(InTurnServerAddr);
-	if (!Addr.IsValid())
+	TSharedPtr<FInternetAddr> Addr;
+	if (!ResolveTurnServerAddress(InTurnServerAddr, Addr))
 	{
 		UE_LOG(LogWeaponRelay, Error, TEXT("Allocate: cannot resolve TURN server %s"), *InTurnServerAddr);
 		return false;
@@ -185,6 +185,62 @@ bool FWeaponRelaySocket::Allocate(const FString& InTurnServerAddr, const FString
 	TransactionStartTime = FPlatformTime::Seconds();
 	bTransactionPending = true;
 	return SendStunTransaction(Msg);
+}
+
+bool FWeaponRelaySocket::ResolveTurnServerAddress(const FString& InTurnServerAddr, TSharedPtr<FInternetAddr>& OutAddr) const
+{
+	OutAddr.Reset();
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get();
+	if (!Sockets)
+	{
+		return false;
+	}
+
+	FString Host = InTurnServerAddr.TrimStartAndEnd();
+	int32 Port = 3478;
+
+	// 拆出 [IPv6]:port / host:port / 裸 host。与 Go 端 normalizeRelayAddr
+	// 对齐:RELAY_ADDR 统一为 host[:port],端口缺省 3478。
+	if (Host.StartsWith(TEXT("[")))
+	{
+		const int32 CloseBracket = Host.Find(TEXT("]"));
+		if (CloseBracket == INDEX_NONE)
+		{
+			return false;
+		}
+		Host = Host.Mid(1, CloseBracket - 1);
+		const FString Remainder = Host.RightChop(CloseBracket + 1);
+		if (Remainder.StartsWith(TEXT(":")))
+		{
+			Port = FCString::Atoi(*Remainder.RightChop(1));
+		}
+	}
+	else
+	{
+		const int32 Colon = Host.Find(TEXT(":"));
+		if (Colon != INDEX_NONE)
+		{
+			Port = FCString::Atoi(*Host.RightChop(Colon + 1));
+			Host = Host.Left(Colon);
+		}
+	}
+	if (Host.IsEmpty() || Port <= 0 || Port > 65535)
+	{
+		return false;
+	}
+
+	// GetAddressInfo 支持 IP 与域名,同时解析端口,避免手写 inet_pton。
+	const FString Service = FString::Printf(TEXT("%d"), Port);
+	FAddressInfoResult Result = Sockets->GetAddressInfo(*Host, *Service, EAddressInfoFlags::Default, NAME_None);
+	if (Result.ReturnCode != SE_NO_ERROR || Result.Results.Num() == 0)
+	{
+		UE_LOG(LogWeaponRelay, Warning, TEXT("ResolveTurnServerAddress: cannot resolve %s:%d"), *Host, Port);
+		return false;
+	}
+
+	OutAddr = Result.Results[0].Address->Clone();
+	OutAddr->SetPort(Port);
+	return OutAddr.IsValid();
 }
 
 bool FWeaponRelaySocket::BindChannel(const FInternetAddr& PeerAddr)
