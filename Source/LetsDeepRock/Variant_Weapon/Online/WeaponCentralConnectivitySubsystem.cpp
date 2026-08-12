@@ -3,7 +3,6 @@
 #include "WeaponCentralConnectivitySubsystem.h"
 
 #include "WeaponCentralDeviceCrypto.h"
-#include "WeaponCentralConnectivitySubsystem.h"
 #include "WeaponHostMigrationSubsystem.h"
 #include "WeaponRelayNetDriver.h"
 #include "WeaponSessionSubsystem.h"
@@ -712,20 +711,27 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 	// 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
 	UploadHostCandidate(TEXT("Host"), Address, Port, 100, TEXT("listen"));
 
-	// STUN 反射候选:本机在公网的地址。UDP 直连不经过 libcurl/代理,
+	// STUN 反射候选:本机在公网的 IP。UDP 直连不经过 libcurl/代理,
 	// 拿到的是真实出口(而非代理出口)。失败不阻塞,继续用内网候选。
 	FString ReflexiveAddress;
 	int32 ReflexivePort = 0;
 	QueryStunReflexiveAddress(ReflexiveAddress, ReflexivePort);
 	if (!ReflexiveAddress.IsEmpty() && ReflexivePort > 0)
 	{
-		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, ReflexivePort, 90, TEXT("stun"));
+		// 反射端口是临时查询 socket 的随机 NAT 映射,与游戏监听端口无关;
+		// 只有游戏监听端口在路由器上有入站 DNAT 映射。因此候选与提名
+		// 都用游戏端口,反射地址仅提供公网 IP 部分。
+		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, Port, 90, TEXT("stun"));
 		UE_LOG(LogWeaponCentralConnectivity, Log,
-			TEXT("Published server-reflexive candidate %s:%d"), *ReflexiveAddress, ReflexivePort);
+			TEXT("Published server-reflexive candidate %s:%d (stun port %d)"),
+			*ReflexiveAddress, Port, ReflexivePort);
+
+		// 向中心提名公网直连 endpoint:跨 NAT 用户经 DNAT 可直连游戏主机。
+		NominateHostEndpoint(ReflexiveAddress, Port);
+		return;
 	}
 
-	// 向中心提名最高优先级的 direct endpoint(Host 候选;STUN 反射候选
-	// 仅是附加,不改变既有 HostEndpointPublished 事件语义)。
+	// STUN 不可用时回退:提名内网/手动配置的 Host 地址(仅本地用户可达)。
 	NominateHostEndpoint(Address, Port);
 }
 
@@ -1260,6 +1266,22 @@ void UWeaponCentralConnectivitySubsystem::PublishBackendReadiness()
 	}
 
 	const bool bReady = bCentralControlReady && bCentralLeaseReady && bCentralCheckpointReady;
+	if (!bReady && !HostMigration->IsMigrationBackendCommitted())
+	{
+		// Central startup converges in stages: authentication completes in the menu,
+		// while the Host Lease and first checkpoint only become ready after the
+		// gameplay Listen Server starts. Publishing Local readiness during those
+		// intermediate stages would permanently latch this Match to LocalP2P before
+		// Central has had a chance to finish its handshake.
+		UE_LOG(
+			LogWeaponCentralConnectivity,
+			Verbose,
+			TEXT("Central backend pending (control=%d lease=%d checkpoint=%d)"),
+			bCentralControlReady,
+			bCentralLeaseReady,
+			bCentralCheckpointReady);
+		return;
+	}
 
 	FWeaponMigrationBackendReadiness Readiness;
 	Readiness.bCentralControlReady = bCentralControlReady;
