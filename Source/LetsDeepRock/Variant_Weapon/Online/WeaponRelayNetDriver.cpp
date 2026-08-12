@@ -91,6 +91,10 @@ bool UWeaponRelayNetDriver::UpgradeSocketToRelay()
 	{
 		return false;
 	}
+	// CreateUniqueSocket 返回阻塞模式 socket;UIpNetDriver::InitBase 原本会给
+	// socket 设非阻塞,但热升级新建的 socket 绕过了 InitBase。阻塞的 RecvFrom
+	// 会在主线程 TickDispatch 里无限等待(无入站包时),导致 UI 卡死。
+	NewUnderlying->SetNonBlocking(true);
 
 	FWeaponRelaySocket* RelaySocket = new FWeaponRelaySocket(NewUnderlying.Release(), TEXT("WeaponRelay"));
 	RelaySocket->Allocate(TurnServerAddr, TurnUsername, TurnPassword);

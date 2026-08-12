@@ -1185,6 +1185,11 @@ bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutEr
 			{
 				FString ConfigureError;
 				ConfigureRelayNetDriver(ConfigureError);
+				if (!ConfigureError.IsEmpty())
+				{
+					UE_LOG(LogWeaponCentralConnectivity, Warning,
+						TEXT("Relay NetDriver config deferred: %s"), *ConfigureError);
+				}
 			}
 
 			// 凭证就绪后启动 relay 事务推进(每帧 Tick),驱动 TURN Allocate 完成。
@@ -1246,7 +1251,11 @@ bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutEr
 	// relay socket(RecreateSocket 仅客户端可用,Host 用 UpgradeSocketToRelay)。
 	if (World->GetNetMode() == NM_ListenServer)
 	{
-		RelayDriver->UpgradeSocketToRelay();
+		const bool bUpgraded = RelayDriver->UpgradeSocketToRelay();
+		UE_LOG(LogWeaponCentralConnectivity, Log,
+			TEXT("Relay NetDriver host upgrade: %s (socket=%s)"),
+			bUpgraded ? TEXT("ok") : TEXT("failed"),
+			RelayDriver->IsSocketRelay() ? TEXT("WeaponRelay") : TEXT("direct"));
 	}
 
 	UE_LOG(LogWeaponCentralConnectivity, Log,
@@ -1921,10 +1930,34 @@ void UWeaponCentralConnectivitySubsystem::TickRelayNetDriver()
 {
 	UWorld* World = GetWorld();
 	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
-	if (UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver))
+	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
+	if (!RelayDriver)
 	{
-		RelayDriver->TickRelay();
+		UE_LOG(LogWeaponCentralConnectivity, Verbose,
+			TEXT("TickRelayNetDriver: no WeaponRelayNetDriver (world=%s netdriver=%s)"),
+			World ? *World->GetName() : TEXT("null"),
+			NetDriver ? *NetDriver->GetClass()->GetName() : TEXT("null"));
+		return;
 	}
+
+	// Host 自愈:凭证可能在 Listen socket 创建后才异步到达。此时 socket 已是
+	// 纯 UDP,需在进入玩法 World(NetDriver 可用)后补一次 relay 热升级。
+	// 判据是 socket 是否已包装为 WeaponRelay(而非凭证是否注入——SetRelay
+	// ConnectionInfo 在菜单阶段已置位,与 socket 是否升级无关)。
+	// ConfigureRelayNetDriver/UpgradeSocketToRelay 幂等,可安全重复调用。
+	if (CurrentMatchRole == TEXT("Host") && RelayCredentialsCached.IsValid() &&
+		!RelayDriver->IsSocketRelay())
+	{
+		FString ConfigureError;
+		ConfigureRelayNetDriver(ConfigureError);
+		if (!ConfigureError.IsEmpty())
+		{
+			UE_LOG(LogWeaponCentralConnectivity, Warning,
+				TEXT("Relay NetDriver self-heal failed: %s"), *ConfigureError);
+		}
+	}
+
+	RelayDriver->TickRelay();
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleLeaseGranted(const FWeaponCentralHostLease& Lease)

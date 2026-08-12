@@ -115,19 +115,26 @@ namespace
 	// Append MESSAGE-INTEGRITY to a message and return the full message.
 	void AppendMessageIntegrity(TArray<uint8>& Msg, const TArray<uint8>& Key)
 	{
-		// Length must include the MESSAGE-INTEGRITY attribute (4 header + 16 HMAC).
-		const uint16 NewLen = static_cast<uint16>(Msg.Num() - WeaponRelayStun::HeaderSize + 20);
+		// RFC 5389 §15.4:MESSAGE-INTEGRITY 使用 HMAC-SHA1,20 字节。
+		// 属性头(4 字节)+ HMAC(20 字节),长度字段含 HMAC 值。
+		constexpr int32 HmacSize = 20;
+		constexpr int32 AttrHeaderSize = 4;
+		const uint16 NewLen = static_cast<uint16>(Msg.Num() - WeaponRelayStun::HeaderSize + AttrHeaderSize + HmacSize);
 		Msg[2] = static_cast<uint8>(NewLen >> 8);
 		Msg[3] = static_cast<uint8>(NewLen & 0xFF);
 
 		WriteU16(Msg, WeaponRelayStun::AttrMessageIntegrity);
-		WriteU16(Msg, 16);
+		WriteU16(Msg, HmacSize);
 		const int32 HmacOffset = Msg.Num();
-		Msg.AddZeroed(16);
+		Msg.AddZeroed(HmacSize);
 
 		uint32 HmacLen = 0;
-		HMAC(EVP_sha1(), Key.GetData(), Key.Num(), Msg.GetData(), Msg.Num() - 16, Msg.GetData() + HmacOffset, &HmacLen);
-		check(HmacLen == 16);
+		// RFC 5389:HMAC 输入覆盖到 MESSAGE-INTEGRITY 属性头之前
+		// ("up to and including the attribute preceding the MESSAGE-INTEGRITY
+		// attribute"),即不含刚写入的 4 字节属性头。pion 的 Check 按此实现,
+		// 多算属性头会导致 integrity check failed。
+		HMAC(EVP_sha1(), Key.GetData(), Key.Num(), Msg.GetData(), HmacOffset - AttrHeaderSize, Msg.GetData() + HmacOffset, &HmacLen);
+		check(HmacLen == HmacSize);
 	}
 }
 
@@ -754,11 +761,13 @@ void FWeaponRelaySocket::OnAllocateResponse(const uint8* Data, int32 Size)
 			}
 			else if (AttrType == WeaponRelayStun::AttrNonce)
 			{
-				Nonce = FString(reinterpret_cast<const TCHAR*>(AttrData), AttrLen); // ASCII nonce
+				// STUN 属性值是 UTF-8/ASCII 字节序列,不能按 TCHAR*(UTF-16) 构造,
+				// 否则每个 ASCII 字符被读成 2 字节导致乱码,认证 key 随之错误。
+				Nonce = FString(AttrLen, reinterpret_cast<const char*>(AttrData));
 			}
 			else if (AttrType == WeaponRelayStun::AttrRealm)
 			{
-				Realm = FString(reinterpret_cast<const TCHAR*>(AttrData), AttrLen);
+				Realm = FString(AttrLen, reinterpret_cast<const char*>(AttrData));
 			}
 			Offset += 4 + ((AttrLen + 3) & ~3);
 		}

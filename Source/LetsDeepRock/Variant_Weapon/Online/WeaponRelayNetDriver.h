@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IpNetDriver.h"
+#include "Sockets.h"
 #include "WeaponRelayNetDriver.generated.h"
 
 class FWeaponRelaySocket;
@@ -48,6 +49,13 @@ public:
 
 	/** 本连接是否打算走 relay(socket 创建前即可查询)。 */
 	bool ShouldUseRelayTransport() const;
+
+	/** 当前 socket 是否已包装为 relay(而非纯 UDP)。 */
+	bool IsSocketRelay()
+	{
+		const FSocket* Sock = GetSocket();
+		return Sock && Sock->GetDescription() == TEXT("WeaponRelay");
+	}
 
 private:
 	bool ResolveRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword);
