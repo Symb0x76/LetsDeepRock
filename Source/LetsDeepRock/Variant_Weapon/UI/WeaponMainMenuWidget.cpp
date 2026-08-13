@@ -449,6 +449,40 @@ void UWeaponMainMenuWidget::BuildTeamPage()
 		MakeText(TEXT("局域网房间"), TEXT("Bold"), 17.f, Amber, 120));
 	LabelSlot->SetPadding(FMargin(0.f, 26.f, 0.f, 12.f));
 
+	// 直连地址：房主分享的 frp / IPv4 / hostname:port，配合端口转发、FRP 等工具跨网络联机
+	UVerticalBoxSlot* DirectLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("直连地址 / FRP 联机"), TEXT("Bold"), 17.f, Amber, 120));
+	DirectLabelSlot->SetPadding(FMargin(0.f, 26.f, 0.f, 12.f));
+
+	UHorizontalBox* DirectJoinRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* DirectJoinRowSlot = Page->AddChildToVerticalBox(DirectJoinRow);
+	DirectJoinRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	DirectAddressInput = WidgetTree->ConstructWidget<UEditableTextBox>();
+	FEditableTextBoxStyle DirectAddressStyle =
+		FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
+	DirectAddressStyle.SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 16.f));
+	DirectAddressStyle.SetForegroundColor(FSlateColor(TextPrimary));
+	DirectAddressStyle.SetBackgroundColor(FSlateColor(PanelInner));
+	DirectAddressInput->SetWidgetStyle(DirectAddressStyle);
+	DirectAddressInput->SetHintText(FText::FromString(TEXT("房主地址，如 1.2.3.4:7777")));
+	DirectAddressInput->SetMinDesiredWidth(320.f);
+	DirectAddressInput->SetSelectAllTextWhenFocused(true);
+	DirectAddressInput->SetClearKeyboardFocusOnCommit(false);
+	UHorizontalBoxSlot* DirectAddressInputSlot = DirectJoinRow->AddChildToHorizontalBox(DirectAddressInput);
+	DirectAddressInputSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	DirectAddressInputSlot->SetVerticalAlignment(VAlign_Fill);
+
+	DirectJoinButton = MakeActionButton(TEXT("按地址加入"), false);
+	DirectJoinButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleDirectJoinClicked);
+	UHorizontalBoxSlot* DirectJoinButtonSlot = DirectJoinRow->AddChildToHorizontalBox(DirectJoinButton);
+	DirectJoinButtonSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+	DirectJoinButtonSlot->SetVerticalAlignment(VAlign_Fill);
+
+	UVerticalBoxSlot* DirectHintSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("用于 FRP、端口转发等跨网络联机。直接连接不走中心服务器。"), TEXT("Regular"), 14.f, TextMuted));
+	DirectHintSlot->SetPadding(FMargin(0.f, 10.f, 0.f, 0.f));
+
 	// 房间列表可能超出面板高度，套一层滚动容器
 	UScrollBox* ListScroll = WidgetTree->ConstructWidget<UScrollBox>();
 	UVerticalBoxSlot* ScrollSlot = Page->AddChildToVerticalBox(ListScroll);
@@ -1020,6 +1054,34 @@ void UWeaponMainMenuWidget::HandleCentralJoinClicked()
 			CentralJoinButton->SetIsEnabled(true);
 		}
 		SetRoomStatus(JoinError.IsEmpty() ? TEXT("中心房间加入请求被拒绝。") : JoinError);
+	}
+}
+
+void UWeaponMainMenuWidget::HandleDirectJoinClicked()
+{
+	if (!DirectAddressInput)
+	{
+		return;
+	}
+
+	const FString Address = DirectAddressInput->GetText().ToString().TrimStartAndEnd();
+	if (Address.IsEmpty())
+	{
+		SetRoomStatus(TEXT("请输入房主分享的直连地址，如 1.2.3.4:7777。"));
+		return;
+	}
+
+	UWeaponSessionSubsystem* Session = GetSessionSubsystem();
+	if (!Session)
+	{
+		SetRoomStatus(TEXT("Session 子系统不可用。"));
+		return;
+	}
+
+	// 成功会 ClientTravel 离开菜单；失败（地址无效 / 有其他网络操作）通过 OnJoinComplete 回显原因。
+	if (Session->JoinDirectAddress(Address))
+	{
+		SetRoomStatus(TEXT("正在连接该地址…"));
 	}
 }
 
