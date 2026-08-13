@@ -213,6 +213,10 @@ private:
 	UFUNCTION()
 	void HandleCentralJoinClicked();
 
+	/** 使用玩家输入的直连地址（frp / IPv4 / hostname:port）加入房间。 */
+	UFUNCTION()
+	void HandleDirectJoinClicked();
+
 	UFUNCTION()
 	void HandleRoomJoinClicked(int32 ResultIndex);
 
@@ -299,6 +303,14 @@ private:
 	/** 组队面板：按 JoinCode 加入中心房间。 */
 	UPROPERTY()
 	TObjectPtr<UButton> CentralJoinButton;
+
+	/** 组队面板：房主分享的直连地址（frp / IPv4 / hostname:port）。 */
+	UPROPERTY()
+	TObjectPtr<UEditableTextBox> DirectAddressInput;
+
+	/** 组队面板：按直连地址加入。 */
+	UPROPERTY()
+	TObjectPtr<UButton> DirectJoinButton;
 
 	/** 当前创建房间流程状态 */
 	EWeaponRoomCreateState RoomCreateState = EWeaponRoomCreateState::Idle;
