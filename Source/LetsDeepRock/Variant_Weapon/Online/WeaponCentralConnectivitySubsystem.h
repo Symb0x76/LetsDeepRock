@@ -133,6 +133,7 @@ private:
 	void PublishHostEndpoint();
 	void UploadHostCandidate(const FString& CandidateType, const FString& Address, int32 Port, uint32 Priority, const FString& Foundation);
 	void QueryStunReflexiveAddress(FString& OutAddress, int32& OutPort);
+	FString GetRelayedHostCandidateAddress() const;
 	void PublishRelayedHostCandidate();
 	void NominateHostEndpoint(const FString& Address, int32 Port);
 	bool ResolveHostEndpoint(FString& OutAddress, int32& OutPort, FString& OutError) const;

@@ -115,19 +115,26 @@ namespace
 	// Append MESSAGE-INTEGRITY to a message and return the full message.
 	void AppendMessageIntegrity(TArray<uint8>& Msg, const TArray<uint8>& Key)
 	{
-		// Length must include the MESSAGE-INTEGRITY attribute (4 header + 16 HMAC).
-		const uint16 NewLen = static_cast<uint16>(Msg.Num() - WeaponRelayStun::HeaderSize + 20);
+		// RFC 5389 §15.4:MESSAGE-INTEGRITY 使用 HMAC-SHA1,20 字节。
+		// 属性头(4 字节)+ HMAC(20 字节),长度字段含 HMAC 值。
+		constexpr int32 HmacSize = 20;
+		constexpr int32 AttrHeaderSize = 4;
+		const uint16 NewLen = static_cast<uint16>(Msg.Num() - WeaponRelayStun::HeaderSize + AttrHeaderSize + HmacSize);
 		Msg[2] = static_cast<uint8>(NewLen >> 8);
 		Msg[3] = static_cast<uint8>(NewLen & 0xFF);
 
 		WriteU16(Msg, WeaponRelayStun::AttrMessageIntegrity);
-		WriteU16(Msg, 16);
+		WriteU16(Msg, HmacSize);
 		const int32 HmacOffset = Msg.Num();
-		Msg.AddZeroed(16);
+		Msg.AddZeroed(HmacSize);
 
 		uint32 HmacLen = 0;
-		HMAC(EVP_sha1(), Key.GetData(), Key.Num(), Msg.GetData(), Msg.Num() - 16, Msg.GetData() + HmacOffset, &HmacLen);
-		check(HmacLen == 16);
+		// RFC 5389:HMAC 输入覆盖到 MESSAGE-INTEGRITY 属性头之前
+		// ("up to and including the attribute preceding the MESSAGE-INTEGRITY
+		// attribute"),即不含刚写入的 4 字节属性头。pion 的 Check 按此实现,
+		// 多算属性头会导致 integrity check failed。
+		HMAC(EVP_sha1(), Key.GetData(), Key.Num(), Msg.GetData(), HmacOffset - AttrHeaderSize, Msg.GetData() + HmacOffset, &HmacLen);
+		check(HmacLen == HmacSize);
 	}
 }
 
@@ -152,8 +159,8 @@ bool FWeaponRelaySocket::Allocate(const FString& InTurnServerAddr, const FString
 	}
 
 	ISocketSubsystem* Sockets = ISocketSubsystem::Get();
-	TSharedPtr<FInternetAddr> Addr = Sockets->GetAddressFromString(InTurnServerAddr);
-	if (!Addr.IsValid())
+	TSharedPtr<FInternetAddr> Addr;
+	if (!ResolveTurnServerAddress(InTurnServerAddr, Addr))
 	{
 		UE_LOG(LogWeaponRelay, Error, TEXT("Allocate: cannot resolve TURN server %s"), *InTurnServerAddr);
 		return false;
@@ -185,6 +192,62 @@ bool FWeaponRelaySocket::Allocate(const FString& InTurnServerAddr, const FString
 	TransactionStartTime = FPlatformTime::Seconds();
 	bTransactionPending = true;
 	return SendStunTransaction(Msg);
+}
+
+bool FWeaponRelaySocket::ResolveTurnServerAddress(const FString& InTurnServerAddr, TSharedPtr<FInternetAddr>& OutAddr) const
+{
+	OutAddr.Reset();
+	ISocketSubsystem* Sockets = ISocketSubsystem::Get();
+	if (!Sockets)
+	{
+		return false;
+	}
+
+	FString Host = InTurnServerAddr.TrimStartAndEnd();
+	int32 Port = 3478;
+
+	// 拆出 [IPv6]:port / host:port / 裸 host。与 Go 端 normalizeRelayAddr
+	// 对齐:RELAY_ADDR 统一为 host[:port],端口缺省 3478。
+	if (Host.StartsWith(TEXT("[")))
+	{
+		const int32 CloseBracket = Host.Find(TEXT("]"));
+		if (CloseBracket == INDEX_NONE)
+		{
+			return false;
+		}
+		Host = Host.Mid(1, CloseBracket - 1);
+		const FString Remainder = Host.RightChop(CloseBracket + 1);
+		if (Remainder.StartsWith(TEXT(":")))
+		{
+			Port = FCString::Atoi(*Remainder.RightChop(1));
+		}
+	}
+	else
+	{
+		const int32 Colon = Host.Find(TEXT(":"));
+		if (Colon != INDEX_NONE)
+		{
+			Port = FCString::Atoi(*Host.RightChop(Colon + 1));
+			Host = Host.Left(Colon);
+		}
+	}
+	if (Host.IsEmpty() || Port <= 0 || Port > 65535)
+	{
+		return false;
+	}
+
+	// GetAddressInfo 支持 IP 与域名,同时解析端口,避免手写 inet_pton。
+	const FString Service = FString::Printf(TEXT("%d"), Port);
+	FAddressInfoResult Result = Sockets->GetAddressInfo(*Host, *Service, EAddressInfoFlags::Default, NAME_None);
+	if (Result.ReturnCode != SE_NO_ERROR || Result.Results.Num() == 0)
+	{
+		UE_LOG(LogWeaponRelay, Warning, TEXT("ResolveTurnServerAddress: cannot resolve %s:%d"), *Host, Port);
+		return false;
+	}
+
+	OutAddr = Result.Results[0].Address->Clone();
+	OutAddr->SetPort(Port);
+	return OutAddr.IsValid();
 }
 
 bool FWeaponRelaySocket::BindChannel(const FInternetAddr& PeerAddr)
@@ -698,11 +761,13 @@ void FWeaponRelaySocket::OnAllocateResponse(const uint8* Data, int32 Size)
 			}
 			else if (AttrType == WeaponRelayStun::AttrNonce)
 			{
-				Nonce = FString(reinterpret_cast<const TCHAR*>(AttrData), AttrLen); // ASCII nonce
+				// STUN 属性值是 UTF-8/ASCII 字节序列,不能按 TCHAR*(UTF-16) 构造,
+				// 否则每个 ASCII 字符被读成 2 字节导致乱码,认证 key 随之错误。
+				Nonce = FString(AttrLen, reinterpret_cast<const char*>(AttrData));
 			}
 			else if (AttrType == WeaponRelayStun::AttrRealm)
 			{
-				Realm = FString(reinterpret_cast<const TCHAR*>(AttrData), AttrLen);
+				Realm = FString(AttrLen, reinterpret_cast<const char*>(AttrData));
 			}
 			Offset += 4 + ((AttrLen + 3) & ~3);
 		}

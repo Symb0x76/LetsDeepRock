@@ -106,6 +106,12 @@ private:
 	/** 统一失败入口:从未 Ready 时同时置降级标志。 */
 	void EnterFailedState();
 
+	/**
+	 * 解析 TURN 服务器地址。InTurnServerAddr 形如 host[:port]
+	 * (host 可为 IP 或域名,端口缺省 3478),输出可直接 SendTo 的地址。
+	 */
+	bool ResolveTurnServerAddress(const FString& InTurnServerAddr, TSharedPtr<FInternetAddr>& OutAddr) const;
+
 	// 底层 socket
 	FSocket* Underlying = nullptr;
 	EWeaponRelaySocketState State = EWeaponRelaySocketState::Idle;

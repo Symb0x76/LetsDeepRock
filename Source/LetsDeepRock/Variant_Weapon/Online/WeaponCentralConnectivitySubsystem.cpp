@@ -3,7 +3,6 @@
 #include "WeaponCentralConnectivitySubsystem.h"
 
 #include "WeaponCentralDeviceCrypto.h"
-#include "WeaponCentralConnectivitySubsystem.h"
 #include "WeaponHostMigrationSubsystem.h"
 #include "WeaponRelayNetDriver.h"
 #include "WeaponSessionSubsystem.h"
@@ -694,45 +693,63 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 		return;
 	}
 
-	// 有 relay 凭证时,Host 的 Listen socket 已走 TURN(仅经 TURN 可达),
-	// 只发布 relayed 候选;否则发布 direct 候选(内网 + STUN 反射)。
+	// 有 relay 凭证时,Host 的 Listen socket 应已走 TURN(仅经 TURN 可达)。
+	// 若 relayed 地址尚未就绪(TURN Allocate 未完成),降级发布 direct 候选,
+	// 保证客户端始终能拿到候选;heartbeat 周期会补发 relayed。
 	if (HasRelayCredentials())
 	{
-		PublishRelayedHostCandidate();
-		return;
+		const FString RelayedAddr = GetRelayedHostCandidateAddress();
+		if (!RelayedAddr.IsEmpty())
+		{
+			PublishRelayedHostCandidate();
+			return;
+		}
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("Relay credentials ready but relayed address not yet allocated; publishing direct candidates as fallback"));
 	}
 
 	// 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
 	UploadHostCandidate(TEXT("Host"), Address, Port, 100, TEXT("listen"));
 
-	// STUN 反射候选:本机在公网的地址。UDP 直连不经过 libcurl/代理,
+	// STUN 反射候选:本机在公网的 IP。UDP 直连不经过 libcurl/代理,
 	// 拿到的是真实出口(而非代理出口)。失败不阻塞,继续用内网候选。
 	FString ReflexiveAddress;
 	int32 ReflexivePort = 0;
 	QueryStunReflexiveAddress(ReflexiveAddress, ReflexivePort);
 	if (!ReflexiveAddress.IsEmpty() && ReflexivePort > 0)
 	{
-		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, ReflexivePort, 90, TEXT("stun"));
+		// 反射端口是临时查询 socket 的随机 NAT 映射,与游戏监听端口无关;
+		// 只有游戏监听端口在路由器上有入站 DNAT 映射。因此候选与提名
+		// 都用游戏端口,反射地址仅提供公网 IP 部分。
+		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, Port, 90, TEXT("stun"));
 		UE_LOG(LogWeaponCentralConnectivity, Log,
-			TEXT("Published server-reflexive candidate %s:%d"), *ReflexiveAddress, ReflexivePort);
+			TEXT("Published server-reflexive candidate %s:%d (stun port %d)"),
+			*ReflexiveAddress, Port, ReflexivePort);
+
+		// 向中心提名公网直连 endpoint:跨 NAT 用户经 DNAT 可直连游戏主机。
+		NominateHostEndpoint(ReflexiveAddress, Port);
+		return;
 	}
 
-	// 向中心提名最高优先级的 direct endpoint(Host 候选;STUN 反射候选
-	// 仅是附加,不改变既有 HostEndpointPublished 事件语义)。
+	// STUN 不可用时回退:提名内网/手动配置的 Host 地址(仅本地用户可达)。
 	NominateHostEndpoint(Address, Port);
 }
 
-void UWeaponCentralConnectivitySubsystem::PublishRelayedHostCandidate()
+FString UWeaponCentralConnectivitySubsystem::GetRelayedHostCandidateAddress() const
 {
 	UWorld* World = GetWorld();
 	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
 	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
 	if (!RelayDriver)
 	{
-		return;
+		return FString();
 	}
+	return RelayDriver->GetRelayedAddressString();
+}
 
-	const FString RelayedAddr = RelayDriver->GetRelayedAddressString();
+void UWeaponCentralConnectivitySubsystem::PublishRelayedHostCandidate()
+{
+	const FString RelayedAddr = GetRelayedHostCandidateAddress();
 	if (RelayedAddr.IsEmpty())
 	{
 		return;
@@ -943,10 +960,16 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 			const TSharedRef<TJsonReader<>> Reader =
 				TJsonReaderFactory<>::Create(Resp->GetContentAsString());
 			const TArray<TSharedPtr<FJsonValue>>* Candidates = nullptr;
-			if (!FJsonSerializer::Deserialize(Reader, Json) ||
-				!Json->TryGetArrayField(TEXT("candidates"), Candidates))
+			if (!FJsonSerializer::Deserialize(Reader, Json))
 			{
 				UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Host candidate response parse failed"));
+				ScheduleHostCandidatePoll();
+				return;
+			}
+			// candidates 缺失或为 null(Go 端历史版本把空列表序列化为 null)
+			// 都视为空列表继续轮询,而不是判定为解析失败。
+			if (!Json->TryGetArrayField(TEXT("candidates"), Candidates))
+			{
 				ScheduleHostCandidatePoll();
 				return;
 			}
@@ -1162,6 +1185,11 @@ bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutEr
 			{
 				FString ConfigureError;
 				ConfigureRelayNetDriver(ConfigureError);
+				if (!ConfigureError.IsEmpty())
+				{
+					UE_LOG(LogWeaponCentralConnectivity, Warning,
+						TEXT("Relay NetDriver config deferred: %s"), *ConfigureError);
+				}
 			}
 
 			// 凭证就绪后启动 relay 事务推进(每帧 Tick),驱动 TURN Allocate 完成。
@@ -1218,6 +1246,18 @@ bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutEr
 		RelayCredentialsCached->RelayAddr,
 		RelayCredentialsCached->Username,
 		RelayCredentialsCached->Password);
+
+	// Host:若 Listen socket 在凭证到达前已创建(未走 TURN),热升级为
+	// relay socket(RecreateSocket 仅客户端可用,Host 用 UpgradeSocketToRelay)。
+	if (World->GetNetMode() == NM_ListenServer)
+	{
+		const bool bUpgraded = RelayDriver->UpgradeSocketToRelay();
+		UE_LOG(LogWeaponCentralConnectivity, Log,
+			TEXT("Relay NetDriver host upgrade: %s (socket=%s)"),
+			bUpgraded ? TEXT("ok") : TEXT("failed"),
+			RelayDriver->IsSocketRelay() ? TEXT("WeaponRelay") : TEXT("direct"));
+	}
+
 	UE_LOG(LogWeaponCentralConnectivity, Log,
 		TEXT("Relay NetDriver configured with TURN server %s"), *RelayCredentialsCached->RelayAddr);
 	return true;
@@ -1235,6 +1275,22 @@ void UWeaponCentralConnectivitySubsystem::PublishBackendReadiness()
 	}
 
 	const bool bReady = bCentralControlReady && bCentralLeaseReady && bCentralCheckpointReady;
+	if (!bReady && !HostMigration->IsMigrationBackendCommitted())
+	{
+		// Central startup converges in stages: authentication completes in the menu,
+		// while the Host Lease and first checkpoint only become ready after the
+		// gameplay Listen Server starts. Publishing Local readiness during those
+		// intermediate stages would permanently latch this Match to LocalP2P before
+		// Central has had a chance to finish its handshake.
+		UE_LOG(
+			LogWeaponCentralConnectivity,
+			Verbose,
+			TEXT("Central backend pending (control=%d lease=%d checkpoint=%d)"),
+			bCentralControlReady,
+			bCentralLeaseReady,
+			bCentralCheckpointReady);
+		return;
+	}
 
 	FWeaponMigrationBackendReadiness Readiness;
 	Readiness.bCentralControlReady = bCentralControlReady;
@@ -1577,8 +1633,10 @@ void UWeaponCentralConnectivitySubsystem::HandleSessionSuccess(const FString& To
 	// 把"控制连接就绪"事实交给状态机
 	PublishBackendReadiness();
 
-	// 打开 WebSocket 事件通道
-	OpenEventChannel();
+	// 注意:此处不打开事件通道——MatchId 尚未建立(认证期间的 Match 动作
+	// 只是排队),OpenEventChannel 依赖 CentralMatchIdString,此刻调用
+	// 必然打 "no active MatchId" 警告。Match 建立后(HandleMatchCreated/
+	// HandleMatchJoined)会以正确的 MatchId 打开。
 
 	// 执行认证期间排队的 Match 动作(创建/加入)
 	ExecutePendingMatchAction();
@@ -1872,10 +1930,34 @@ void UWeaponCentralConnectivitySubsystem::TickRelayNetDriver()
 {
 	UWorld* World = GetWorld();
 	UNetDriver* NetDriver = World ? World->GetNetDriver() : nullptr;
-	if (UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver))
+	UWeaponRelayNetDriver* RelayDriver = Cast<UWeaponRelayNetDriver>(NetDriver);
+	if (!RelayDriver)
 	{
-		RelayDriver->TickRelay();
+		UE_LOG(LogWeaponCentralConnectivity, Verbose,
+			TEXT("TickRelayNetDriver: no WeaponRelayNetDriver (world=%s netdriver=%s)"),
+			World ? *World->GetName() : TEXT("null"),
+			NetDriver ? *NetDriver->GetClass()->GetName() : TEXT("null"));
+		return;
 	}
+
+	// Host 自愈:凭证可能在 Listen socket 创建后才异步到达。此时 socket 已是
+	// 纯 UDP,需在进入玩法 World(NetDriver 可用)后补一次 relay 热升级。
+	// 判据是 socket 是否已包装为 WeaponRelay(而非凭证是否注入——SetRelay
+	// ConnectionInfo 在菜单阶段已置位,与 socket 是否升级无关)。
+	// ConfigureRelayNetDriver/UpgradeSocketToRelay 幂等,可安全重复调用。
+	if (CurrentMatchRole == TEXT("Host") && RelayCredentialsCached.IsValid() &&
+		!RelayDriver->IsSocketRelay())
+	{
+		FString ConfigureError;
+		ConfigureRelayNetDriver(ConfigureError);
+		if (!ConfigureError.IsEmpty())
+		{
+			UE_LOG(LogWeaponCentralConnectivity, Warning,
+				TEXT("Relay NetDriver self-heal failed: %s"), *ConfigureError);
+		}
+	}
+
+	RelayDriver->TickRelay();
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleLeaseGranted(const FWeaponCentralHostLease& Lease)

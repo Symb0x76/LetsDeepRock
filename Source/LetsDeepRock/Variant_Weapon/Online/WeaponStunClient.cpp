@@ -5,6 +5,8 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
+#include "HAL/PlatformProcess.h"
+#include "HAL/PlatformTime.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeaponStunClient, Log, All);
 
@@ -101,13 +103,15 @@ bool FWeaponStunClient::QueryReflexiveAddress(
 		return false;
 	}
 
-	TSharedRef<FInternetAddr> ServerAddr = SocketSubsystem->CreateInternetAddr();
-	if (!SocketSubsystem->GetHostByName(TCHAR_TO_ANSI(*ServerHost), *ServerAddr))
+	// GetAddressInfo 支持域名与 IP,端口经 ServiceName 传入并自动填入返回地址。
+	const FString Service = FString::Printf(TEXT("%d"), ServerPort);
+	const FAddressInfoResult Result = SocketSubsystem->GetAddressInfo(*ServerHost, *Service, EAddressInfoFlags::Default, NAME_None);
+	if (Result.ReturnCode != SE_NO_ERROR || Result.Results.Num() == 0)
 	{
 		UE_LOG(LogWeaponStunClient, Warning, TEXT("QueryReflexiveAddress: cannot resolve %s"), *ServerHost);
 		return false;
 	}
-	ServerAddr->SetPort(ServerPort);
+	const TSharedRef<FInternetAddr> ServerAddr = Result.Results[0].Address->Clone();
 
 	FSocket* Socket = SocketSubsystem->CreateSocket(NAME_DGram, TEXT("WeaponStunClient"));
 	if (!Socket)
@@ -126,7 +130,7 @@ bool FWeaponStunClient::QueryReflexiveAddress(
 
 	TArray<uint8> Buffer;
 	Buffer.SetNumUninitialized(2048);
-	TSharedRef<FInternetAddr> FromAddr = SocketSubsystem->CreateInternetAddr();
+	const TSharedRef<FInternetAddr> FromAddr = SocketSubsystem->CreateInternetAddr();
 
 	const double Deadline = FPlatformTime::Seconds() + FMath::Max(0.1f, TimeoutSeconds);
 	bool bGotResponse = false;
@@ -229,8 +233,7 @@ bool FWeaponStunClient::ParseBindingResponse(const uint8* Data, const int32 Size
 
 		if (AttrType == WeaponStun::AttrXorMappedAddress && AttrLen >= 8)
 		{
-			const uint8 Family = Data[Offset + 4 + 1];
-			if (Family == WeaponStun::FamilyIPv4 && AttrLen >= 8)
+			if (const uint8 Family = Data[Offset + 4 + 1]; Family == WeaponStun::FamilyIPv4 && AttrLen >= 8)
 			{
 				const uint16 XorPort = static_cast<uint16>((Data[Offset + 4 + 2] << 8) | Data[Offset + 4 + 3]);
 				OutPort = XorPort ^ static_cast<uint16>((WeaponStun::MagicCookie >> 16) & 0xFFFF);

@@ -57,6 +57,54 @@ void UWeaponRelayNetDriver::SetRelayConnectionInfo(const FString& InTurnServerAd
 	bCredentialsExplicit = true;
 }
 
+bool UWeaponRelayNetDriver::UpgradeSocketToRelay()
+{
+	if (!GetSocket())
+	{
+		return false;
+	}
+
+	// 已包装(socket 创建时凭证已就绪)则无需升级。
+	if (GetSocket()->GetDescription() == TEXT("WeaponRelay"))
+	{
+		return true;
+	}
+
+	if (TurnServerAddr.IsEmpty())
+	{
+		UE_LOG(LogWeaponRelayDriver, Warning,
+			TEXT("UpgradeSocketToRelay: no TURN server configured; relay transport disabled"));
+		return false;
+	}
+
+	// 创建全新底层 socket 并包装。旧 socket 由 netdriver 正常释放
+	// (SetSocketAndLocalAddress 触发 safe/deferred cleanup),无所有权冲突。
+	// Host 的 TURN 分配地址由 TURN 服务器决定,与本地 listen 端口无关,
+	// 客户端经 relay 走的是 relayed 地址,不直接连本地端口。
+	ISocketSubsystem* SocketSubsystem = GetSocketSubsystem();
+	if (!SocketSubsystem)
+	{
+		return false;
+	}
+	FUniqueSocket NewUnderlying = SocketSubsystem->CreateUniqueSocket(NAME_DGram, TEXT("WeaponRelayUnderlying"));
+	if (!NewUnderlying.IsValid())
+	{
+		return false;
+	}
+	// CreateUniqueSocket 返回阻塞模式 socket;UIpNetDriver::InitBase 原本会给
+	// socket 设非阻塞,但热升级新建的 socket 绕过了 InitBase。阻塞的 RecvFrom
+	// 会在主线程 TickDispatch 里无限等待(无入站包时),导致 UI 卡死。
+	NewUnderlying->SetNonBlocking(true);
+
+	FWeaponRelaySocket* RelaySocket = new FWeaponRelaySocket(NewUnderlying.Release(), TEXT("WeaponRelay"));
+	RelaySocket->Allocate(TurnServerAddr, TurnUsername, TurnPassword);
+	UE_LOG(LogWeaponRelayDriver, Log, TEXT("Upgraded socket to relay, Allocate to %s"), *TurnServerAddr);
+
+	// 安装到 netdriver(传播到 NetConnection 与接收线程;旧 socket 延迟清理)。
+	SetSocketAndLocalAddress(TSharedPtr<FSocket>(RelaySocket));
+	return true;
+}
+
 bool UWeaponRelayNetDriver::ShouldUseRelayTransport() const
 {
 	if (bCredentialsExplicit && !TurnServerAddr.IsEmpty())
@@ -64,18 +112,28 @@ bool UWeaponRelayNetDriver::ShouldUseRelayTransport() const
 		return true;
 	}
 
-	// 无显式凭证:仅当客户端已明确选择 relay 回退(无可用 direct 候选)
-	// 且已缓存 TURN 凭证时才走 relay。有 direct 候选时保持裸 UDP 直连。
 	UWorld* DriverWorld = GetWorld();
 	UGameInstance* GI = DriverWorld ? DriverWorld->GetGameInstance() : nullptr;
-	if (GI)
+	if (!GI)
 	{
-		if (UWeaponCentralConnectivitySubsystem* Central = GI->GetSubsystem<UWeaponCentralConnectivitySubsystem>())
-		{
-			return Central->HasRelayCredentials() && Central->ShouldUseRelayFallback();
-		}
+		return false;
 	}
-	return false;
+	UWeaponCentralConnectivitySubsystem* Central = GI->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
+	if (!Central || !Central->HasRelayCredentials())
+	{
+		return false;
+	}
+
+	// Host(监听服务器):凭证已缓存即走 relay,不依赖 bCredentialsExplicit
+	// 的注入时序(凭证异步到达,而 Listen socket 在 travel 时已创建)。
+	if (DriverWorld->GetNetMode() == NM_ListenServer)
+	{
+		return true;
+	}
+
+	// 客户端:仅当已明确选择 relay 回退(无可用 direct 候选)才走 relay。
+	// 有 direct 候选时保持裸 UDP 直连。
+	return Central->ShouldUseRelayFallback();
 }
 
 bool UWeaponRelayNetDriver::ResolveRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword)

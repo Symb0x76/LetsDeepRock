@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "IpNetDriver.h"
+#include "Sockets.h"
 #include "WeaponRelayNetDriver.generated.h"
 
 class FWeaponRelaySocket;
@@ -30,6 +31,13 @@ public:
 	/** 显式注入 TURN 服务器与凭证(优先于子系统拉取)。 */
 	void SetRelayConnectionInfo(const FString& InTurnServerAddr, const FString& InUsername, const FString& InPassword);
 
+	/**
+	 * 把当前已绑定的 socket 热升级为 relay 包装(socket 创建后凭证才到达时用)。
+	 * 仅 Host(监听)场景有效;客户端 socket 创建时已能读到凭证缓存。
+	 * @return 升级成功或本就已包装时为 true
+	 */
+	bool UpgradeSocketToRelay();
+
 	/** 供外部轮询推进 TURN 事务(每帧调用)。 */
 	void TickRelay();
 
@@ -41,6 +49,13 @@ public:
 
 	/** 本连接是否打算走 relay(socket 创建前即可查询)。 */
 	bool ShouldUseRelayTransport() const;
+
+	/** 当前 socket 是否已包装为 relay(而非纯 UDP)。 */
+	bool IsSocketRelay()
+	{
+		const FSocket* Sock = GetSocket();
+		return Sock && Sock->GetDescription() == TEXT("WeaponRelay");
+	}
 
 private:
 	bool ResolveRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword);
