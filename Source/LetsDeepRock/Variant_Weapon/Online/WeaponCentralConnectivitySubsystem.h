@@ -10,6 +10,7 @@
 #include "EventLoop/EventLoopTimer.h"
 #include "WeaponCentralConnectivitySubsystem.generated.h"
 
+class FWeaponCandidateProber;
 class UWeaponHostMigrationSubsystem;
 class UWeaponSessionSubsystem;
 class UWeaponSnapshotCoordinator;
@@ -82,6 +83,19 @@ public:
 	/** 是否已缓存有效的 relay 凭证。 */
 	bool HasRelayCredentials() const { return RelayCredentialsCached.IsValid(); }
 
+	/** 读取缓存的 relay 凭证(客户端 pending 阶段创建 socket 时用,不依赖 NetDriver)。 */
+	bool GetCachedRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword) const
+	{
+		if (!RelayCredentialsCached.IsValid())
+		{
+			return false;
+		}
+		OutTurnServerAddr = RelayCredentialsCached->RelayAddr;
+		OutUsername = RelayCredentialsCached->Username;
+		OutPassword = RelayCredentialsCached->Password;
+		return !OutTurnServerAddr.IsEmpty();
+	}
+
 	/** 客户端已决定走 relay 回退(仅客户端有意义;Host 始终有凭证即走 relay)。 */
 	bool ShouldUseRelayFallback() const { return bRelayFallbackRequested; }
 
@@ -137,6 +151,9 @@ private:
 	void PublishRelayedHostCandidate();
 	void NominateHostEndpoint(const FString& Address, int32 Port);
 	bool ResolveHostEndpoint(FString& OutAddress, int32& OutPort, FString& OutError) const;
+	// 延迟到下一帧执行阻塞 3s 的 STUN 查询,避免卡住 Lease 回调;结果缓存后每次 heartbeat 复用。
+	void ScheduleReflexivePublish();
+	void QueryAndPublishReflexive();
 
 	// Late join cannot depend on an already-consumed WebSocket event; poll persisted candidates.
 	void BeginHostEndpointWait();
@@ -145,6 +162,21 @@ private:
 	void StopHostEndpointWait();
 	void HandleHostEndpointWaitTimeout();
 	static FString FormatEndpointAddress(const FString& Address, int32 Port);
+
+	// 客户端候选试探:按优先级逐个 travel 候选,连不通自动推进下一个,最后回退 relay。
+	void BeginCandidateProbe();
+	// 并行测速(ping 全部候选)结束后按 RTT 重排队列,再逐个 travel。
+	void TickCandidatePing();
+	void ApplyCandidatePingResults();
+	void ProbeNextCandidate();
+	void HandleCandidateProbeTimeout();
+	void HandleCandidateProbeFailure();
+	void HandleCandidateProbeSucceeded();
+	void ClearCandidateProbe(bool bTerminal, const FString& Message);
+	void BuildCandidateQueue(const TArray<TSharedPtr<FJsonValue>>& Candidates);
+	// 连接失败感知:engine 全局回调 + travel 完成信号,与 HostMigration 的回调各自按状态过滤。
+	void HandleNetworkFailure(UWorld* World, UNetDriver* NetDriver, ENetworkFailure::Type FailureType, const FString& ErrorString);
+	void HandlePostLoadMap(UWorld* LoadedWorld);
 
 	// 待认证完成后的 Match 动作(异步认证与 Match 请求脱节)
 	enum class EPendingMatchAction : uint8
@@ -164,7 +196,6 @@ private:
 	void HandleEventMessage(const FString& Message);
 	void HandleEventDispatch(const TSharedPtr<FJsonObject>& Json, const FString& EventType, const FGuid& EventMatchId, uint64 EventEpoch);
 	void HandleLeaseGranted(const FWeaponCentralHostLease& Lease);
-	void HandleHostEndpointNominated(const FWeaponCentralEndpointCandidate& Endpoint);
 	static int32 RankDirectCandidate(const FWeaponCentralEndpointCandidate& Candidate);
 	void HandleCheckpointCommitted(const FGuid& InMatchId, uint64 Epoch, int64 Revision);
 	void ScheduleReconnect();
@@ -184,11 +215,19 @@ private:
 	float ReconnectTimeoutSeconds = 60.0f;
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
-	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8443");
+	FString CoordinatorBaseUrl = TEXT("http://symb0x76.top:8444");
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
 	FString StunServerUrl = TEXT("stun:symb0x76.top:3478");
 
+	/**
+	 * Host 侧直连 TURN 服务器的内网地址(host:port)。
+	 * 留空时 Host 与客户端一样用协调器下发的公网 RelayAddr。TURN 与 Host 同局域网
+	 * 时可设为内网 TURN 地址(如 192.168.3.27:3478),省掉经路由器 hairpin 的绕路;
+	 * 仅当路由器不支持 hairpin 时才是必需的。
+	 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity")
+	FString HostRelayServerAddress;
 	/** Optional public DNS/IP for the listen Host. Blank falls back to the local interface address (LAN only). */
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
 	FString AdvertisedHostAddress;
@@ -205,6 +244,26 @@ private:
 
 	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
 	float HostEndpointWaitTimeoutSeconds = 20.0f;
+
+	/** 单个 direct 候选的试探超时(秒);同时作为该候选 travel URL 的 InitialConnectTimeout/ConnectionTimeout。 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Candidate Probe")
+	float CandidateProbeTimeoutSeconds = 10.0f;
+
+	/** relay 候选的试探超时(秒);TURN Allocate + 握手比 direct 慢。 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Candidate Probe")
+	float RelayProbeTimeoutSeconds = 15.0f;
+
+	/** travel 前并行 ping 全部候选的最长时间窗(秒);全部应答则提前结束。0 关闭测速。 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Candidate Probe")
+	float CandidatePingWindowSeconds = 2.0f;
+
+	/** 把阻塞 3s 的 STUN 反射查询延迟到下一帧执行,避免卡住 Lease 回调。 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	float ReflexivePublishDelaySeconds = 0.1f;
+
+	/** 纯 LAN 局可关闭 STUN 反射查询(Host 只发内网候选)。 */
+	UPROPERTY(Config, EditDefaultsOnly, Category = "Central Connectivity|Host Endpoint")
+	bool bStunQueryEnabled = true;
 
 	UPROPERTY()
 	TArray<uint8> DevicePrivateKey;
@@ -230,8 +289,29 @@ private:
 	FTimerHandle HostEndpointPollTimerHandle;
 	FTimerHandle HostEndpointWaitTimerHandle;
 	FTimerHandle RelayTickTimerHandle;
+	FTimerHandle CandidateProbeTimeoutTimerHandle;
+	FTimerHandle CandidatePingTimerHandle;
+	// 非 UObject;TSharedPtr 允许头文件只前置声明(删除器在创建处绑定)
+	TSharedPtr<FWeaponCandidateProber> CandidatePinger;
+	FTimerHandle ReflexivePublishTimerHandle;
 	int32 ReconnectAttempt = 0;
 	double ReconnectDeadlineSeconds = 0.0;
+
+	// 连接失败感知:engine 全局回调句柄(与 HostMigration 各自挂载、按状态过滤)
+	FDelegateHandle NetworkFailureDelegateHandle;
+	FDelegateHandle PostLoadMapDelegateHandle;
+
+	// 客户端候选试探:按优先级排序的候选队列 + 当前尝试索引
+	TArray<FWeaponCentralEndpointCandidate> CandidateQueue;
+	int32 CandidateProbeIndex = INDEX_NONE;
+	bool bCandidateProbeActive = false;
+	bool bRelayProbeInProgress = false;
+	FString PendingCandidateProbeAddress;
+
+	// Host 侧 STUN 反射结果缓存(只查询一次,每次 heartbeat 复用)
+	FString CachedReflexiveAddress;
+	int32 CachedReflexivePort = 0;
+	bool bStunQueryCompleted = false;
 
 	// 暂存缓冲区:只存事件原文,不存判断结论;MatchId 建立后重放时走完整 fence
 	TArray<FString> StashedEvents;
