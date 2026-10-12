@@ -404,9 +404,9 @@ print(json.dumps(result))
             asset_name: Blackboard 名称（如 "BB_Enemy"）
             package_path: 保存路径（如 "/Game/AI/Blackboards/"），默认为 "/Game/AI/Blackboards/"
             keys: 键列表，每个键为 dict，格式：
-                {{"name": "TargetActor", "type": "Object", "base_class": "Actor"}},
-                {{"name": "PatrolLocation", "type": "Vector"}},
-                {{"name": "IsAlerted", "type": "Bool"}}
+                {"name": "TargetActor", "type": "Object", "base_class": "Actor"},
+                {"name": "PatrolLocation", "type": "Vector"},
+                {"name": "IsAlerted", "type": "Bool"}
                 支持的 type: Object, Vector, Float, Bool, Int, String, Enum, Class, Name
 
         Returns:
