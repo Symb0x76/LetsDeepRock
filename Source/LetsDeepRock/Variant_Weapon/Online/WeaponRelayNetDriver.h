@@ -8,6 +8,7 @@
 #include "WeaponRelayNetDriver.generated.h"
 
 class FWeaponRelaySocket;
+class UWeaponCentralConnectivitySubsystem;
 
 /**
  * Relay 感知 NetDriver:在 UIpNetDriver 之上,把 socket 换成 FWeaponRelaySocket。
@@ -58,7 +59,14 @@ public:
 	}
 
 private:
+	/** 当前 socket 为 relay 包装时返回它,否则 nullptr。 */
+	FWeaponRelaySocket* GetRelaySocket() const;
+
 	bool ResolveRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword);
+
+	// 解析 Central 子系统:先走 World(pending 阶段 GetWorld 为 null 时),
+	// 回退到 GEngine 按 pending net driver 查 WorldContext → OwningGameInstance。
+	UWeaponCentralConnectivitySubsystem* GetCentralConnectivitySubsystem() const;
 
 	FString TurnServerAddr;
 	FString TurnUsername;

@@ -24,6 +24,9 @@ public:
 	FGuid GetOrCreateActiveMatchId();
 	/** Adopt the Coordinator-issued MatchId before the first local Snapshot is captured. */
 	bool AdoptActiveMatchId(const FGuid& MatchId, FString& OutError);
+	/** 结束当前逻辑战局(换房间/离开房间时调用),复位 MatchId 与快照修订号,
+	 *  否则下一局 AdoptActiveMatchId 会因旧 MatchId 残留而失败。 */
+	void ClearActiveMatchId();
 
 	/** 捕获服务器权威状态以及恢复 World/Session 所需的固定配置 */
 	bool CaptureSaveGame(const UWorld* World, UWeaponMatchSaveGame*& OutSaveGame, FString& OutError);

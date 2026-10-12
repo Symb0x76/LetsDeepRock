@@ -3,6 +3,7 @@
 #include "WeaponRelayNetDriver.h"
 #include "WeaponRelaySocket.h"
 #include "WeaponCentralConnectivitySubsystem.h"
+#include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "SocketSubsystem.h"
@@ -96,8 +97,14 @@ bool UWeaponRelayNetDriver::UpgradeSocketToRelay()
 	// 会在主线程 TickDispatch 里无限等待(无入站包时),导致 UI 卡死。
 	NewUnderlying->SetNonBlocking(true);
 
+	// FWeaponRelaySocket::Allocate 延迟 TURN 事务到 Bind 后发起。热升级路径
+	// 无后续 InitBase 的 InitBindSockets,必须在此显式 Bind(0.0.0.0:0),
+	// Bind 内部会触发延迟的 Allocate 事务,且避免隐含绑定与 Bind 冲突。
 	FWeaponRelaySocket* RelaySocket = new FWeaponRelaySocket(NewUnderlying.Release(), TEXT("WeaponRelay"));
+	TSharedRef<FInternetAddr> BindAddr = SocketSubsystem->CreateInternetAddr();
+	BindAddr->SetAnyAddress();
 	RelaySocket->Allocate(TurnServerAddr, TurnUsername, TurnPassword);
+	RelaySocket->Bind(*BindAddr);
 	UE_LOG(LogWeaponRelayDriver, Log, TEXT("Upgraded socket to relay, Allocate to %s"), *TurnServerAddr);
 
 	// 安装到 netdriver(传播到 NetConnection 与接收线程;旧 socket 延迟清理)。
@@ -109,31 +116,65 @@ bool UWeaponRelayNetDriver::ShouldUseRelayTransport() const
 {
 	if (bCredentialsExplicit && !TurnServerAddr.IsEmpty())
 	{
+		UE_LOG(LogWeaponRelayDriver, Log, TEXT("ShouldUseRelayTransport: explicit creds -> relay"));
 		return true;
 	}
 
-	UWorld* DriverWorld = GetWorld();
-	UGameInstance* GI = DriverWorld ? DriverWorld->GetGameInstance() : nullptr;
-	if (!GI)
+	// 拿 Central 子系统:优先走 World(pending 阶段 GetWorld 为 null 时),
+	// 回退到 WorldContext(pending net driver 也注册了 WorldContext)。
+	UWeaponCentralConnectivitySubsystem* Central = GetCentralConnectivitySubsystem();
+	if (!Central)
 	{
+		UE_LOG(LogWeaponRelayDriver, Warning,
+			TEXT("ShouldUseRelayTransport: no Central subsystem -> direct"));
 		return false;
 	}
-	UWeaponCentralConnectivitySubsystem* Central = GI->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
-	if (!Central || !Central->HasRelayCredentials())
+	if (!Central->HasRelayCredentials())
 	{
+		UE_LOG(LogWeaponRelayDriver, Warning,
+			TEXT("ShouldUseRelayTransport: no relay credentials -> direct"));
 		return false;
 	}
 
 	// Host(监听服务器):凭证已缓存即走 relay,不依赖 bCredentialsExplicit
 	// 的注入时序(凭证异步到达,而 Listen socket 在 travel 时已创建)。
-	if (DriverWorld->GetNetMode() == NM_ListenServer)
+	UWorld* DriverWorld = GetWorld();
+	if (DriverWorld && DriverWorld->GetNetMode() == NM_ListenServer)
 	{
+		UE_LOG(LogWeaponRelayDriver, Log, TEXT("ShouldUseRelayTransport: listen host -> relay"));
 		return true;
 	}
 
 	// 客户端:仅当已明确选择 relay 回退(无可用 direct 候选)才走 relay。
 	// 有 direct 候选时保持裸 UDP 直连。
-	return Central->ShouldUseRelayFallback();
+	const bool bUseRelay = Central->ShouldUseRelayFallback();
+	UE_LOG(LogWeaponRelayDriver, Log,
+		TEXT("ShouldUseRelayTransport: client fallback=%d -> %s"),
+		bUseRelay ? 1 : 0, bUseRelay ? TEXT("relay") : TEXT("direct"));
+	return bUseRelay;
+}
+
+UWeaponCentralConnectivitySubsystem* UWeaponRelayNetDriver::GetCentralConnectivitySubsystem() const
+{
+	UWorld* DriverWorld = GetWorld();
+	UGameInstance* GI = DriverWorld ? DriverWorld->GetGameInstance() : nullptr;
+	if (GI)
+	{
+		return GI->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
+	}
+
+	// pending 阶段 GetWorld 为 null:经 GEngine 拿该 pending driver 注册的
+	// WorldContext,再解析其 OwningGameInstance 的 Central 子系统。
+	if (GEngine)
+	{
+		const FWorldContext* WorldContext =
+			GEngine->GetWorldContextFromPendingNetGameNetDriver(this);
+		if (WorldContext && WorldContext->OwningGameInstance)
+		{
+			return WorldContext->OwningGameInstance->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
+		}
+	}
+	return nullptr;
 }
 
 bool UWeaponRelayNetDriver::ResolveRelayCredentials(FString& OutTurnServerAddr, FString& OutUsername, FString& OutPassword)
@@ -147,38 +188,34 @@ bool UWeaponRelayNetDriver::ResolveRelayCredentials(FString& OutTurnServerAddr, 
 	}
 
 	// 无显式凭证:从 CentralConnectivity 子系统拉取(客户端 join 后已预取缓存)。
-	UWorld* DriverWorld = GetWorld();
-	UGameInstance* GI = DriverWorld ? DriverWorld->GetGameInstance() : nullptr;
-	if (!GI)
-	{
-		return false;
-	}
-	UWeaponCentralConnectivitySubsystem* Central = GI->GetSubsystem<UWeaponCentralConnectivitySubsystem>();
+	// 用 GetCentralConnectivitySubsystem 兼容 pending 阶段 GetWorld 为 null;
+	// 直接读凭证缓存,不走 ConfigureRelayNetDriver(那是 Host 升级 socket 用的,
+	// pending 阶段无 active NetDriver 必然失败)。
+	UWeaponCentralConnectivitySubsystem* Central = GetCentralConnectivitySubsystem();
 	if (!Central)
 	{
 		return false;
 	}
 
-	if (!Central->HasRelayCredentials())
+	if (!Central->GetCachedRelayCredentials(OutTurnServerAddr, OutUsername, OutPassword))
 	{
+		UE_LOG(LogWeaponRelayDriver, Warning,
+			TEXT("Cannot obtain relay credentials: no cached credentials"));
 		return false;
 	}
-	FString Error;
-	if (!Central->ConfigureRelayNetDriver(Error))
-	{
-		UE_LOG(LogWeaponRelayDriver, Warning, TEXT("Cannot obtain relay credentials: %s"), *Error);
-		return false;
-	}
-
-	OutTurnServerAddr = TurnServerAddr;
-	OutUsername = TurnUsername;
-	OutPassword = TurnPassword;
 	return !OutTurnServerAddr.IsEmpty();
+}
+
+FWeaponRelaySocket* UWeaponRelayNetDriver::GetRelaySocket() const
+{
+	// 纯 UDP 直连时 socket 不是 FWeaponRelaySocket,不能盲目 static_cast。
+	FSocket* Sock = const_cast<UWeaponRelayNetDriver*>(this)->GetSocket();
+	return (Sock && Sock->GetDescription() == TEXT("WeaponRelay")) ? static_cast<FWeaponRelaySocket*>(Sock) : nullptr;
 }
 
 void UWeaponRelayNetDriver::TickRelay()
 {
-	if (FWeaponRelaySocket* Relay = static_cast<FWeaponRelaySocket*>(GetSocket()))
+	if (FWeaponRelaySocket* Relay = GetRelaySocket())
 	{
 		Relay->Tick();
 	}
@@ -186,7 +223,7 @@ void UWeaponRelayNetDriver::TickRelay()
 
 bool UWeaponRelayNetDriver::IsRelayFallbackDirect()
 {
-	if (FWeaponRelaySocket* Relay = static_cast<FWeaponRelaySocket*>(GetSocket()))
+	if (FWeaponRelaySocket* Relay = GetRelaySocket())
 	{
 		return Relay->IsFallbackDirect();
 	}
@@ -195,8 +232,7 @@ bool UWeaponRelayNetDriver::IsRelayFallbackDirect()
 
 FString UWeaponRelayNetDriver::GetRelayedAddressString() const
 {
-	UWeaponRelayNetDriver* Self = const_cast<UWeaponRelayNetDriver*>(this);
-	if (FWeaponRelaySocket* Relay = static_cast<FWeaponRelaySocket*>(Self->GetSocket()))
+	if (FWeaponRelaySocket* Relay = GetRelaySocket())
 	{
 		if (const FInternetAddr* Addr = Relay->GetRelayedAddress())
 		{

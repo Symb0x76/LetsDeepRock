@@ -86,6 +86,12 @@ FGuid UWeaponSnapshotCoordinator::GetOrCreateActiveMatchId()
 	return ActiveMatchId;
 }
 
+void UWeaponSnapshotCoordinator::ClearActiveMatchId()
+{
+	ActiveMatchId.Invalidate();
+	NextSnapshotRevision = 1;
+}
+
 bool UWeaponSnapshotCoordinator::AdoptActiveMatchId(
 	const FGuid& MatchId,
 	FString& OutError)

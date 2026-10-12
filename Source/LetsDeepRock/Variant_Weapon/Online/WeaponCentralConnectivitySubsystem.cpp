@@ -2,6 +2,7 @@
 
 #include "WeaponCentralConnectivitySubsystem.h"
 
+#include "WeaponCandidateProber.h"
 #include "WeaponCentralDeviceCrypto.h"
 #include "WeaponHostMigrationSubsystem.h"
 #include "WeaponRelayNetDriver.h"
@@ -16,13 +17,17 @@
 #include "IWebSocket.h"
 #include "WebSocketsModule.h"
 #include "Dom/JsonObject.h"
+#include "Engine/Engine.h"
+#include "Engine/EngineBaseTypes.h"
 #include "Engine/GameInstance.h"
 #include "Engine/NetDriver.h"
 #include "Engine/World.h"
 #include "GenericPlatform/GenericPlatformFile.h"
 #include "HAL/PlatformFileManager.h"
 #include "Misc/CommandLine.h"
+#include "Misc/CoreDelegates.h"
 #include "Misc/Parse.h"
+#include "Modules/ModuleManager.h"
 #include "SocketSubsystem.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -51,6 +56,18 @@ void UWeaponCentralConnectivitySubsystem::Initialize(FSubsystemCollectionBase& C
 		}
 	}
 
+	// 连接失败感知:与 HostMigration 各自挂全局回调,按各自状态过滤互不冲突。
+	// 候选试探需要 NetworkFailure(engine 在连接超时时广播)与 travel 完成信号。
+	if (GEngine)
+	{
+		NetworkFailureDelegateHandle = GEngine->OnNetworkFailure().AddUObject(
+			this,
+			&UWeaponCentralConnectivitySubsystem::HandleNetworkFailure);
+	}
+	PostLoadMapDelegateHandle = FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(
+		this,
+		&UWeaponCentralConnectivitySubsystem::HandlePostLoadMap);
+
 	ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central Connectivity subsystem initialized"));
 }
@@ -61,6 +78,16 @@ void UWeaponCentralConnectivitySubsystem::Deinitialize()
 	{
 		SessionSubsystem->OnLanHostComplete.RemoveAll(this);
 	}
+	if (GEngine && NetworkFailureDelegateHandle.IsValid())
+	{
+		GEngine->OnNetworkFailure().Remove(NetworkFailureDelegateHandle);
+		NetworkFailureDelegateHandle.Reset();
+	}
+	if (PostLoadMapDelegateHandle.IsValid())
+	{
+		FCoreUObjectDelegates::PostLoadMapWithWorld.Remove(PostLoadMapDelegateHandle);
+		PostLoadMapDelegateHandle.Reset();
+	}
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		GI->GetTimerManager().ClearTimer(ReconnectTimerHandle);
@@ -68,6 +95,8 @@ void UWeaponCentralConnectivitySubsystem::Deinitialize()
 		GI->GetTimerManager().ClearTimer(HostEndpointPollTimerHandle);
 		GI->GetTimerManager().ClearTimer(HostEndpointWaitTimerHandle);
 		GI->GetTimerManager().ClearTimer(RelayTickTimerHandle);
+		GI->GetTimerManager().ClearTimer(CandidateProbeTimeoutTimerHandle);
+		GI->GetTimerManager().ClearTimer(ReflexivePublishTimerHandle);
 	}
 	ResetEventSocket();
 	ConnectivityState = EWeaponCentralConnectivityState::Disconnected;
@@ -376,6 +405,10 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(
 		return;
 	}
 
+	// 先复位旧 Match 传输状态(含 SnapshotCoordinator 的 ActiveMatchId,
+	// 否则上一局残留会导致 AdoptActiveMatchId 失败),再 adopt 新 MatchId。
+	ResetMatchTransportState();
+
 	FString AdoptError;
 	if (!SnapshotCoordinator->AdoptActiveMatchId(InMatchId, AdoptError))
 	{
@@ -383,7 +416,6 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchCreated(
 		return;
 	}
 
-	ResetMatchTransportState();
 	MatchId = InMatchId;
 	CentralMatchIdString = RawMatchId;
 	CentralJoinCode = JoinCode;
@@ -435,6 +467,11 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(
 		return;
 	}
 
+	// 先复位旧 Match 传输状态,再 adopt 新 MatchId(顺序不可颠倒:
+	// ResetMatchTransportState 会 ClearActiveMatchId,若在 adopt 后执行会把
+	// 刚建立的 MatchId 清掉,导致后续快照/迁移找不到有效战局身份)。
+	ResetMatchTransportState();
+
 	FString AdoptError;
 	if (!SnapshotCoordinator->AdoptActiveMatchId(InMatchId, AdoptError))
 	{
@@ -442,7 +479,6 @@ void UWeaponCentralConnectivitySubsystem::HandleMatchJoined(
 		return;
 	}
 
-	ResetMatchTransportState();
 	MatchId = InMatchId;
 	CentralMatchIdString = RawMatchId;
 	CentralJoinCode = JoinCode;
@@ -477,6 +513,9 @@ void UWeaponCentralConnectivitySubsystem::ResetMatchTransportState()
 	if (UGameInstance* GI = GetGameInstance())
 	{
 		GI->GetTimerManager().ClearTimer(LeaseHeartbeatTimerHandle);
+		GI->GetTimerManager().ClearTimer(CandidateProbeTimeoutTimerHandle);
+		GI->GetTimerManager().ClearTimer(ReflexivePublishTimerHandle);
+		GI->GetTimerManager().ClearTimer(RelayTickTimerHandle);
 	}
 	ResetEventSocket();
 	bCentralLeaseReady = false;
@@ -487,6 +526,24 @@ void UWeaponCentralConnectivitySubsystem::ResetMatchTransportState()
 	PublishedCandidateId.Reset();
 	ExpectedHostPeerId.Reset();
 	CurrentMatchRole.Reset();
+	// 复位候选试探状态:换一局重新加入时,残留的 relay 标记会跳过 direct。
+	bRelayFallbackRequested = false;
+	bCandidateProbeActive = false;
+	bRelayProbeInProgress = false;
+	CandidateQueue.Reset();
+	CandidateProbeIndex = INDEX_NONE;
+	PendingCandidateProbeAddress.Reset();
+	// Host 侧 STUN 反射缓存:新局重新查询,避免发布旧局地址。
+	CachedReflexiveAddress.Reset();
+	CachedReflexivePort = 0;
+	bStunQueryCompleted = false;
+
+	// 复位快照协调器的逻辑战局身份:换房间/重新加入时,旧 MatchId 残留会
+	// 导致新一局 AdoptActiveMatchId 失败("A different logical MatchId is already active")。
+	if (SnapshotCoordinator.IsValid())
+	{
+		SnapshotCoordinator->ClearActiveMatchId();
+	}
 }
 
 void UWeaponCentralConnectivitySubsystem::HandleLanHostComplete(
@@ -693,46 +750,84 @@ void UWeaponCentralConnectivitySubsystem::PublishHostEndpoint()
 		return;
 	}
 
-	// 有 relay 凭证时,Host 的 Listen socket 应已走 TURN(仅经 TURN 可达)。
-	// 若 relayed 地址尚未就绪(TURN Allocate 未完成),降级发布 direct 候选,
-	// 保证客户端始终能拿到候选;heartbeat 周期会补发 relayed。
-	if (HasRelayCredentials())
-	{
-		const FString RelayedAddr = GetRelayedHostCandidateAddress();
-		if (!RelayedAddr.IsEmpty())
-		{
-			PublishRelayedHostCandidate();
-			return;
-		}
-		UE_LOG(LogWeaponCentralConnectivity, Warning,
-			TEXT("Relay credentials ready but relayed address not yet allocated; publishing direct candidates as fallback"));
-	}
+	// ICE 全量发布:LAN / relayed / STUN 反射三类候选互不 return,全部上传。
+	// 客户端拿到完整列表后按优先级逐个试探,LAN 用户直连,跨 NAT 用户回退 relay。
 
-	// 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
+	// ① 内网/手动配置的 direct 候选(始终发布;同 NAT 客户端可直接连)。
 	UploadHostCandidate(TEXT("Host"), Address, Port, 100, TEXT("listen"));
+	NominateHostEndpoint(Address, Port);
 
-	// STUN 反射候选:本机在公网的 IP。UDP 直连不经过 libcurl/代理,
-	// 拿到的是真实出口(而非代理出口)。失败不阻塞,继续用内网候选。
-	FString ReflexiveAddress;
-	int32 ReflexivePort = 0;
-	QueryStunReflexiveAddress(ReflexiveAddress, ReflexivePort);
-	if (!ReflexiveAddress.IsEmpty() && ReflexivePort > 0)
+	// ② relayed 候选:就绪即上传(幂等 upsert)。地址未就绪(Allocate 未完成)
+	//    时为空操作,下一次 heartbeat 会自动补发,不影响 direct 候选。
+	PublishRelayedHostCandidate();
+
+	// ③ STUN 反射候选:只查询一次(阻塞 3s),延迟到下一帧避免卡住 Lease 回调;
+	//    结果缓存后每次 heartbeat 复用。查询失败不影响前两类候选。
+	if (!bStunQueryEnabled)
 	{
-		// 反射端口是临时查询 socket 的随机 NAT 映射,与游戏监听端口无关;
-		// 只有游戏监听端口在路由器上有入站 DNAT 映射。因此候选与提名
-		// 都用游戏端口,反射地址仅提供公网 IP 部分。
-		UploadHostCandidate(TEXT("ServerReflexive"), ReflexiveAddress, Port, 90, TEXT("stun"));
-		UE_LOG(LogWeaponCentralConnectivity, Log,
-			TEXT("Published server-reflexive candidate %s:%d (stun port %d)"),
-			*ReflexiveAddress, Port, ReflexivePort);
-
-		// 向中心提名公网直连 endpoint:跨 NAT 用户经 DNAT 可直连游戏主机。
-		NominateHostEndpoint(ReflexiveAddress, Port);
+		return;
+	}
+	if (bStunQueryCompleted)
+	{
+		if (!CachedReflexiveAddress.IsEmpty() && CachedReflexivePort > 0)
+		{
+			// 反射地址只提供公网 IP;端口用游戏监听端口(与现逻辑一致)。
+			UploadHostCandidate(TEXT("ServerReflexive"), CachedReflexiveAddress, Port, 90, TEXT("stun"));
+			NominateHostEndpoint(CachedReflexiveAddress, Port);
+			UE_LOG(LogWeaponCentralConnectivity, Log,
+				TEXT("Published server-reflexive candidate %s:%d (cached)"),
+				*CachedReflexiveAddress, Port);
+		}
 		return;
 	}
 
-	// STUN 不可用时回退:提名内网/手动配置的 Host 地址(仅本地用户可达)。
-	NominateHostEndpoint(Address, Port);
+	ScheduleReflexivePublish();
+}
+
+void UWeaponCentralConnectivitySubsystem::ScheduleReflexivePublish()
+{
+	if (ReflexivePublishTimerHandle.IsValid())
+	{
+		return;
+	}
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().SetTimer(
+			ReflexivePublishTimerHandle,
+			this,
+			&UWeaponCentralConnectivitySubsystem::QueryAndPublishReflexive,
+			FMath::Max(0.05f, ReflexivePublishDelaySeconds),
+			false);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::QueryAndPublishReflexive()
+{
+	ReflexivePublishTimerHandle.Invalidate();
+	bStunQueryCompleted = true;
+
+	QueryStunReflexiveAddress(CachedReflexiveAddress, CachedReflexivePort);
+	if (CachedReflexiveAddress.IsEmpty() || CachedReflexivePort <= 0)
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("STUN reflexive lookup failed; keeping LAN-only candidates"));
+		return;
+	}
+
+	FString Address;
+	int32 Port = 0;
+	FString Error;
+	if (!ResolveHostEndpoint(Address, Port, Error))
+	{
+		return;
+	}
+	// 反射端口是临时查询 socket 的随机 NAT 映射,与游戏监听端口无关;
+	// 候选与提名都用游戏端口,反射地址仅提供公网 IP 部分。
+	UploadHostCandidate(TEXT("ServerReflexive"), CachedReflexiveAddress, Port, 90, TEXT("stun"));
+	NominateHostEndpoint(CachedReflexiveAddress, Port);
+	UE_LOG(LogWeaponCentralConnectivity, Log,
+		TEXT("Published server-reflexive candidate %s:%d (stun port %d)"),
+		*CachedReflexiveAddress, Port, CachedReflexivePort);
 }
 
 FString UWeaponCentralConnectivitySubsystem::GetRelayedHostCandidateAddress() const
@@ -920,8 +1015,9 @@ void UWeaponCentralConnectivitySubsystem::BeginHostEndpointWait()
 
 void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 {
-	if (!bWaitingForHostEndpoint || bCandidateRequestInFlight || AccessToken.IsEmpty() ||
-		CentralMatchIdString.IsEmpty() || DeviceId.IsEmpty())
+	// 候选试探进行中:不再拉取候选(CandidateUpdated 事件触发的重拉会被忽略)。
+	if (bCandidateProbeActive || !bWaitingForHostEndpoint || bCandidateRequestInFlight ||
+		AccessToken.IsEmpty() || CentralMatchIdString.IsEmpty() || DeviceId.IsEmpty())
 	{
 		return;
 	}
@@ -974,79 +1070,435 @@ void UWeaponCentralConnectivitySubsystem::RequestHostCandidates()
 				return;
 			}
 
-			FWeaponCentralEndpointCandidate Best;
-			FWeaponCentralEndpointCandidate BestRelay;
-			for (const TSharedPtr<FJsonValue>& Value : *Candidates)
+			// 响应返回时可能已进入试探(请求发出时尚未置位);不重启。
+			if (bCandidateProbeActive)
 			{
-				const TSharedPtr<FJsonObject> CandidateJson = Value.IsValid() ? Value->AsObject() : nullptr;
-				if (!CandidateJson.IsValid())
-				{
-					continue;
-				}
-				FWeaponCentralEndpointCandidate Candidate;
-				CandidateJson->TryGetStringField(TEXT("peerId"), Candidate.PeerId);
-				CandidateJson->TryGetStringField(TEXT("candidateType"), Candidate.CandidateType);
-				CandidateJson->TryGetStringField(TEXT("transport"), Candidate.Transport);
-				CandidateJson->TryGetStringField(TEXT("address"), Candidate.Address);
-				Candidate.AuthorityEpoch = static_cast<uint64>(CandidateJson->GetNumberField(TEXT("authorityEpoch")));
-				Candidate.Port = static_cast<int32>(CandidateJson->GetNumberField(TEXT("port")));
-				Candidate.Priority = static_cast<uint32>(CandidateJson->GetNumberField(TEXT("priority")));
-
-				if ((!ExpectedHostPeerId.IsEmpty() && Candidate.PeerId != ExpectedHostPeerId) ||
-					Candidate.AuthorityEpoch < AuthorityEpoch ||
-					Candidate.Address.IsEmpty() || Candidate.Port <= 0 || Candidate.Port > 65535)
-				{
-					continue;
-				}
-
-				if (Candidate.Transport == TEXT("Relay"))
-				{
-					// 记录 relay 候选:direct 不可用时的 fallback
-					if (BestRelay.Address.IsEmpty() || Candidate.Priority > BestRelay.Priority)
-					{
-						BestRelay = MoveTemp(Candidate);
-					}
-					continue;
-				}
-
-				if (Candidate.Transport != TEXT("UDP"))
-				{
-					continue;
-				}
-
-				// 同 Epoch 下 ServerReflexive(公网)优先于内网 Host 候选。
-				const int32 BestRank = RankDirectCandidate(Best);
-				const int32 CandidateRank = RankDirectCandidate(Candidate);
-				if (Best.Address.IsEmpty() || Candidate.AuthorityEpoch > Best.AuthorityEpoch ||
-					(Candidate.AuthorityEpoch == Best.AuthorityEpoch &&
-					 (CandidateRank > BestRank ||
-					  (CandidateRank == BestRank && Candidate.Priority > Best.Priority))))
-				{
-					Best = MoveTemp(Candidate);
-				}
-			}
-
-			if (!Best.Address.IsEmpty())
-			{
-				AuthorityEpoch = FMath::Max(AuthorityEpoch, Best.AuthorityEpoch);
-				HandleHostEndpointNominated(Best);
 				return;
 			}
 
-			// 无 direct 候选 → relay 回退(需已缓存 TURN 凭证,由 RelayNetDriver 拉取)
-			if (!BestRelay.Address.IsEmpty() && HasRelayCredentials())
+			BuildCandidateQueue(*Candidates);
+			if (CandidateQueue.Num() > 0)
 			{
-				AuthorityEpoch = FMath::Max(AuthorityEpoch, BestRelay.AuthorityEpoch);
-				bRelayFallbackRequested = true;
-				UE_LOG(LogWeaponCentralConnectivity, Log,
-					TEXT("No direct candidate; falling back to relay %s:%d"),
-					*BestRelay.Address, BestRelay.Port);
-				HandleHostEndpointNominated(BestRelay);
+				BeginCandidateProbe();
 				return;
 			}
 			ScheduleHostCandidatePoll();
 		});
 	Request->ProcessRequest();
+}
+
+void UWeaponCentralConnectivitySubsystem::BuildCandidateQueue(
+	const TArray<TSharedPtr<FJsonValue>>& Candidates)
+{
+	CandidateQueue.Reset();
+
+	TArray<FWeaponCentralEndpointCandidate> DirectCandidates;
+	for (const TSharedPtr<FJsonValue>& Value : Candidates)
+	{
+		const TSharedPtr<FJsonObject> CandidateJson = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!CandidateJson.IsValid())
+		{
+			continue;
+		}
+		FWeaponCentralEndpointCandidate Candidate;
+		CandidateJson->TryGetStringField(TEXT("peerId"), Candidate.PeerId);
+		CandidateJson->TryGetStringField(TEXT("candidateType"), Candidate.CandidateType);
+		CandidateJson->TryGetStringField(TEXT("transport"), Candidate.Transport);
+		CandidateJson->TryGetStringField(TEXT("address"), Candidate.Address);
+		Candidate.AuthorityEpoch = static_cast<uint64>(CandidateJson->GetNumberField(TEXT("authorityEpoch")));
+		Candidate.Port = static_cast<int32>(CandidateJson->GetNumberField(TEXT("port")));
+		Candidate.Priority = static_cast<uint32>(CandidateJson->GetNumberField(TEXT("priority")));
+
+		if ((!ExpectedHostPeerId.IsEmpty() && Candidate.PeerId != ExpectedHostPeerId) ||
+			Candidate.AuthorityEpoch < AuthorityEpoch ||
+			Candidate.Address.IsEmpty() || Candidate.Port <= 0 || Candidate.Port > 65535)
+		{
+			continue;
+		}
+
+		if (Candidate.Transport == TEXT("Relay"))
+		{
+			// relay 候选无条件入队尾。TURN 凭证是 travel 时才需要(ProbeNextCandidate
+			// 里校验),不应在此过滤——否则凭证异步晚到时 relay 候选被丢弃,队列只剩
+			// direct,导致跨 NAT 用户永远无法回退 relay。
+			CandidateQueue.Add(MoveTemp(Candidate));
+			continue;
+		}
+
+		if (Candidate.Transport != TEXT("UDP"))
+		{
+			continue;
+		}
+		DirectCandidates.Add(MoveTemp(Candidate));
+	}
+
+	// direct 候选排序:Epoch 降序 → 可达性 rank 降序 → priority 降序。
+	// ServerReflexive(公网)排在内网 Host 之前;Epoch 新者优先。
+	DirectCandidates.Sort(
+		[](const FWeaponCentralEndpointCandidate& A, const FWeaponCentralEndpointCandidate& B)
+		{
+			if (A.AuthorityEpoch != B.AuthorityEpoch)
+			{
+				return A.AuthorityEpoch > B.AuthorityEpoch;
+			}
+			const int32 RankA = RankDirectCandidate(A);
+			const int32 RankB = RankDirectCandidate(B);
+			if (RankA != RankB)
+			{
+				return RankA > RankB;
+			}
+			return A.Priority > B.Priority;
+		});
+
+	const int32 NumDirect = DirectCandidates.Num();
+	CandidateQueue.Insert(MoveTemp(DirectCandidates), 0);
+	UE_LOG(LogWeaponCentralConnectivity, Log,
+		TEXT("Candidate queue built: %d direct + %d relay"),
+		NumDirect, CandidateQueue.Num() - NumDirect);
+}
+
+void UWeaponCentralConnectivitySubsystem::BeginCandidateProbe()
+{
+	if (bCandidateProbeActive || CandidateQueue.Num() == 0)
+	{
+		return;
+	}
+
+	bCandidateProbeActive = true;
+	CandidateProbeIndex = 0;
+
+	// 试探开始:停止候选轮询与 20s 等待定时器(bWaitingForHostEndpoint 保留,
+	// 供 CandidateUpdated 事件守卫与 StopHostEndpointWait 收敛)。
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(HostEndpointPollTimerHandle);
+		GI->GetTimerManager().ClearTimer(HostEndpointWaitTimerHandle);
+	}
+
+	// 并行测速:同时 ping 全部候选,按 RTT 决定 travel 顺序,避免逐个等 10s 超时。
+	if (CandidatePingWindowSeconds > 0.0f)
+	{
+		CandidatePinger = MakeShared<FWeaponCandidateProber>();
+		FString TurnAddr, TurnUser, TurnPass;
+		const bool bHasTurn = GetCachedRelayCredentials(TurnAddr, TurnUser, TurnPass);
+		for (int32 Index = 0; Index < CandidateQueue.Num(); ++Index)
+		{
+			const FWeaponCentralEndpointCandidate& Candidate = CandidateQueue[Index];
+			if (Candidate.Transport != TEXT("Relay"))
+			{
+				CandidatePinger->AddDirectTarget(Index, Candidate.Address, Candidate.Port);
+			}
+			else if (bHasTurn)
+			{
+				CandidatePinger->AddRelayTarget(Index, Candidate.Address, Candidate.Port, TurnAddr, TurnUser, TurnPass);
+			}
+		}
+		UGameInstance* GI = GetGameInstance();
+		if (GI && CandidatePinger->Start(CandidatePingWindowSeconds))
+		{
+			GI->GetTimerManager().SetTimer(
+				CandidatePingTimerHandle, this, &UWeaponCentralConnectivitySubsystem::TickCandidatePing, 0.02f, true);
+			return;
+		}
+		CandidatePinger.Reset();
+	}
+
+	ProbeNextCandidate();
+}
+
+void UWeaponCentralConnectivitySubsystem::TickCandidatePing()
+{
+	if (!bCandidateProbeActive || !CandidatePinger.IsValid())
+	{
+		return;
+	}
+	if (!CandidatePinger->Tick())
+	{
+		return;
+	}
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(CandidatePingTimerHandle);
+	}
+	ApplyCandidatePingResults();
+	CandidatePinger.Reset(); // 释放测速 socket(含 TURN allocation)
+	ProbeNextCandidate();
+}
+
+void UWeaponCentralConnectivitySubsystem::ApplyCandidatePingResults()
+{
+	TArray<FWeaponCandidateProber::FTarget> Answered = CandidatePinger->GetTargets().FilterByPredicate(
+		[](const FWeaponCandidateProber::FTarget& Target) { return Target.RttSeconds >= 0.0; });
+	if (Answered.Num() == 0)
+	{
+		// 无应答(如旧版 Host 不回 pong):保持原有顺序逐个 travel
+		UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Candidate ping: no answers, keeping default order"));
+		return;
+	}
+
+	// RTT 升序;相等时 direct 优先(不占 TURN 带宽)
+	Answered.Sort([](const FWeaponCandidateProber::FTarget& A, const FWeaponCandidateProber::FTarget& B)
+	{
+		if (A.RttSeconds != B.RttSeconds)
+		{
+			return A.RttSeconds < B.RttSeconds;
+		}
+		return !A.bRelay && B.bRelay;
+	});
+
+	TArray<FWeaponCentralEndpointCandidate> Reordered;
+	for (const FWeaponCandidateProber::FTarget& Target : Answered)
+	{
+		Reordered.Add(CandidateQueue[Target.QueueIndex]);
+	}
+	// 未应答的 relay 候选保留在队尾兜底(测速 allocation 可能慢于时间窗);未应答的 direct 丢弃
+	for (int32 Index = 0; Index < CandidateQueue.Num(); ++Index)
+	{
+		const bool bAnswered = Answered.ContainsByPredicate(
+			[Index](const FWeaponCandidateProber::FTarget& Target) { return Target.QueueIndex == Index; });
+		if (!bAnswered && CandidateQueue[Index].Transport == TEXT("Relay"))
+		{
+			Reordered.Add(CandidateQueue[Index]);
+		}
+	}
+
+	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Candidate ping: fastest %s:%d (%s, %.1f ms), %d of %d answered"),
+		*Reordered[0].Address, Reordered[0].Port, Answered[0].bRelay ? TEXT("relay") : TEXT("direct"),
+		Answered[0].RttSeconds * 1000.0, Answered.Num(), CandidateQueue.Num());
+	CandidateQueue = MoveTemp(Reordered);
+	CandidateProbeIndex = 0;
+}
+
+void UWeaponCentralConnectivitySubsystem::ProbeNextCandidate()
+{
+	if (!bCandidateProbeActive || !CandidateQueue.IsValidIndex(CandidateProbeIndex))
+	{
+		return;
+	}
+
+	const FWeaponCentralEndpointCandidate& Candidate = CandidateQueue[CandidateProbeIndex];
+	const bool bIsRelay = Candidate.Transport == TEXT("Relay");
+	const float Timeout = bIsRelay ? RelayProbeTimeoutSeconds : CandidateProbeTimeoutSeconds;
+
+	// relay 候选:必须先把 bRelayFallbackRequested 置位,新世界 NetDriver 的
+	// CreateSocketForProtocol 才会走 TURN(ShouldUseRelayTransport 读该 flag)。
+	// 凭证可能尚未异步到达;缺失时跳过本候选(回轮询等凭证),而非直接 travel。
+	if (bIsRelay)
+	{
+		if (!HasRelayCredentials())
+		{
+			UE_LOG(LogWeaponCentralConnectivity, Log,
+				TEXT("Skipping relay candidate %s: TURN credentials not yet cached"),
+				*Candidate.Address);
+			HandleCandidateProbeFailure();
+			return;
+		}
+		bRelayProbeInProgress = true;
+		bRelayFallbackRequested = true;
+	}
+	else
+	{
+		// 测速后 relay 可能排在 direct 之前:失败回退到 direct 时必须清掉 relay 标志,
+		// 否则新 NetDriver 仍会创建 TURN socket。
+		bRelayProbeInProgress = false;
+		bRelayFallbackRequested = false;
+	}
+
+	// travel URL 附带该候选的短超时:engine 到时广播 ConnectionTimeout,
+	// 子系统据以推进下一候选,无需改全局 CDO/ini 超时值。
+	const FString ProbeUrl = FString::Printf(
+		TEXT("%s?InitialConnectTimeout=%.1f?ConnectionTimeout=%.1f"),
+		*FormatEndpointAddress(Candidate.Address, Candidate.Port),
+		Timeout,
+		Timeout);
+	PendingCandidateProbeAddress = ProbeUrl;
+
+	UE_LOG(LogWeaponCentralConnectivity, Log,
+		TEXT("Probing candidate %d/%d (%s) %s timeout %.1fs"),
+		CandidateProbeIndex + 1, CandidateQueue.Num(),
+		bIsRelay ? TEXT("relay") : *Candidate.CandidateType,
+		*ProbeUrl,
+		Timeout);
+
+	FString Error;
+	if (!TriggerDirectReconnect(ProbeUrl, Error))
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("Cannot initiate probe to %s: %s"), *ProbeUrl, *Error);
+		HandleCandidateProbeFailure();
+		return;
+	}
+
+	// 安全网超时:engine 超时(travel URL 选项)应先行,此定时器只做兜底去重。
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().SetTimer(
+			CandidateProbeTimeoutTimerHandle,
+			this,
+			&UWeaponCentralConnectivitySubsystem::HandleCandidateProbeTimeout,
+			Timeout + 2.0f,
+			false);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleCandidateProbeTimeout()
+{
+	// 安全网:engine 未在预期时间广播失败(如 pending 阶段取消),中止挂起的
+	// map change 后推进。bCandidateProbeActive 已清则说明 engine 已处理过。
+	if (!bCandidateProbeActive)
+	{
+		return;
+	}
+	if (UWorld* World = GetWorld())
+	{
+		GEngine->CancelPendingMapChange(World);
+	}
+	HandleCandidateProbeFailure();
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleCandidateProbeFailure()
+{
+	if (!bCandidateProbeActive)
+	{
+		return;
+	}
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(CandidateProbeTimeoutTimerHandle);
+	}
+
+	CandidateProbeIndex++;
+	if (CandidateQueue.IsValidIndex(CandidateProbeIndex))
+	{
+		ProbeNextCandidate();
+		return;
+	}
+
+	// 全部 direct 失败且队列里还没有 relay 候选:Host 的 TURN Allocate 可能
+	// 稍后完成、heartbeat 会补发 relayed 候选。回轮询等待,而不是终局失败。
+	// 重新上膛 20s 等待定时器,保证总体超时仍生效(否则会无限轮询)。
+	if (HasRelayCredentials() && !bRelayProbeInProgress)
+	{
+		bCandidateProbeActive = false;
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			GI->GetTimerManager().SetTimer(
+				HostEndpointWaitTimerHandle,
+				this,
+				&UWeaponCentralConnectivitySubsystem::HandleHostEndpointWaitTimeout,
+				FMath::Max(1.0f, HostEndpointWaitTimeoutSeconds),
+				false);
+		}
+		ScheduleHostCandidatePoll();
+		return;
+	}
+
+	ClearCandidateProbe(true, TEXT("All host candidates failed"));
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleCandidateProbeSucceeded()
+{
+	if (!bCandidateProbeActive)
+	{
+		return;
+	}
+	const bool bConnectedViaRelay = bRelayProbeInProgress;
+	ClearCandidateProbe(false, FString());
+	StopHostEndpointWait();
+	ConnectivityState = bConnectedViaRelay
+		? EWeaponCentralConnectivityState::Relayed
+		: EWeaponCentralConnectivityState::DirectConnected;
+	OnConnectivityChanged.Broadcast(
+		ConnectivityState,
+		bConnectedViaRelay ? TEXT("Connected via relay") : TEXT("Direct endpoint connected"));
+}
+
+void UWeaponCentralConnectivitySubsystem::ClearCandidateProbe(bool bTerminal, const FString& Message)
+{
+	bCandidateProbeActive = false;
+	bRelayProbeInProgress = false;
+	PendingCandidateProbeAddress.Reset();
+	CandidatePinger.Reset();
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		GI->GetTimerManager().ClearTimer(CandidateProbeTimeoutTimerHandle);
+		GI->GetTimerManager().ClearTimer(CandidatePingTimerHandle);
+	}
+	if (bTerminal)
+	{
+		StopHostEndpointWait();
+		FailMatchAction(Message);
+	}
+}
+
+void UWeaponCentralConnectivitySubsystem::HandleNetworkFailure(
+	UWorld* World,
+	UNetDriver* NetDriver,
+	const ENetworkFailure::Type FailureType,
+	const FString& ErrorString)
+{
+	if (!bCandidateProbeActive || !NetDriver || NetDriver->GetNetMode() != NM_Client)
+	{
+		return;
+	}
+	if (World && World->GetGameInstance() != GetGameInstance())
+	{
+		return;
+	}
+
+	const bool bIsConnectionFailure =
+		FailureType == ENetworkFailure::ConnectionTimeout ||
+		FailureType == ENetworkFailure::PendingConnectionFailure ||
+		FailureType == ENetworkFailure::ConnectionLost;
+	if (!bIsConnectionFailure)
+	{
+		return;
+	}
+
+	// 地址匹配防串扰:只响应当前试探候选的失败,忽略前一候选的迟到回调。
+	// ServerConnection 为空/无 host 时仍推进(无法匹配;但 pending 阶段的
+	// NetDriver 通常已有 URL,空洞仅发生在异常场景)。
+	const FString PendingHost = FURL(nullptr, *PendingCandidateProbeAddress, TRAVEL_Absolute).Host;
+	if (NetDriver->ServerConnection && !NetDriver->ServerConnection->URL.Host.IsEmpty() &&
+		!PendingHost.IsEmpty())
+	{
+		const FString FailureHost = NetDriver->ServerConnection->URL.Host;
+		if (FailureHost != PendingHost)
+		{
+			UE_LOG(LogWeaponCentralConnectivity, Verbose,
+				TEXT("Network failure for %s ignored (probing %s)"),
+				*FailureHost, *PendingHost);
+			return;
+		}
+	}
+
+	UE_LOG(LogWeaponCentralConnectivity, Warning,
+		TEXT("Candidate probe connection failure (%s): %s"),
+		ENetworkFailure::ToString(FailureType), *ErrorString);
+	HandleCandidateProbeFailure();
+}
+
+void UWeaponCentralConnectivitySubsystem::HandlePostLoadMap(UWorld* LoadedWorld)
+{
+	if (!bCandidateProbeActive || !LoadedWorld ||
+		LoadedWorld->GetGameInstance() != GetGameInstance() ||
+		LoadedWorld->GetNetMode() != NM_Client)
+	{
+		return;
+	}
+
+	// 目标世界必须是当前试探的 host 世界:若 travel 被引擎回退到 return/menu
+	// 世界(同为 NM_Client),不能误判为探测成功。
+	const FString PendingHost = FURL(nullptr, *PendingCandidateProbeAddress, TRAVEL_Absolute).Host;
+	if (!PendingHost.IsEmpty() && !LoadedWorld->URL.Host.IsEmpty() &&
+		LoadedWorld->URL.Host != PendingHost)
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Verbose,
+			TEXT("PostLoadMap world %s ignored (probing %s)"),
+			*LoadedWorld->URL.Host, *PendingHost);
+		return;
+	}
+	HandleCandidateProbeSucceeded();
 }
 
 void UWeaponCentralConnectivitySubsystem::ScheduleHostCandidatePoll()
@@ -1151,15 +1603,16 @@ bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutEr
 	Request->SetHeader(TEXT("Connection"), TEXT("close"));
 
 	// 异步:结果缓存到 RelayCredentialsCached,供 ConfigureRelayNetDriver 使用。
+	// 回调异步执行时调用方栈帧早已返回:不能捕获 OutError 引用(悬垂写),失败只记日志。
 	Request->OnProcessRequestComplete().BindLambda(
-		[this, &OutError](
+		[this](
 			FHttpRequestPtr Req,
 			const FHttpResponsePtr& Resp,
 			const bool bWasSuccessful)
 		{
 			if (!bWasSuccessful || !Resp.IsValid() || Resp->GetResponseCode() != 200)
 			{
-				OutError = FString::Printf(
+				UE_LOG(LogWeaponCentralConnectivity, Warning,
 					TEXT("Relay credential request failed (HTTP %d)"),
 					Resp.IsValid() ? Resp->GetResponseCode() : 0);
 				return;
@@ -1170,7 +1623,7 @@ bool UWeaponCentralConnectivitySubsystem::RequestRelayCredentials(FString& OutEr
 			TSharedPtr<FJsonObject> Json;
 			if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
 			{
-				OutError = TEXT("Invalid relay credential response");
+				UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Invalid relay credential response"));
 				return;
 			}
 
@@ -1242,8 +1695,14 @@ bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutEr
 		return false;
 	}
 
+	// Host 侧若配置了内网 TURN 地址,用它直连,不经路由器 hairpin 绕路。
+	// 客户端仍用协调器下发的公网地址。
+	const FString RelayServerAddr = (World->GetNetMode() == NM_ListenServer && !HostRelayServerAddress.IsEmpty())
+		? HostRelayServerAddress
+		: RelayCredentialsCached->RelayAddr;
+
 	RelayDriver->SetRelayConnectionInfo(
-		RelayCredentialsCached->RelayAddr,
+		RelayServerAddr,
 		RelayCredentialsCached->Username,
 		RelayCredentialsCached->Password);
 
@@ -1259,7 +1718,7 @@ bool UWeaponCentralConnectivitySubsystem::ConfigureRelayNetDriver(FString& OutEr
 	}
 
 	UE_LOG(LogWeaponCentralConnectivity, Log,
-		TEXT("Relay NetDriver configured with TURN server %s"), *RelayCredentialsCached->RelayAddr);
+		TEXT("Relay NetDriver configured with TURN server %s"), *RelayServerAddr);
 	return true;
 }
 
@@ -1686,14 +2145,23 @@ void UWeaponCentralConnectivitySubsystem::OpenEventChannel()
 	WsUrl += FString::Printf(TEXT("/v1/matches/%s/events"), *CentralMatchIdString);
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Opening event channel: %s"), *WsUrl);
 
-	FWebSocketsModule& WsModule = FModuleManager::GetModuleChecked<FWebSocketsModule>(TEXT("WebSockets"));
+	// WebSockets 是引擎 runtime 模块;打包版不会自动预加载(编辑器因其他模块
+	// 间接加载)。GetModuleChecked 在未加载时 assert 崩溃,故用 LoadModule:
+	// 未加载则尝试加载,模块被裁剪时返回 nullptr,优雅降级禁用事件通道。
+	FWebSocketsModule* WsModule = FModuleManager::Get().LoadModulePtr<FWebSocketsModule>(TEXT("WebSockets"));
+	if (!WsModule)
+	{
+		UE_LOG(LogWeaponCentralConnectivity, Warning,
+			TEXT("OpenEventChannel skipped: WebSockets module unavailable in this build"));
+		return;
+	}
 	// WS 握手 = HTTP 升级,必须带 Bearer token(Go 侧 events 路由 RequireDevice)
 	TMap<FString, FString> UpgradeHeaders;
 	if (!AccessToken.IsEmpty())
 	{
 		UpgradeHeaders.Add(TEXT("Authorization"), FString::Printf(TEXT("Bearer %s"), *AccessToken));
 	}
-	EventSocket = WsModule.CreateWebSocket(WsUrl, TEXT(""), UpgradeHeaders);
+	EventSocket = WsModule->CreateWebSocket(WsUrl, TEXT(""), UpgradeHeaders);
 	EventSocketMatchIdString = CentralMatchIdString;
 	const FString SocketMatchId = EventSocketMatchIdString;
 
@@ -1967,33 +2435,6 @@ void UWeaponCentralConnectivitySubsystem::HandleLeaseGranted(const FWeaponCentra
 	bCentralLeaseReady = true;
 	UE_LOG(LogWeaponCentralConnectivity, Log, TEXT("Central lease ready (epoch %llu)"), Lease.AuthorityEpoch);
 	PublishBackendReadiness();
-}
-
-void UWeaponCentralConnectivitySubsystem::HandleHostEndpointNominated(const FWeaponCentralEndpointCandidate& Endpoint)
-{
-	if (!bWaitingForHostEndpoint)
-	{
-		return;
-	}
-	if (Endpoint.Port <= 0 || Endpoint.Port > 65535)
-	{
-		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Host endpoint rejected: invalid port %d"), Endpoint.Port);
-		return;
-	}
-
-	// 已通过 fencing 的 direct endpoint → 触发 reconnect
-	const FString DirectAddress = FormatEndpointAddress(Endpoint.Address, Endpoint.Port);
-	FString Error;
-	if (!TriggerDirectReconnect(DirectAddress, Error))
-	{
-		UE_LOG(LogWeaponCentralConnectivity, Warning, TEXT("Reconnect failed: %s"), *Error);
-		StopHostEndpointWait();
-		FailMatchAction(Error);
-		return;
-	}
-	StopHostEndpointWait();
-	ConnectivityState = EWeaponCentralConnectivityState::DirectConnected;
-	OnConnectivityChanged.Broadcast(ConnectivityState, TEXT("Direct endpoint connected"));
 }
 
 int32 UWeaponCentralConnectivitySubsystem::RankDirectCandidate(const FWeaponCentralEndpointCandidate& Candidate)
