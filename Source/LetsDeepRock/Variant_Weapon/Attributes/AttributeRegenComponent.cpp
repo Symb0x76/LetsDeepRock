@@ -3,24 +3,38 @@
 #include "AttributeRegenComponent.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
-#include "WeaponHealthSet.h"
-#include "WeaponResourceSet.h"
+#include "RegenGameplayEffects.h"
+#include "TimerManager.h"
 #include "WeaponGameState.h"
+#include "WeaponHealthSet.h"
 
 UAttributeRegenComponent::UAttributeRegenComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
-	// 降低 Tick 频率，不需要每帧（10Hz 已足够平滑）
-	PrimaryComponentTick.TickInterval = 0.1f;
+	// 属性写入已交给 Periodic GE；Tick 只做屏障状态同步，低频即可。
+	PrimaryComponentTick.TickInterval = 0.5f;
+
+	EnergyRegenEffectClass = UGE_EnergyRegen::StaticClass();
+	ShieldRegenEffectClass = UGE_ShieldRegen::StaticClass();
 }
 
 void UAttributeRegenComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
-	// 初始状态：允许立即恢复（延迟已归零）
-	ShieldRegenTimer = 0.0f;
-	bShieldRegenDelayed = false;
+	if (GetOwner()->HasAuthority())
+	{
+		ApplyEnergyRegen();
+		ApplyShieldRegen();
+	}
+}
+
+void UAttributeRegenComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	GetOwner()->GetWorldTimerManager().ClearTimer(ShieldRegenDelayTimer);
+	RemoveEnergyRegen();
+	RemoveShieldRegen();
+	Super::EndPlay(EndPlayReason);
 }
 
 UAbilitySystemComponent* UAttributeRegenComponent::GetASC() const
@@ -34,70 +48,139 @@ UAbilitySystemComponent* UAttributeRegenComponent::GetASC() const
 
 void UAttributeRegenComponent::NotifyDamageTaken()
 {
-	// 受击时重置护盾再生延迟
 	UAbilitySystemComponent* ASC = GetASC();
-	if (!ASC) return;
+	if (!ASC || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// 摘除护盾再生，延迟后重新应用；延迟时长读属性（支持天赋/GE 修改）。
+	RemoveShieldRegen();
 
 	const UWeaponHealthSet* HS = ASC->GetSet<UWeaponHealthSet>();
-	if (HS)
+	const float Delay = HS ? FMath::Max(HS->GetShieldRegenDelay(), 0.0f) : 0.0f;
+	if (Delay <= 0.0f)
 	{
-		ShieldRegenTimer = HS->GetShieldRegenDelay();
-		bShieldRegenDelayed = true;
+		ApplyShieldRegen();
+		return;
 	}
+	GetOwner()->GetWorldTimerManager().SetTimer(
+		ShieldRegenDelayTimer,
+		FTimerDelegate::CreateUObject(this, &UAttributeRegenComponent::ApplyShieldRegen),
+		Delay,
+		false);
 }
 
 void UAttributeRegenComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+	SyncWithRecoveryBarrier();
+}
 
+void UAttributeRegenComponent::ApplyEnergyRegen()
+{
 	UAbilitySystemComponent* ASC = GetASC();
-	if (!ASC) return;
+	if (!ASC || !GetOwner()->HasAuthority() || !EnergyRegenEffectClass)
+	{
+		return;
+	}
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		bEnergyRegenPending = true;
+		return;
+	}
+	if (!EnergyRegenHandle.IsValid())
+	{
+		FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+		EnergyRegenHandle = ASC->ApplyGameplayEffectToSelf(
+			EnergyRegenEffectClass->GetDefaultObject<UGameplayEffect>(), 1.0f, Context);
+	}
+}
 
-	// 仅服务端写入属性
-	if (!GetOwner()->HasAuthority() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+void UAttributeRegenComponent::ApplyShieldRegen()
+{
+	UAbilitySystemComponent* ASC = GetASC();
+	if (!ASC || !GetOwner()->HasAuthority() || !ShieldRegenEffectClass)
+	{
+		return;
+	}
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		bShieldRegenPending = true;
+		return;
+	}
+	if (!ShieldRegenHandle.IsValid())
+	{
+		FGameplayEffectContextHandle Context = ASC->MakeEffectContext();
+		ShieldRegenHandle = ASC->ApplyGameplayEffectToSelf(
+			ShieldRegenEffectClass->GetDefaultObject<UGameplayEffect>(), 1.0f, Context);
+	}
+}
+
+void UAttributeRegenComponent::RemoveEnergyRegen()
+{
+	bEnergyRegenPending = false;
+	if (UAbilitySystemComponent* ASC = GetASC(); ASC && EnergyRegenHandle.IsValid())
+	{
+		ASC->RemoveActiveGameplayEffect(EnergyRegenHandle);
+		EnergyRegenHandle.Invalidate();
+	}
+}
+
+void UAttributeRegenComponent::RemoveShieldRegen()
+{
+	bShieldRegenPending = false;
+	if (UAbilitySystemComponent* ASC = GetASC(); ASC && ShieldRegenHandle.IsValid())
+	{
+		ASC->RemoveActiveGameplayEffect(ShieldRegenHandle);
+		ShieldRegenHandle.Invalidate();
+	}
+}
+
+void UAttributeRegenComponent::SyncWithRecoveryBarrier()
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
 	{
 		return;
 	}
 
-	// --- 护盾再生 ---
-	if (const UWeaponHealthSet* HS = ASC->GetSet<UWeaponHealthSet>())
+	const bool bBlocked = AWeaponGameState::IsGameplayRecoveryBlockedFor(this);
+	if (bBlocked)
 	{
-		const float CurrentShield = HS->GetShield();
-		const float MaxShield = HS->GetMaxShield();
-
-		if (CurrentShield < MaxShield)
+		// 屏障期间不允许任何再生写入；保留 pending 标记供释放后补挂。
+		if (EnergyRegenHandle.IsValid() || ShieldRegenHandle.IsValid())
 		{
-			if (bShieldRegenDelayed)
+			if (EnergyRegenHandle.IsValid())
 			{
-				// 在延迟期间倒计时
-				ShieldRegenTimer -= DeltaTime;
-				if (ShieldRegenTimer <= 0.0f)
+				bEnergyRegenPending = true;
+				UAbilitySystemComponent* ASC = GetASC();
+				if (ASC)
 				{
-					bShieldRegenDelayed = false;
+					ASC->RemoveActiveGameplayEffect(EnergyRegenHandle);
+					EnergyRegenHandle.Invalidate();
 				}
 			}
-
-			if (!bShieldRegenDelayed)
+			if (ShieldRegenHandle.IsValid())
 			{
-				// 延迟结束，按 Rate 恢复
-				const float RegenRate = HS->GetShieldRegenRate();
-				const float NewShield = FMath::Min(CurrentShield + RegenRate * DeltaTime, MaxShield);
-				ASC->SetNumericAttributeBase(UWeaponHealthSet::GetShieldAttribute(), NewShield);
+				bShieldRegenPending = true;
+				UAbilitySystemComponent* ASC = GetASC();
+				if (ASC)
+				{
+					ASC->RemoveActiveGameplayEffect(ShieldRegenHandle);
+					ShieldRegenHandle.Invalidate();
+				}
 			}
 		}
 	}
-
-	// --- 能量恢复 ---
-	if (const UWeaponResourceSet* RS = ASC->GetSet<UWeaponResourceSet>())
+	else
 	{
-		const float CurrentEnergy = RS->GetEnergy();
-		const float MaxEnergy = RS->GetMaxEnergy();
-
-		if (CurrentEnergy < MaxEnergy)
+		if (bEnergyRegenPending)
 		{
-			const float RegenRate = RS->GetEnergyRegenRate();
-			const float NewEnergy = FMath::Min(CurrentEnergy + RegenRate * DeltaTime, MaxEnergy);
-			ASC->SetNumericAttributeBase(UWeaponResourceSet::GetEnergyAttribute(), NewEnergy);
+			ApplyEnergyRegen();
+		}
+		if (bShieldRegenPending)
+		{
+			ApplyShieldRegen();
 		}
 	}
 }
