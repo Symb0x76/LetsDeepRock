@@ -39,19 +39,14 @@ public:
 	 */
 	bool UpgradeSocketToRelay();
 
-	/** 供外部轮询推进 TURN 事务(每帧调用)。 */
 	void TickRelay();
-
-	/** TURN 分配失败已降级为直连时返回 true。 */
+	
 	bool IsRelayFallbackDirect();
-
-	/** 已分配的 relayed 地址(host:port 字符串);未分配时返回空。 */
+	
 	FString GetRelayedAddressString() const;
-
-	/** 本连接是否打算走 relay(socket 创建前即可查询)。 */
+	
 	bool ShouldUseRelayTransport() const;
-
-	/** 当前 socket 是否已包装为 relay(而非纯 UDP)。 */
+	
 	bool IsSocketRelay()
 	{
 		const FSocket* Sock = GetSocket();
