@@ -58,6 +58,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	bool GetMarkerWorldLocations(EGridMapMarkerType MarkerType, TArray<FVector>& OutLocations) const;
 
+	/** 服务器查询指定用途房间的世界边界(2D);与 GetMarkerWorldLocations 同源(Recipe)。 */
+	UFUNCTION(BlueprintCallable, Category = "GridMap")
+	bool GetRoomWorldBoundsByPurpose(EGridMapRoomPurpose RoomPurpose, TArray<FBox2D>& OutBounds) const;
+
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	bool GetTileAtWorldLocation(const FVector& WorldLocation, FGridTileData& OutTileData) const;
 

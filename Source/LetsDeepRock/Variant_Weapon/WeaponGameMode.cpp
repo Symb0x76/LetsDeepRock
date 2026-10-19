@@ -22,6 +22,7 @@
 #include "GridMap/GridMapManager.h"
 #include "GridMap/GridMapObjectiveActors.h"
 #include "EngineUtils.h"
+#include "AI/WeaponWaveDirectorComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/WeaponHUD.h"
 
@@ -37,6 +38,7 @@ AWeaponGameMode::AWeaponGameMode()
 
 	ObjectiveActorClass = AGridMapObjectiveActor::StaticClass();
 	ExtractionActorClass = AGridMapExtractionActor::StaticClass();
+	WaveDirector = CreateDefaultSubobject<UWeaponWaveDirectorComponent>(TEXT("WaveDirector"));
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
 }
@@ -1206,6 +1208,18 @@ void AWeaponGameMode::BeginWeaponMatch()
 
 	SpawnObjectiveActors();
 
+	// A2:武装波次导演(Combat 房触发刷怪)。
+	if (WaveDirector)
+	{
+		AGridMapManager* WaveManager = nullptr;
+		for (TActorIterator<AGridMapManager> ManagerIt(GetWorld()); ManagerIt; ++ManagerIt)
+		{
+			WaveManager = *ManagerIt;
+			break;
+		}
+		WaveDirector->OnMatchStarted(WaveManager);
+	}
+
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::InGame);
 }
 
@@ -1367,6 +1381,10 @@ void AWeaponGameMode::ReturnToWaitingForPlayers()
 
 	ResetAllPlayerReadyStates();
 	CleanupObjectiveActors();
+	if (WaveDirector)
+	{
+		WaveDirector->ResetWaves(true);
+	}
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 }
 

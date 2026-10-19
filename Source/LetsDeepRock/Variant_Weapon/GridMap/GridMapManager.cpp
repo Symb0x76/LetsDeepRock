@@ -128,6 +128,30 @@ bool AGridMapManager::GetMarkerWorldLocations(const EGridMapMarkerType MarkerTyp
 	}
 	return OutLocations.Num() > 0;
 }
+
+bool AGridMapManager::GetRoomWorldBoundsByPurpose(const EGridMapRoomPurpose RoomPurpose, TArray<FBox2D>& OutBounds) const
+{
+	OutBounds.Reset();
+	if (!HasAuthority() || !BaselineState.bGenerated || !MapData)
+	{
+		return false;
+	}
+	const float HalfTile = MapData->GetConfig().TileSize * 0.5f;
+	for (const FGridMapRecipeRoom& Room : BaselineState.Recipe.Rooms)
+	{
+		if (Room.Purpose != RoomPurpose || Room.Size.X <= 0 || Room.Size.Y <= 0)
+		{
+			continue;
+		}
+		const FVector MinCorner = MapData->GridToWorld(Room.Origin.X, Room.Origin.Y);
+		const FVector MaxCorner = MapData->GridToWorld(
+			Room.Origin.X + Room.Size.X - 1, Room.Origin.Y + Room.Size.Y - 1);
+		OutBounds.Add(FBox2D(
+			FVector2D(FMath::Min(MinCorner.X, MaxCorner.X), FMath::Min(MinCorner.Y, MaxCorner.Y)) - HalfTile,
+			FVector2D(FMath::Max(MinCorner.X, MaxCorner.X), FMath::Max(MinCorner.Y, MaxCorner.Y)) + HalfTile));
+	}
+	return OutBounds.Num() > 0;
+}
 void AGridMapManager::GenerateMap()
 {
 	if (!HasAuthority())
