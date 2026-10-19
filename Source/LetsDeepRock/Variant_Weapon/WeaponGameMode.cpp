@@ -936,6 +936,14 @@ void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after login: %s"), *MigrationError);
 	}
 
+	// 单人（Standalone）：没有"等待队友准备"的社交语义。直接视为已准备并尝试开局，
+	// 避免单人模式仍走多人大厅流程（此前表现为小队 1/4 + 等待矿工接入）。
+	if (GetNetMode() == NM_Standalone)
+	{
+		WeaponPlayerState->SetPlayerReady(true);
+		TryStartWeaponMatch();
+	}
+
 	// AGameModeBase calls HandleStartingNewPlayer immediately after this virtual hook returns.
 	// The slot must therefore be installed before forwarding the Blueprint OnPostLogin event.
 	Super::OnPostLogin(NewPlayer);
