@@ -43,6 +43,9 @@ protected:
 	 *  关闭时贴近右下角）。 */
 	void DrawChargeFireBar(bool bDebugUIEnabled);
 
+	/** 画面顶部中央的任务/撤离状态行(A1 玩法 UI,不受 Debug 开关影响)。 */
+	void DrawObjectiveStatus();
+
 private:
 	struct FActiveDamageNumber
 	{

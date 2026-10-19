@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "GridMapTypes.h"
+#include "GridMapRoomAsset.h"
 #include "GridMapManager.generated.h"
 
 class UGridMapData;
@@ -52,6 +53,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	UGridMapData* GetMapData() const { return MapData; }
+
+	/** 服务器查询最近一次生成/恢复的 Recipe 中指定类型 marker 的世界坐标；客户端 Recipe 未复制，返回 false。 */
+	UFUNCTION(BlueprintCallable, Category = "GridMap")
+	bool GetMarkerWorldLocations(EGridMapMarkerType MarkerType, TArray<FVector>& OutLocations) const;
 
 	UFUNCTION(BlueprintCallable, Category = "GridMap")
 	bool GetTileAtWorldLocation(const FVector& WorldLocation, FGridTileData& OutTileData) const;

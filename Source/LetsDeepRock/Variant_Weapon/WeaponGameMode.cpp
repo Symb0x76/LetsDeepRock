@@ -19,6 +19,8 @@
 #include "Online/WeaponSnapshotCoordinator.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
+#include "GridMap/GridMapManager.h"
+#include "GridMap/GridMapObjectiveActors.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/WeaponHUD.h"
@@ -32,6 +34,9 @@ AWeaponGameMode::AWeaponGameMode()
 {
 	bUseSeamlessTravel = true;
 	HUDClass = AWeaponHUD::StaticClass();
+
+	ObjectiveActorClass = AGridMapObjectiveActor::StaticClass();
+	ExtractionActorClass = AGridMapExtractionActor::StaticClass();
 	GameStateClass = AWeaponGameState::StaticClass();
 	PlayerStateClass = AWeaponPlayerState::StaticClass();
 }
@@ -1199,7 +1204,129 @@ void AWeaponGameMode::BeginWeaponMatch()
 		return;
 	}
 
+	SpawnObjectiveActors();
+
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::InGame);
+}
+
+void AWeaponGameMode::SpawnObjectiveActors()
+{
+	UWorld* World = GetWorld();
+	AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (!World || !HasAuthority() || !WeaponGameState || ObjectiveActor || ExtractionActor ||
+		WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return;
+	}
+
+	AGridMapManager* Manager = nullptr;
+	for (TActorIterator<AGridMapManager> It(World); It; ++It)
+	{
+		Manager = *It;
+		break;
+	}
+	if (!Manager)
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("[A1] No GridMapManager; objective actors not spawned"));
+		return;
+	}
+
+	TArray<FVector> ObjectiveLocations;
+	Manager->GetMarkerWorldLocations(EGridMapMarkerType::Objective, ObjectiveLocations);
+	TArray<FVector> SpawnLocations;
+	Manager->GetMarkerWorldLocations(EGridMapMarkerType::PlayerSpawn, SpawnLocations);
+	if (ObjectiveLocations.IsEmpty() || SpawnLocations.IsEmpty())
+	{
+		UE_LOG(LogLetsDeepRock, Warning,
+			TEXT("[A1] Recipe missing markers (Objective=%d PlayerSpawn=%d); objective actors not spawned"),
+			ObjectiveLocations.Num(), SpawnLocations.Num());
+		return;
+	}
+
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	FVector Location = ObjectiveLocations[0];
+	Location.Z += 100.0f;
+	ObjectiveActor = World->SpawnActor<AGridMapObjectiveActor>(
+		ObjectiveActorClass, FTransform(FRotator::ZeroRotator, Location), Params);
+
+	Location = SpawnLocations[0];
+	Location.Z += 10.0f;
+	ExtractionActor = World->SpawnActor<AGridMapExtractionActor>(
+		ExtractionActorClass, FTransform(FRotator::ZeroRotator, Location), Params);
+
+	UE_LOG(LogLetsDeepRock, Log,
+		TEXT("[A1] Objective spawned at %s; extraction zone staged at %s"),
+		*ObjectiveLocations[0].ToCompactString(), *SpawnLocations[0].ToCompactString());
+}
+
+void AWeaponGameMode::CleanupObjectiveActors()
+{
+	GetWorldTimerManager().ClearTimer(ExtractionTimer);
+	if (ObjectiveActor)
+	{
+		ObjectiveActor->Destroy();
+		ObjectiveActor = nullptr;
+	}
+	if (ExtractionActor)
+	{
+		ExtractionActor->Destroy();
+		ExtractionActor = nullptr;
+	}
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (WeaponGameState)
+	{
+		WeaponGameState->SetObjectiveStateAuthority(FWeaponObjectiveState());
+	}
+}
+
+void AWeaponGameMode::HandleObjectiveCompleted()
+{
+	UWorld* World = GetWorld();
+	AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
+	if (!World || !HasAuthority() || !WeaponGameState ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame ||
+		WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return;
+	}
+
+	FWeaponObjectiveState NewState = WeaponGameState->GetObjectiveState();
+	if (NewState.bObjectiveComplete)
+	{
+		return;
+	}
+	NewState.bObjectiveComplete = true;
+	NewState.ExtractionReadyServerTime = World->GetTimeSeconds() + ExtractionCountdownSeconds;
+	WeaponGameState->SetObjectiveStateAuthority(NewState);
+
+	GetWorldTimerManager().SetTimer(
+		ExtractionTimer,
+		this,
+		&AWeaponGameMode::OpenExtraction,
+		FMath::Max(ExtractionCountdownSeconds, 0.1f),
+		false);
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[A1] Objective complete; extraction opens in %.1fs"), ExtractionCountdownSeconds);
+}
+
+void AWeaponGameMode::OpenExtraction()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	{
+		return;
+	}
+
+	FWeaponObjectiveState NewState = WeaponGameState->GetObjectiveState();
+	NewState.bExtractionOpen = true;
+	WeaponGameState->SetObjectiveStateAuthority(NewState);
+
+	if (ExtractionActor)
+	{
+		ExtractionActor->SetActive();
+	}
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[A1] Extraction zone open"));
 }
 
 void AWeaponGameMode::EndWeaponMatch()
@@ -1239,6 +1366,7 @@ void AWeaponGameMode::ReturnToWaitingForPlayers()
 	}
 
 	ResetAllPlayerReadyStates();
+	CleanupObjectiveActors();
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 }
 

@@ -46,6 +46,25 @@ struct FWeaponReplicatedMatchState
 	float PhaseEndServerTime = 0.0f;
 };
 
+/** 一局的目标/撤离进度(A1,客户端 HUD 与大厅可读)。 */
+USTRUCT(BlueprintType)
+struct FWeaponObjectiveState
+{
+	GENERATED_BODY()
+
+	/** 目标点是否已充能完成 */
+	UPROPERTY(BlueprintReadOnly, Category = "Objective")
+	bool bObjectiveComplete = false;
+
+	/** 撤离区是否已开启 */
+	UPROPERTY(BlueprintReadOnly, Category = "Objective")
+	bool bExtractionOpen = false;
+
+	/** 撤离开启的服务器时间戳;0 = 未排期。客户端用 GetServerWorldTime 换算剩余秒数。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Objective")
+	float ExtractionReadyServerTime = 0.0f;
+};
+
 // 定义 反射 可多监听 单参数 委托
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FOnWeaponMatchPhaseChanged,	// 委托类型名
@@ -98,6 +117,10 @@ public:
 	/** Low-level gameplay owners use this without depending on GameMode. */
 	static bool IsGameplayRecoveryBlockedFor(const UObject* WorldContextObject);
 
+	/** 目标/撤离进度(A1) */
+	UFUNCTION(BlueprintPure, Category = "Objective")
+	const FWeaponObjectiveState& GetObjectiveState() const { return ObjectiveState; }
+
 	/** MatchPhase 在服务器或客户端变化后通知 UI */
 	UPROPERTY(BlueprintAssignable, Category = "Match")
 	FOnWeaponMatchPhaseChanged OnMatchPhaseChanged;
@@ -117,12 +140,18 @@ protected:
 
 	UPROPERTY(ReplicatedUsing = OnRep_GameplayRecoveryBlocked, BlueprintReadOnly, Category = "Recovery")
 	bool bGameplayRecoveryBlocked = false;
+	UPROPERTY(ReplicatedUsing = OnRep_ObjectiveState, BlueprintReadOnly, Category = "Objective")
+	FWeaponObjectiveState ObjectiveState;
+	
 	
 	UFUNCTION()
 	void OnRep_MatchState() const;
 
 	UFUNCTION()
 	void OnRep_GameplayRecoveryBlocked() const;
+	UFUNCTION()
+	void OnRep_ObjectiveState() const;
+	
 
 private:
 	friend class AWeaponGameMode;
@@ -131,4 +160,10 @@ private:
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
 	bool SetMaxPlayersAuthority(int32 NewMaxPlayers);
 	bool SetGameplayRecoveryBlockedAuthority(bool bBlocked);
+
+	/** 服务器权威写入目标/撤离进度(供 GameMode 的 A1 流程调用)。 */
+public:
+	void SetObjectiveStateAuthority(const FWeaponObjectiveState& NewState);
+
+private:
 };
