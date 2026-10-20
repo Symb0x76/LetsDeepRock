@@ -80,8 +80,10 @@ $RECYCLE.BIN/
 Generate
 
 # --- 本地 AI Agent 规则（个人本地配置，不提交）---
-.agents/
+.agents/*
 AGENTS.md
+!.agents/skills/
+!.agents/skills/**
 
 # --- codex 本地配置 ---
 .codex/
@@ -90,7 +92,9 @@ AGENTS.md
 docs/
 
 # --- claude 本地配置 ---
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 
 # --- opencode 本地配置 ---
 opencode.json
@@ -99,8 +103,15 @@ opencode.json
 !.opencode/skills/
 !.opencode/skills/**
 
+# omp
+.omp/*
+!.omp/skills/
+!.omp/skills/**
+
 # codegraph 本地配置
 .codegraph/
+
+.agent-manifest.json
 
 # --- 构建脚本本地配置（每个成员各自的引擎路径）---
 ue_root.cfg
