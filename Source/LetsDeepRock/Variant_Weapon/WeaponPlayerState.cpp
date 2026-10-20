@@ -69,6 +69,7 @@ void AWeaponPlayerState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 	DOREPLIFETIME(AWeaponPlayerState, LobbyState);
 	DOREPLIFETIME(AWeaponPlayerState, TeamId);
 	DOREPLIFETIME(AWeaponPlayerState, ProfessionLoadout);
+	DOREPLIFETIME(AWeaponPlayerState, RespawnServerTime);
 }
 
 void AWeaponPlayerState::CopyProperties(APlayerState* PlayerState)
@@ -110,6 +111,15 @@ void AWeaponPlayerState::SetTeamId(int32 InTeamId)
 	if (HasAuthority())
 	{
 		TeamId = InTeamId;
+	}
+}
+
+void AWeaponPlayerState::SetRespawnServerTime(const float NewRespawnServerTime)
+{
+	if (HasAuthority() && RespawnServerTime != NewRespawnServerTime)
+	{
+		RespawnServerTime = NewRespawnServerTime;
+		ForceNetUpdate();
 	}
 }
 

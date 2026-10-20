@@ -282,6 +282,12 @@ bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
 	ApplyGameplayRecoveryBarrierToWorld(false);
 	for (const auto& TimerPair : RespawnTimers)
 	{
+		// 复活时间戳同理:按暂停剩余时长重新锚定后再续跑。
+		if (AWeaponPlayerState* RespawnPS = TimerPair.Key ? TimerPair.Key->GetPlayerState<AWeaponPlayerState>() : nullptr)
+		{
+			RespawnPS->SetRespawnServerTime(WeaponGameState->GetServerWorldTimeSeconds() +
+				GetWorldTimerManager().GetTimerRemaining(TimerPair.Value));
+		}
 		GetWorldTimerManager().UnPauseTimer(TimerPair.Value);
 	}
 	if (GetWorldTimerManager().IsTimerPaused(ExtractionTimer))
@@ -1150,6 +1156,13 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 		},
 		RespawnDelay,
 		false); // 不循环
+
+	// A3:复活倒计时以绝对时间戳复制给 HUD。
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (AWeaponPlayerState* PS = DeadPlayerController->GetPlayerState<AWeaponPlayerState>(); PS && WeaponGameState)
+	{
+		PS->SetRespawnServerTime(WeaponGameState->GetServerWorldTimeSeconds() + RespawnDelay);
+	}
 }
 
 bool AWeaponGameMode::CanStartWeaponMatch() const
@@ -1487,6 +1500,10 @@ void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 
 	// 2. 通过统一的 RestartPlayer 路径选择 PlayerStart 或按 Slot 使用安全 fallback。
 	RestartPlayer(PlayerController);
+	if (AWeaponPlayerState* RespawnedPS = PlayerController->GetPlayerState<AWeaponPlayerState>())
+	{
+		RespawnedPS->SetRespawnServerTime(0.0f);
+	}
 	APawn* NewPawn = PlayerController->GetPawn();
 	if (!NewPawn)
 	{

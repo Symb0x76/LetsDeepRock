@@ -10,6 +10,7 @@
 
 class UInputMappingContext;
 class UWeaponClassSelectWidget;
+class UWeaponCombatHUDWidget;
 class UWeaponLobbyWidget;
 
 /**
@@ -96,6 +97,14 @@ protected:
 	/** 常驻的房间 UI 实例（仅本地客户端持有，默认以左侧小窗形态显示） */
 	UPROPERTY()
 	TObjectPtr<UWeaponLobbyWidget> LobbyWidget;
+
+	/** 战斗 HUD 控件类(A3,默认 UWeaponCombatHUDWidget,可由蓝图子类替换) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Combat|UI")
+	TSubclassOf<UWeaponCombatHUDWidget> CombatHUDWidgetClass;
+
+	/** 常驻战斗 HUD 实例(仅本地客户端持有) */
+	UPROPERTY()
+	TObjectPtr<UWeaponCombatHUDWidget> CombatHUDWidget;
 
 protected:
 
