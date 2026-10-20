@@ -14,6 +14,7 @@
 #include "Engine/World.h"
 #include "Engine/OverlapResult.h"
 #include "TimerManager.h"
+#include "Abilities/WeaponGameplayCues.h"
 
 AGrenadeProjectile::AGrenadeProjectile()
 {
@@ -291,6 +292,7 @@ void AGrenadeProjectile::ExplodeOnce()
 	}
 
 	const FVector ExplosionCenter = GetActorLocation();
+	WeaponGameplayCues::ExecuteExplosionCue(InitializationState.InstigatorActor, ExplosionCenter, ExplosionRadius);
 
 	// ===== 1. 构建形状对应的碰撞体 =====
 	FCollisionShape ExplosionCollision;

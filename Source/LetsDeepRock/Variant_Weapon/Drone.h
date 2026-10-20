@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "AbilitySystemInterface.h"
+#include "GameplayCueInterface.h"
 #include "Abilities/GameplayAbility.h"
 #include "Drone.generated.h"
 
@@ -21,7 +22,7 @@ struct FDroneConfigRow;
  *  生命周期：Duration 倒计时结束 或 Health 归零 → 销毁。
  */
 UCLASS()
-class ADrone : public APawn, public IAbilitySystemInterface
+class ADrone : public APawn, public IAbilitySystemInterface, public IGameplayCueInterface
 {
 	GENERATED_BODY()
 
@@ -31,6 +32,10 @@ public:
 
 	//~ IAbilitySystemInterface
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
+	/** B1:GameplayCue 由 C++ 白盒 FX 处理(Abilities/WeaponGameplayCues) */
+	using IGameplayCueInterface::HandleGameplayCue;
+	virtual void HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters) override;
 
 	UWeaponHealthSet* GetHealthSet() const { return HealthSet; }
 

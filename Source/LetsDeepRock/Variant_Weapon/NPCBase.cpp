@@ -2,6 +2,7 @@
 
 
 #include "NPCBase.h"
+#include "Abilities/WeaponGameplayCues.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Attributes/WeaponHealthSet.h"
@@ -166,4 +167,9 @@ void ANPCBase::HandleHealthDepleted(AActor* OwningActor)
 		DeathLingerTime,
 		false
 	);
+}
+
+void ANPCBase::HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
+{
+	WeaponGameplayCues::HandleCue(Self, GameplayCueTag, EventType, Parameters);
 }

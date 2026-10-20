@@ -6,6 +6,7 @@
 #include "AttributeRegenComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "WeaponPlayerController.h"
+#include "Abilities/WeaponGameplayCues.h"
 
 UWeaponHealthSet::UWeaponHealthSet()
 {
@@ -145,6 +146,9 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 		}
 
 		ConsumePendingWeaponDamageDebug(AppliedShieldDamage, AppliedHealthDamage);
+		// B1:命中表现。此处是唯一知道"护盾/生命各扣了多少"的服务器结算点。
+		WeaponGameplayCues::ExecuteHitCue(GetOwningAbilitySystemComponent(), Data.EffectSpec.GetContext(),
+			AppliedShieldDamage, AppliedHealthDamage);
 		if (bJustDied)
 		{
 			const FGameplayEffectContextHandle& EffectContext = Data.EffectSpec.GetContext();

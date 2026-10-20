@@ -2,6 +2,7 @@
 
 
 #include "Drone.h"
+#include "Abilities/WeaponGameplayCues.h"
 #include "AbilitySystemComponent.h"
 #include "Abilities/GameplayAbility.h"
 #include "Attributes/WeaponHealthSet.h"
@@ -187,4 +188,9 @@ void ADrone::HandleLifetimeExpired()
 	SetActorEnableCollision(false);
 
 	Destroy();
+}
+
+void ADrone::HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
+{
+	WeaponGameplayCues::HandleCue(Self, GameplayCueTag, EventType, Parameters);
 }
