@@ -245,6 +245,8 @@ bool AWeaponGameMode::EnterGameplayRecoveryBarrier()
 	{
 		GetWorldTimerManager().PauseTimer(TimerPair.Value);
 	}
+	// 撤离倒计时与复活计时同语义:屏障内暂停,解除后续跑。
+	GetWorldTimerManager().PauseTimer(ExtractionTimer);
 
 	WeaponGameState->SetGameplayRecoveryBlockedAuthority(true);
 	WeaponGameState->SetMatchPhase(FrozenPhase);
@@ -266,6 +268,15 @@ bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
 	for (const auto& TimerPair : RespawnTimers)
 	{
 		GetWorldTimerManager().UnPauseTimer(TimerPair.Value);
+	}
+	if (GetWorldTimerManager().IsTimerPaused(ExtractionTimer))
+	{
+		// 复制的是绝对开门时间:按暂停中的剩余时长重新锚定,HUD 倒计时才不会在冻结期间提前走完。
+		FWeaponObjectiveState ResumedObjectiveState = WeaponGameState->GetObjectiveState();
+		ResumedObjectiveState.ExtractionReadyServerTime = WeaponGameState->GetServerWorldTimeSeconds() +
+			GetWorldTimerManager().GetTimerRemaining(ExtractionTimer);
+		WeaponGameState->SetObjectiveStateAuthority(ResumedObjectiveState);
+		GetWorldTimerManager().UnPauseTimer(ExtractionTimer);
 	}
 	ArmMatchPhaseTimer(FrozenPhase, RemainingPhaseTime);
 	FrozenMatchPhaseRemaining = 0.0f;
