@@ -13,6 +13,7 @@
 #include "UI/WeaponDebugTypes.h"
 #include "UI/WeaponHUD.h"
 #include "UI/WeaponClassSelectWidget.h"
+#include "UI/WeaponCombatHUDWidget.h"
 #include "UI/WeaponLobbyWidget.h"
 #include "WeaponGameMode.h"
 #include "WeaponPlayerState.h"
@@ -49,6 +50,7 @@ AWeaponPlayerController::AWeaponPlayerController()
 
 	// 默认房间 UI 类（可由蓝图子类替换）
 	LobbyWidgetClass = UWeaponLobbyWidget::StaticClass();
+	CombatHUDWidgetClass = UWeaponCombatHUDWidget::StaticClass();
 }
 
 void AWeaponPlayerController::BeginPlay()
@@ -62,6 +64,16 @@ void AWeaponPlayerController::BeginPlay()
 
 		// 房间 UI 先于职业选择创建，保证职业选择模态层始终盖在它上面。
 		ShowLobbyUI();
+
+		// 战斗 HUD(A3):纯展示层,压在房间 UI 之下,自身按 InGame 阶段显隐。
+		if (CombatHUDWidgetClass && !CombatHUDWidget)
+		{
+			CombatHUDWidget = CreateWidget<UWeaponCombatHUDWidget>(this, CombatHUDWidgetClass);
+			if (CombatHUDWidget)
+			{
+				CombatHUDWidget->AddToViewport(5);
+			}
+		}
 
 		const UWeaponHostMigrationSubsystem* MigrationSubsystem =
 			GetGameInstance() ? GetGameInstance()->GetSubsystem<UWeaponHostMigrationSubsystem>() : nullptr;

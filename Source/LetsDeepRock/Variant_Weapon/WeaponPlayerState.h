@@ -139,7 +139,14 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Player")
 	FOnWeaponPlayerLobbyStateChanged OnLobbyStateChanged;
-	
+
+	/** 死亡后的复活服务器时间戳;0 = 未在等待复活。客户端用 GetServerWorldTimeSeconds 换算剩余秒数(A3 HUD)。 */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetRespawnServerTime() const { return RespawnServerTime; }
+
+	/** 仅服务端调用;由 WeaponGameMode 在死亡/复活/屏障解除时写入。 */
+	void SetRespawnServerTime(float NewRespawnServerTime);
+
 protected:
 	virtual void OnDeactivated() override;
 
@@ -156,6 +163,9 @@ protected:
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Vision")
 	int32 TeamId = 0;
+
+	UPROPERTY(Replicated)
+	float RespawnServerTime = 0.0f;
 
 	/** 能力系统组件（在 PlayerState 上创建并复制） */
 	UPROPERTY(VisibleAnywhere, Category = "GAS")
