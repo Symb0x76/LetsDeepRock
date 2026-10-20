@@ -37,6 +37,11 @@ UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Cooldown_Weapon_Fire);
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Cooldown_Weapon_Melee);
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Cooldown_Weapon_Grenade);
 
+// GameplayCue(B1 表现层;由 Actor 的 IGameplayCueInterface 在 C++ 中处理,无 Cue 资产)
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_GameplayCue_Weapon_Hit);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_GameplayCue_Weapon_Explosion);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_GameplayCue_Status_Burning);
+
 // 状态
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Dead);
 

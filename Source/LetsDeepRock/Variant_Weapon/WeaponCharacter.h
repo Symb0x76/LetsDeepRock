@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "AbilitySystemInterface.h"
+#include "GameplayCueInterface.h"
 #include "GridMap/GridMapTypes.h"
 #include "GameplayAbilitySpec.h"
 #include "WeaponCharacter.generated.h"
@@ -40,7 +41,7 @@ struct FProfessionConfigRow;
  *  移动方向与面向解耦，射击方向跟随角色面向。
  */
 UCLASS(abstract)
-class AWeaponCharacter : public ACharacter, public IAbilitySystemInterface
+class AWeaponCharacter : public ACharacter, public IAbilitySystemInterface, public IGameplayCueInterface
 {
 	GENERATED_BODY()
 
@@ -110,6 +111,10 @@ public:
 
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
+	/** B1:GameplayCue 由 C++ 白盒 FX 处理(Abilities/WeaponGameplayCues) */
+	using IGameplayCueInterface::HandleGameplayCue;
+	virtual void HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters) override;
 
 	//~ 阶段 1 GAS 挂载点
 	/** 服务端：Pawn 被 Possess 时初始化 ASC ActorInfo */

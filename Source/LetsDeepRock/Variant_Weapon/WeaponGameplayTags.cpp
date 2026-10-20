@@ -22,6 +22,11 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_Cooldown_Weapon_Fire, "Cooldown.Weapon.Fire");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Cooldown_Weapon_Melee, "Cooldown.Weapon.Melee");
 UE_DEFINE_GAMEPLAY_TAG(TAG_Cooldown_Weapon_Grenade, "Cooldown.Weapon.Grenade");
 
+UE_DEFINE_GAMEPLAY_TAG(TAG_GameplayCue_Weapon_Hit, "GameplayCue.Weapon.Hit");
+UE_DEFINE_GAMEPLAY_TAG(TAG_GameplayCue_Weapon_Explosion, "GameplayCue.Weapon.Explosion");
+// 命名约定:持续状态的 Cue = "GameplayCue." + 状态标签(StatusEffectGameplayEffect 按此拼接查找)。
+UE_DEFINE_GAMEPLAY_TAG(TAG_GameplayCue_Status_Burning, "GameplayCue.Status.Burning");
+
 // 状态
 UE_DEFINE_GAMEPLAY_TAG(TAG_State_Dead, "State.Dead");
 

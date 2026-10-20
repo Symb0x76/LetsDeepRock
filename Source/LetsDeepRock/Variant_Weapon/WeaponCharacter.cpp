@@ -2,6 +2,7 @@
 
 
 #include "WeaponCharacter.h"
+#include "Abilities/WeaponGameplayCues.h"
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/CharacterMovementComponent.h"
@@ -1610,4 +1611,9 @@ bool AWeaponCharacter::ConsumePendingGrenadeTarget(FVector& OutTarget, bool& bOu
 	bHasPendingGrenadeTarget = false;
 
 	return bOutValid;
+}
+
+void AWeaponCharacter::HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters)
+{
+	WeaponGameplayCues::HandleCue(Self, GameplayCueTag, EventType, Parameters);
 }

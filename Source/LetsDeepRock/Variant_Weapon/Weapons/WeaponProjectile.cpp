@@ -18,6 +18,7 @@
 #include "Net/UnrealNetwork.h"
 #include "Engine/OverlapResult.h"
 #include "Attributes/StatusEffectComponent.h"
+#include "Abilities/WeaponGameplayCues.h"
 
 namespace
 {
@@ -488,6 +489,7 @@ void AWeaponProjectile::Explode(const FVector& ExplosionCenter, const FHitResult
 		return;
 	}
 	bHasExploded = true;
+	WeaponGameplayCues::ExecuteExplosionCue(InitializationState.InstigatorActor, ExplosionCenter, AreaRadius);
 
 	FCollisionObjectQueryParams ObjectQueryParams;
 	ObjectQueryParams.AddObjectTypesToQuery(ECC_Pawn);

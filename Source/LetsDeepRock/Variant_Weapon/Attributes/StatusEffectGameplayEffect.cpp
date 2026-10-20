@@ -37,7 +37,18 @@ UStatusEffectGameplayEffect* UStatusEffectGameplayEffect::GetOrCreate(const FNam
 	if (Config.StatusTag.IsValid())
 	{
 		Effect->InheritableOwnedTagsContainer.AddTag(Config.StatusTag);
+
+		// B1:持续状态表现走 GE 自带的 GameplayCue(随 GE 施加/移除),约定 Cue = "GameplayCue." + 状态标签;
+		// 未注册对应原生 Cue 标签的状态(目前只有 Burning 有)不加 Cue。
+		const FGameplayTag CueTag = FGameplayTag::RequestGameplayTag(
+			FName(*(FString(TEXT("GameplayCue.")) + Config.StatusTag.ToString())), false);
+		if (CueTag.IsValid())
+		{
+			Effect->GameplayCues.Add(FGameplayEffectCue(CueTag, 0.0f, 0.0f));
+		}
 	}
+	// 叠层只在第一层触发 Cue,避免每次叠层重放 OnActive。
+	Effect->bSuppressStackingCues = true;
 
 	RowCache.Add(RowId, Effect);
 	return Effect;
