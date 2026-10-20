@@ -10,6 +10,8 @@
 
 class AWeaponCharacter;
 class AWeaponPlayerController;
+class AGridMapObjectiveActor;
+class AGridMapExtractionActor;
 class AWeaponPlayerState;
 class AWeaponProjectile;
 enum class EWeaponMatchPhase : uint8;
@@ -86,6 +88,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Match")
 	void EndWeaponMatch();
 
+
+	/** A1:目标点充能完成的服务器入口(由 AGridMapObjectiveActor 调用)。 */
+	void HandleObjectiveCompleted();
 	/** PlayerState ready 改变后的服务器通知入口。 */
 	void HandlePlayerReadyChanged();
 
@@ -177,6 +182,35 @@ private:
 	void RefreshMatchPhase();
 
 	void BeginWeaponMatch();
+
+	// ---- A1:目标与撤离 ----
+
+	/** 目标完成到撤离开启的倒计时(秒) */
+	UPROPERTY(EditDefaultsOnly, Category = "Match|Objective", meta = (ClampMin = "0.0"))
+	float ExtractionCountdownSeconds = 20.0f;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match|Objective")
+	TSubclassOf<AGridMapObjectiveActor> ObjectiveActorClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Match|Objective")
+	TSubclassOf<AGridMapExtractionActor> ExtractionActorClass;
+
+	UPROPERTY()
+	TObjectPtr<AGridMapObjectiveActor> ObjectiveActor;
+
+	UPROPERTY()
+	TObjectPtr<AGridMapExtractionActor> ExtractionActor;
+
+	FTimerHandle ExtractionTimer;
+
+	/** InGame 开始时在 marker 处生成目标/撤离 actor */
+	void SpawnObjectiveActors();
+
+	/** 目标倒计时结束:开启撤离区 */
+	void OpenExtraction();
+
+	/** 回到 Waiting 前清理目标/撤离 actor 与状态,保证下一局从零开始 */
+	void CleanupObjectiveActors();
 	void ReturnToWaitingForPlayers();
 	void ResetAllPlayerReadyStates();
 

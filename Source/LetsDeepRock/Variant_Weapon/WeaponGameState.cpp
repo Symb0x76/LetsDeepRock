@@ -104,6 +104,11 @@ void AWeaponGameState::OnRep_GameplayRecoveryBlocked() const
 	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
 }
 
+void AWeaponGameState::OnRep_ObjectiveState() const
+{
+	// 目标/撤离进度由 HUD 轮询读取,无需广播。
+}
+
 void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
@@ -111,6 +116,16 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AWeaponGameState, MatchState);
 	DOREPLIFETIME(AWeaponGameState, MissionSettings);
 	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
+	DOREPLIFETIME(AWeaponGameState, ObjectiveState);
+}
+
+void AWeaponGameState::SetObjectiveStateAuthority(const FWeaponObjectiveState& NewState)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	ObjectiveState = NewState;
 }
 
 bool AWeaponGameState::SetMissionSettingsAuthority(const FWeaponMissionSettings& NewSettings)

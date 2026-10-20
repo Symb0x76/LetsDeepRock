@@ -121,6 +121,23 @@ void AGridMapManager::Tick(float DeltaSeconds)
 	FlushNavigationDirtyChunks();
 }
 
+
+bool AGridMapManager::GetMarkerWorldLocations(const EGridMapMarkerType MarkerType, TArray<FVector>& OutLocations) const
+{
+	OutLocations.Reset();
+	if (!HasAuthority() || !BaselineState.bGenerated || !MapData)
+	{
+		return false;
+	}
+	for (const FGridMapRecipeMarker& Marker : BaselineState.Recipe.Markers)
+	{
+		if (Marker.Type == static_cast<uint8>(MarkerType))
+		{
+			OutLocations.Add(MapData->GridToWorld(Marker.GridCoord.X, Marker.GridCoord.Y));
+		}
+	}
+	return OutLocations.Num() > 0;
+}
 void AGridMapManager::GenerateMap()
 {
 	if (!HasAuthority())

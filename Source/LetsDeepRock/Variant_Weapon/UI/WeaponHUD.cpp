@@ -2,6 +2,7 @@
 
 #include "WeaponHUD.h"
 #include "Attributes/WeaponHealthSet.h"
+#include "WeaponGameState.h"
 #include "Data/GameDataSubsystem.h"
 #include "EnemyCharacter.h"
 #include "WeaponCharacter.h"
@@ -54,6 +55,7 @@ void AWeaponHUD::DrawHUD()
 		DrawAmmoPanel();
 	}
 	DrawChargeFireBar(bDebugUIEnabled);
+	DrawObjectiveStatus();
 }
 
 void AWeaponHUD::AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event)
@@ -394,4 +396,41 @@ void AWeaponHUD::DrawChargeFireBar(bool bDebugUIEnabled)
 		DrawRect(FLinearColor(1.0f, 0.85f, 0.3f, 0.9f), BarX, BarY, BarWidth, 2.0f);
 		DrawRect(FLinearColor(1.0f, 0.85f, 0.3f, 0.9f), BarX, BarY + BarHeight - 2.0f, BarWidth, 2.0f);
 	}
+}
+
+void AWeaponHUD::DrawObjectiveStatus()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	{
+		return;
+	}
+
+	UFont* Font = GEngine ? GEngine->GetTinyFont() : nullptr;
+	if (!Font)
+	{
+		return;
+	}
+
+	const FWeaponObjectiveState& Objective = WeaponGameState->GetObjectiveState();
+	const float CenterX = Canvas->SizeX * 0.5f;
+
+	FString Text;
+	FLinearColor Color = FLinearColor::Yellow;
+	if (!Objective.bObjectiveComplete)
+	{
+		Text = TEXT("目标:前往目标点充能");
+	}
+	else if (!Objective.bExtractionOpen)
+	{
+		const float Remaining = FMath::Max(0.0f,
+			Objective.ExtractionReadyServerTime - WeaponGameState->GetServerWorldTimeSeconds());
+		Text = FString::Printf(TEXT("撤离区开启倒计时 %.0f 秒"), Remaining);
+	}
+	else
+	{
+		Text = TEXT("撤离区已开启:全员进入撤离点");
+		Color = FLinearColor::Green;
+	}
+	WeaponHUDPrivate::DrawLine(Canvas, Font, Text, CenterX, 24.0f, Color, true);
 }
