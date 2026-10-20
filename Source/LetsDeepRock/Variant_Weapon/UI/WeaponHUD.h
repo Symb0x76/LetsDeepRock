@@ -46,6 +46,13 @@ protected:
 	/** 画面顶部中央的任务/撤离状态行(A1 玩法 UI,不受 Debug 开关影响)。 */
 	void DrawObjectiveStatus();
 
+	/**
+	 *  B2:敌人头顶血条/护盾条 + 状态图标(玩法 UI)。只给受伤或带状态的敌人画,避免满场血条;
+	 *  Debug 开关打开时由 DrawNPCDebugInfo 的详细标签代替。数据全部来自复制:
+	 *  NPC AttributeSet 自身复制属性,Minimal 模式下状态 GE 授予的 Tag 仍复制到客户端。
+	 */
+	void DrawEnemyOverheadBars();
+
 private:
 	struct FActiveDamageNumber
 	{
