@@ -169,6 +169,85 @@ void UStatusEffectComponent::SetGameplayRecoveryBlocked(const bool bBlocked)
 	}
 }
 
+void UStatusEffectComponent::CaptureSnapshotState(TArray<FStatusEffectSnapshotEntry>& OutEntries) const
+{
+	OutEntries.Reset();
+	const UAbilitySystemComponent* ASC = GetASC();
+	const UWorld* World = GetWorld();
+	if (!ASC || !World)
+	{
+		return;
+	}
+	for (const TPair<FName, FAppliedStatusEffect>& Pair : ActiveEffects)
+	{
+		const FActiveGameplayEffect* Active = Pair.Value.Handle.IsValid()
+			? ASC->GetActiveGameplayEffects().GetActiveGameplayEffect(Pair.Value.Handle)
+			: nullptr;
+		// 只有 PendingHits、尚未成层的条目没有 GE;快照只保留真正生效的状态。
+		if (!Active || Active->Spec.GetStackCount() <= 0 || !Pair.Value.DamageEffectClass)
+		{
+			continue;
+		}
+		FStatusEffectSnapshotEntry& Entry = OutEntries.AddDefaulted_GetRef();
+		Entry.StatusEffectId = Pair.Key;
+		Entry.StackCount = Active->Spec.GetStackCount();
+		Entry.RemainingDuration = FMath::Max(0.0f, Active->GetTimeRemaining(World->GetTimeSeconds()));
+		Entry.PendingHits = Pair.Value.PendingHits;
+		Entry.DamageEffectClass = Pair.Value.DamageEffectClass;
+	}
+}
+
+bool UStatusEffectComponent::RestoreSnapshotEntry(const FStatusEffectSnapshotEntry& Entry)
+{
+	AActor* Owner = GetOwner();
+	UAbilitySystemComponent* ASC = GetASC();
+	UWorld* World = GetWorld();
+	if (!Owner || !Owner->HasAuthority() || !ASC || !World || Entry.StatusEffectId.IsNone() ||
+		!Entry.DamageEffectClass || Entry.StackCount <= 0 || Entry.RemainingDuration <= 0.0f)
+	{
+		return false;
+	}
+
+	const UGameInstance* GameInstance = World->GetGameInstance();
+	const UGameDataSubsystem* DataSubsystem = GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	const FStatusEffectConfigRow* Config = DataSubsystem ? DataSubsystem->GetStatusEffectConfig(Entry.StatusEffectId) : nullptr;
+	UStatusEffectGameplayEffect* Def = Config ? UStatusEffectGameplayEffect::GetOrCreate(Entry.StatusEffectId, *Config) : nullptr;
+	if (!Def)
+	{
+		return false;
+	}
+
+	RemoveEffect(Entry.StatusEffectId);
+	FAppliedStatusEffect& Effect = ActiveEffects.Add(Entry.StatusEffectId);
+	Effect.Config = *Config;
+	Effect.DamageEffectClass = Entry.DamageEffectClass;
+	Effect.PendingHits = Entry.PendingHits;
+
+	FGameplayEffectSpec Spec(Def, ASC->MakeEffectContext(), 1.0f);
+	Spec.SetDuration(Entry.RemainingDuration, true);
+	Spec.SetStackCount(FMath::Clamp(Entry.StackCount, 1, FMath::Max(Config->MaxStacks, 1)));
+	Effect.Handle = ASC->ApplyGameplayEffectSpecToSelf(Spec);
+	if (!Effect.Handle.IsValid())
+	{
+		ActiveEffects.Remove(Entry.StatusEffectId);
+		return false;
+	}
+
+	if (Config->DamagePerTick > 0.0f && Config->TickInterval > 0.0f)
+	{
+		World->GetTimerManager().SetTimer(
+			Effect.TickTimer,
+			FTimerDelegate::CreateUObject(this, &UStatusEffectComponent::TickDamage, Entry.StatusEffectId),
+			Config->TickInterval,
+			true);
+		if (bGameplayRecoveryBlocked)
+		{
+			World->GetTimerManager().PauseTimer(Effect.TickTimer);
+		}
+	}
+	return true;
+}
+
 void UStatusEffectComponent::RemoveEffect(const FName StatusEffectId)
 {
 	if (FAppliedStatusEffect* Effect = ActiveEffects.Find(StatusEffectId))

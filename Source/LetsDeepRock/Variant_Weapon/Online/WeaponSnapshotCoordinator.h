@@ -12,6 +12,8 @@ class UWeaponMatchSaveGame;
 struct FUniqueNetIdRepl;
 struct FGameplayTag;
 struct FWeaponSnapshot;
+struct FWeaponStatusEffectSnapshot;
+class AEnemyCharacter;
 
 /** 服务器权威快照入口；负责捕获一致性边界和恢复前校验 */
 UCLASS()
@@ -68,6 +70,8 @@ private:
 	static bool ValidateAttributeValues(const TMap<FGameplayTag, float>& Values);
 	static bool CanRestoreAttributeValues(const UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
 	static void RestoreAttributeValues(UAbilitySystemComponent* ASC, const TMap<FGameplayTag, float>& Values);
+	/** v10:状态效果为表现与 DoT,恢复失败只告警不中断 Apply */
+	static void RestoreEnemyStatusEffects(AEnemyCharacter* Enemy, const TArray<FWeaponStatusEffectSnapshot>& StatusEffects);
 
 	static FUniqueNetIdRepl ResolvePlayerId(const APlayerState* PlayerState);
 

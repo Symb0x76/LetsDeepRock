@@ -29,6 +29,16 @@ struct FAppliedStatusEffect
 	int32 PendingHits = 0;
 };
 
+/** 快照用的单条状态(Host Migration):GE 的叠层/剩余时长 + 组件侧的应用策略状态。 */
+struct FStatusEffectSnapshotEntry
+{
+	FName StatusEffectId;
+	int32 StackCount = 0;
+	float RemainingDuration = 0.0f;
+	int32 PendingHits = 0;
+	TSubclassOf<UGameplayEffect> DamageEffectClass;
+};
+
 /**
  *  仅服务端运行的 NPC 状态容器；同一 Id 的命中跨来源共享。
  *
@@ -48,6 +58,16 @@ public:
 	float GetVulnerableMultiplier() const;
 	void SetGameplayRecoveryBlocked(bool bBlocked);
 	void ClearAllEffects();
+
+	/** 快照:导出仍有效的状态(已掉光的条目跳过) */
+	void CaptureSnapshotState(TArray<FStatusEffectSnapshotEntry>& OutEntries) const;
+
+	/**
+	 *  恢复:按快照的叠层与剩余时长直接施加 GE 并重建周期伤害定时器。
+	 *  只在恢复屏障内由 Snapshot Coordinator 调用,因此不走 TryApply 的屏障/概率/HitsPerStack 判定;
+	 *  定时器创建后若屏障仍关闭则立即暂停,随屏障释放续跑。
+	 */
+	bool RestoreSnapshotEntry(const FStatusEffectSnapshotEntry& Entry);
 
 protected:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

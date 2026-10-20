@@ -2,6 +2,7 @@
 #include "LetsDeepRock.h"
 #include "AbilitySystemComponent.h"
 #include "AttributeModifierManager.h"
+#include "Attributes/StatusEffectComponent.h"
 #include "EnemyCharacter.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
@@ -1101,6 +1102,7 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 		const FWeaponEnemySnapshot& EnemySnap = Snapshot.Enemies[Index];
 		Enemy->GetCharacterMovement()->Velocity = EnemySnap.Velocity;
 		RestoreAttributeValues(Enemy->GetAbilitySystemComponent(), EnemySnap.AttributeState.Values);
+		RestoreEnemyStatusEffects(Enemy, EnemySnap.StatusEffects);
 	}
 	for (AEnemyCharacter* Enemy : Context.ExistingEnemies)
 	{
@@ -1429,20 +1431,34 @@ bool UWeaponSnapshotCoordinator::CaptureEnemies(
 	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
 	{
 		const AEnemyCharacter* Enemy = *It;
-		auto& [EnemyClass, Location, Rotation, Velocity, EnemyConfigRowName, AttributeState] = Snapshot.Enemies.AddDefaulted_GetRef();
+		auto& [EnemyClass, Location, Rotation, Velocity, EnemyConfigRowName, AttributeState, StatusEffects] = Snapshot.Enemies.AddDefaulted_GetRef();
 		EnemyClass = FSoftClassPath(Enemy->GetClass());
 		Location = Enemy->GetActorLocation();
 		Rotation = FRotator(0.0f, Enemy->GetActorRotation().Yaw, 0.0f);
 		Velocity = Enemy->GetVelocity();
 		EnemyConfigRowName = Enemy->GetEnemyConfigRowName();
 		AttributeState.Values = CaptureAttributeValues(Enemy->GetAbilitySystemComponent());
+		if (const UStatusEffectComponent* StatusComponent = Enemy->FindComponentByClass<UStatusEffectComponent>())
+		{
+			TArray<FStatusEffectSnapshotEntry> Entries;
+			StatusComponent->CaptureSnapshotState(Entries);
+			for (const FStatusEffectSnapshotEntry& Entry : Entries)
+			{
+				FWeaponStatusEffectSnapshot& Saved = StatusEffects.AddDefaulted_GetRef();
+				Saved.StatusEffectId = Entry.StatusEffectId;
+				Saved.StackCount = Entry.StackCount;
+				Saved.RemainingDuration = Entry.RemainingDuration;
+				Saved.PendingHits = Entry.PendingHits;
+				Saved.DamageEffectClass = FSoftClassPath(Entry.DamageEffectClass.Get());
+			}
+		}
 	}
 	return true;
 }
 
 bool UWeaponSnapshotCoordinator::ValidateEnemies(const FWeaponSnapshot& Snapshot, FString& OutError)
 {
-	for (const auto& [EnemyClass, Location, Rotation, Velocity, EnemyConfigRowName, AttributeState] : Snapshot.Enemies)
+	for (const auto& [EnemyClass, Location, Rotation, Velocity, EnemyConfigRowName, AttributeState, StatusEffects] : Snapshot.Enemies)
 	{
 		if (!EnemyClass.IsValid() || EnemyConfigRowName.IsNone() ||
 			!IsFiniteVector(Location) || !IsFiniteRotator(Rotation) ||
@@ -1450,6 +1466,15 @@ bool UWeaponSnapshotCoordinator::ValidateEnemies(const FWeaponSnapshot& Snapshot
 		{
 			OutError = TEXT("Snapshot has invalid enemy class, config, movement or attributes");
 			return false;
+		}
+		for (const FWeaponStatusEffectSnapshot& Status : StatusEffects)
+		{
+			if (Status.StatusEffectId.IsNone() || Status.StackCount <= 0 || !Status.DamageEffectClass.IsValid() ||
+				!FMath::IsFinite(Status.RemainingDuration) || Status.RemainingDuration < 0.0f || Status.PendingHits < 0)
+			{
+				OutError = TEXT("Snapshot has an invalid enemy status effect");
+				return false;
+			}
 		}
 	}
 
@@ -1691,6 +1716,27 @@ void UWeaponSnapshotCoordinator::RestoreAttributeValues(
 		}
 		const FGameplayAttribute* Attribute = UAttributeModifierManager::GetAttributeTagMap().Find(Tag);
 		ASC->SetNumericAttributeBase(*Attribute, Value);
+	}
+}
+
+void UWeaponSnapshotCoordinator::RestoreEnemyStatusEffects(
+	AEnemyCharacter* Enemy,
+	const TArray<FWeaponStatusEffectSnapshot>& StatusEffects)
+{
+	UStatusEffectComponent* StatusComponent = Enemy ? Enemy->FindComponentByClass<UStatusEffectComponent>() : nullptr;
+	for (const FWeaponStatusEffectSnapshot& Saved : StatusEffects)
+	{
+		FStatusEffectSnapshotEntry Entry;
+		Entry.StatusEffectId = Saved.StatusEffectId;
+		Entry.StackCount = Saved.StackCount;
+		Entry.RemainingDuration = Saved.RemainingDuration;
+		Entry.PendingHits = Saved.PendingHits;
+		Entry.DamageEffectClass = Saved.DamageEffectClass.TryLoadClass<UGameplayEffect>();
+		if (!StatusComponent || !StatusComponent->RestoreSnapshotEntry(Entry))
+		{
+			UE_LOG(LogLetsDeepRock, Warning, TEXT("Snapshot status effect %s on %s could not be restored; skipped"),
+				*Saved.StatusEffectId.ToString(), *GetNameSafe(Enemy));
+		}
 	}
 }
 

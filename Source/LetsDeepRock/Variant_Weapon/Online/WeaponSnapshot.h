@@ -9,7 +9,58 @@
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 9;
+inline constexpr int32 WeaponSnapshotVersion = 10;
+
+/** v10:一条生效中的状态效果(GE 叠层 + 剩余时长 + 组件侧应用策略)。 */
+USTRUCT()
+struct FWeaponStatusEffectSnapshot
+{
+	GENERATED_BODY()
+	UPROPERTY(SaveGame) FName StatusEffectId = NAME_None;
+	UPROPERTY(SaveGame) int32 StackCount = 0;
+	/** 相对时长;恢复时作为新 GE 的时长 */
+	UPROPERTY(SaveGame) float RemainingDuration = 0.0f;
+	UPROPERTY(SaveGame) int32 PendingHits = 0;
+	UPROPERTY(SaveGame) FSoftClassPath DamageEffectClass;
+};
+
+/** v10:目标/撤离进度。时间一律存相对秒数,恢复后由屏障释放重新锚定。 */
+USTRUCT()
+struct FWeaponObjectiveSnapshot
+{
+	GENERATED_BODY()
+	/** 本局是否已生成目标/撤离 Actor(InGame 之后才有) */
+	UPROPERTY(SaveGame) bool bActorsSpawned = false;
+	UPROPERTY(SaveGame) bool bObjectiveComplete = false;
+	UPROPERTY(SaveGame) bool bExtractionOpen = false;
+	/** 目标已完成、撤离尚未开启时,距离开启的剩余秒数 */
+	UPROPERTY(SaveGame) float ExtractionRemainingSeconds = 0.0f;
+	UPROPERTY(SaveGame) float ObjectiveChargeProgress = 0.0f;
+	UPROPERTY(SaveGame) float ExtractionHoldProgress = 0.0f;
+};
+
+/** v10:波次导演中的一个房间(含防御波)。 */
+USTRUCT()
+struct FWeaponWaveRoomSnapshot
+{
+	GENERATED_BODY()
+	UPROPERTY(SaveGame) bool bTriggered = false;
+	UPROPERTY(SaveGame) int32 RemainingToSpawn = 0;
+	UPROPERTY(SaveGame) float SecondsToNextSpawn = 0.0f;
+};
+
+/** v10:波次导演。战斗房按 Recipe 重建后按下标对齐;防御波单独记录中心点后重建。 */
+USTRUCT()
+struct FWeaponWaveDirectorSnapshot
+{
+	GENERATED_BODY()
+	UPROPERTY(SaveGame) bool bArmed = false;
+	UPROPERTY(SaveGame) int32 Difficulty = 2;
+	UPROPERTY(SaveGame) TArray<FWeaponWaveRoomSnapshot> CombatRooms;
+	UPROPERTY(SaveGame) bool bHasDefenseWave = false;
+	UPROPERTY(SaveGame) FVector DefenseCenter = FVector::ZeroVector;
+	UPROPERTY(SaveGame) FWeaponWaveRoomSnapshot DefenseWave;
+};
 
 USTRUCT()
 struct FWeaponAmmoSnapshot
@@ -97,6 +148,13 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 
 	UPROPERTY(SaveGame)
 	FWeaponAttributeState AttributeState;
+
+	/** v10:死亡等待复活时为 true(RespawnRemainingSeconds 有效) */
+	UPROPERTY(SaveGame)
+	bool bRespawnPending = false;
+
+	UPROPERTY(SaveGame)
+	float RespawnRemainingSeconds = 0.0f;
 };
 
 /** Minimal state needed to respawn one living enemy. */
@@ -122,6 +180,10 @@ struct LETSDEEPROCK_API FWeaponEnemySnapshot
 
 	UPROPERTY(SaveGame)
 	FWeaponAttributeState AttributeState;
+
+	/** v10 */
+	UPROPERTY(SaveGame)
+	TArray<FWeaponStatusEffectSnapshot> StatusEffects;
 };
 
 /** 一枚仍在飞行的普通武器投射物。 */
@@ -250,4 +312,19 @@ struct LETSDEEPROCK_API FWeaponSnapshot
 
 	UPROPERTY(SaveGame)
 	TArray<FWeaponGrenadeSnapshot> Grenades;
+
+	/** v10:任务参数。恢复世界不解析 travel options,以此为准(FWeaponMissionSettings 无 SaveGame 标记,故展开存) */
+	UPROPERTY(SaveGame)
+	int32 MissionSeed = 0;
+
+	UPROPERTY(SaveGame)
+	int32 MissionDifficulty = 1;
+
+	/** v10 */
+	UPROPERTY(SaveGame)
+	FWeaponObjectiveSnapshot Objective;
+
+	/** v10 */
+	UPROPERTY(SaveGame)
+	FWeaponWaveDirectorSnapshot WaveDirector;
 };
