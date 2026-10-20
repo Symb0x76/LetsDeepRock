@@ -4,6 +4,7 @@
 
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
@@ -33,12 +34,12 @@ namespace
 		return AWeaponGameState::IsGameplayRecoveryBlockedFor(World);
 	}
 
-	/** 半径内的存活玩家 Pawn 数 */
+	/** 半径内的存活玩家 Pawn 数(只遍历 PlayerController:AI 敌人不算玩家) */
 	int32 CountPlayersInRadius(const UWorld* World, const FVector& Center, const float Radius)
 	{
 		int32 Count = 0;
 		const float RadiusSquared = Radius * Radius;
-		for (FConstControllerIterator It = World->GetControllerIterator(); It; ++It)
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
 			const AController* Controller = It->Get();
 			const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
@@ -54,7 +55,7 @@ namespace
 	int32 CountAlivePlayers(const UWorld* World)
 	{
 		int32 Count = 0;
-		for (FConstControllerIterator It = World->GetControllerIterator(); It; ++It)
+		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
 			const AController* Controller = It->Get();
 			if (Controller && Controller->GetPawn())
