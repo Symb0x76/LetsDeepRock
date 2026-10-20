@@ -177,6 +177,41 @@ void AWeaponPlayerState::ApplyPlayerReadyRequest(const bool bNewIsReady)
 	SetPlayerReady(bNewIsReady);
 }
 
+void AWeaponPlayerState::RequestSetMissionSettings(const int32 Seed, const int32 Difficulty)
+{
+	if (HasAuthority())
+	{
+		ApplyMissionSettingsRequest(Seed, Difficulty);
+	}
+	else
+	{
+		ServerSetMissionSettings(Seed, Difficulty);
+	}
+}
+
+void AWeaponPlayerState::ServerSetMissionSettings_Implementation(const int32 Seed, const int32 Difficulty)
+{
+	ApplyMissionSettingsRequest(Seed, Difficulty);
+}
+
+void AWeaponPlayerState::ApplyMissionSettingsRequest(const int32 Seed, const int32 Difficulty)
+{
+	// 任务设置只允许 Listen Host / Standalone 的本地玩家（房主）修改：
+	// Server RPC 上下文中，发起者的 PlayerState 就是 this；房主拥有世界上第一个本地 PC。
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	const APlayerController* HostController = GetWorld() ? GetWorld()->GetFirstPlayerController() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || !HostController || !HostController->IsLocalController() ||
+		HostController->PlayerState != this)
+	{
+		return;
+	}
+
+	FWeaponMissionSettings NewSettings;
+	NewSettings.Seed = FMath::Max(Seed, 0);
+	NewSettings.Difficulty = FMath::Clamp(Difficulty, 1, 3);
+	WeaponGameState->SetMissionSettingsAuthority(NewSettings);
+}
+
 void AWeaponPlayerState::SetPlayerReady(const bool bNewIsReady)
 {
 	if (!HasAuthority())

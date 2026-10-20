@@ -3,6 +3,7 @@
 
 #include "WeaponHealthSet.h"
 #include "GameplayEffectExtension.h"
+#include "AttributeRegenComponent.h"
 #include "Net/UnrealNetwork.h"
 #include "WeaponPlayerController.h"
 
@@ -130,6 +131,16 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 				const AActor* OwningActor = GetOwningActor();
 				const bool bHasAuthority = OwningActor && OwningActor->HasAuthority();
 				bJustDied = bHasAuthority && OldHealth > 0.0f && NewHealth <= 0.0f;
+			}
+		}
+		// 受击重置护盾再生延迟（仅服务端权威；NPC 无该组件，空安全）。
+		// 旧实现中 NotifyDamageTaken 从未被调用，本行让 ShieldRegenDelay 真正生效。
+		if (const UAbilitySystemComponent* OwningASC = GetOwningAbilitySystemComponent())
+		{
+			if (UAttributeRegenComponent* RegenComponent = OwningASC->GetAvatarActor() ?
+				OwningASC->GetAvatarActor()->FindComponentByClass<UAttributeRegenComponent>() : nullptr)
+			{
+				RegenComponent->NotifyDamageTaken();
 			}
 		}
 

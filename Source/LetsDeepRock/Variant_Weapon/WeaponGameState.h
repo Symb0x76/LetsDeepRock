@@ -65,6 +65,21 @@ struct FWeaponObjectiveState
 	float ExtractionReadyServerTime = 0.0f;
 };
 
+/** 一局任务的生成参数（由 travel options 或房主在大厅设置，服务器权威）。 */
+USTRUCT(BlueprintType)
+struct FWeaponMissionSettings
+{
+	GENERATED_BODY()
+
+	/** 地图生成种子；0 = 沿用 GridMapManager 资产内配置的默认。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Mission")
+	int32 Seed = 0;
+
+	/** 难度档位：1 低危 / 2 常规 / 3 高危（白盒三档，波次系统消费）。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Mission")
+	int32 Difficulty = 1;
+};
+
 // 定义 反射 可多监听 单参数 委托
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FOnWeaponMatchPhaseChanged,	// 委托类型名
@@ -97,6 +112,10 @@ public:
 /** 房间固定最大人数 */
 	UFUNCTION(BlueprintPure, Category = "Match")
 	int32 GetMaxPlayers() const { return MaxPlayers; }
+
+	/** 本局任务设置（种子/难度）；Waiting 阶段由房主或 travel options 写入。 */
+	UFUNCTION(BlueprintPure, Category = "Mission")
+	const FWeaponMissionSettings& GetMissionSettings() const { return MissionSettings; }
 
 	/** 当前战局阶段 */
 	UFUNCTION(BlueprintPure, Category = "Match")
@@ -134,6 +153,9 @@ protected:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Match", meta = (ClampMin = 1, ClampMax = 4))
 	int32 MaxPlayers = 4;
 	
+	UPROPERTY(ReplicatedUsing = OnRep_MissionSettings, BlueprintReadOnly, Category = "Mission")
+	FWeaponMissionSettings MissionSettings;
+	
 	/** 当前阶段及其倒计时作为一个复制快照发送。 */
 	UPROPERTY(ReplicatedUsing = OnRep_MatchState, BlueprintReadOnly, Category = "Match")
 	FWeaponReplicatedMatchState MatchState;
@@ -145,6 +167,9 @@ protected:
 	
 	
 	UFUNCTION()
+	void OnRep_MissionSettings() const;
+	
+	UFUNCTION()
 	void OnRep_MatchState() const;
 
 	UFUNCTION()
@@ -152,6 +177,10 @@ protected:
 	UFUNCTION()
 	void OnRep_ObjectiveState() const;
 	
+
+	/** 服务器权威写入任务设置；内部校验权威/阶段（Waiting|Starting）。 */
+public:
+	bool SetMissionSettingsAuthority(const FWeaponMissionSettings& NewSettings);
 
 private:
 	friend class AWeaponGameMode;

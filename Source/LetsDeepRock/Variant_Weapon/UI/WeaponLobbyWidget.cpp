@@ -1165,46 +1165,113 @@ void UWeaponLobbyWidget::BuildMissionSelectPage(UPanelWidget* StageCanvas)
 		TopSlot->SetPadding(FMargin(0.0f, 0.0f, 0.0f, 16.0f));
 	}
 
-	// 主体：一个大占位区，等真正的任务列表接入
+	// 主体：任务参数（A0 白盒三项之二 —— 地图固定，种子/难度可调）
 	{
-		UBorder* Placeholder = WidgetTree->ConstructWidget<UBorder>();
-		Placeholder->SetBrush(MakeOutlinedBrush(PanelDeepColor, AmberFaint, 1.0f));
-		Placeholder->SetPadding(FMargin(0.0f));
+		UBorder* Panel = WidgetTree->ConstructWidget<UBorder>();
+		Panel->SetBrush(MakeOutlinedBrush(PanelDeepColor, AmberFaint, 1.0f));
+		Panel->SetPadding(FMargin(28.0f, 22.0f));
 
-		UVerticalBox* Center = WidgetTree->ConstructWidget<UVerticalBox>();
-		Placeholder->AddChild(Center);
+		UVerticalBox* Content = WidgetTree->ConstructWidget<UVerticalBox>();
+		Panel->AddChild(Content);
 
+		// 地图（白盒固定）
+		Content->AddChildToVerticalBox(MakeText(TEXT("地图"), 15, TextMuted, true, 200));
+		UVerticalBoxSlot* MapSlot = Content->AddChildToVerticalBox(
+			MakeText(TEXT("GRIDMAP · 程序化房间图（白盒固定）"), 18, TextPrimary, true, 40));
+		MapSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 18.0f));
+
+		// 种子
+		Content->AddChildToVerticalBox(MakeText(TEXT("种子"), 15, TextMuted, true, 200));
+		UHorizontalBox* SeedRow = WidgetTree->ConstructWidget<UHorizontalBox>();
 		{
-			USpacer* Gap = WidgetTree->ConstructWidget<USpacer>();
-			UVerticalBoxSlot* GapSlot = Center->AddChildToVerticalBox(Gap);
-			GapSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+			MissionSeedValueText = MakeText(TEXT("默认"), 18, TextPrimary, true, 40);
+			UHorizontalBoxSlot* ValueSlot = SeedRow->AddChildToHorizontalBox(MissionSeedValueText);
+			ValueSlot->SetVerticalAlignment(VAlign_Center);
+			ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		}
+		{
+			MissionRandomSeedButton = MakeStyledButton(
+				FLinearColor(0.129f, 0.145f, 0.169f, 1.0f),
+				Amber,
+				FLinearColor(0.780f, 0.525f, 0.098f, 1.0f));
+			MissionRandomSeedButton->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleMissionLobbyRandomSeedClicked);
+			MissionRandomSeedButton->AddChild(MakeText(TEXT("随机"), 12, TextPrimary, true, 100));
+			UHorizontalBoxSlot* RandomSlot = SeedRow->AddChildToHorizontalBox(MissionRandomSeedButton);
+			RandomSlot->SetVerticalAlignment(VAlign_Center);
+			RandomSlot->SetPadding(FMargin(14.0f, 0.0f, 0.0f, 0.0f));
+		}
+		UVerticalBoxSlot* SeedSlot = Content->AddChildToVerticalBox(SeedRow);
+		SeedSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 18.0f));
+
+		// 难度
+		Content->AddChildToVerticalBox(MakeText(TEXT("难度"), 15, TextMuted, true, 200));
+		{
+			MissionDifficultyValueText = MakeText(TEXT("常规"), 18, TextPrimary, true, 40);
+			UVerticalBoxSlot* ValueSlot = Content->AddChildToVerticalBox(MissionDifficultyValueText);
+			ValueSlot->SetPadding(FMargin(0.0f, 6.0f, 0.0f, 10.0f));
+		}
+		{
+			UHorizontalBox* HostRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+			MissionHostControls = HostRow;
+
+			// AddDynamic 需要编译期函数名（宏做字符串化），不能走函数指针表——逐一展开。
+			const TCHAR* DifficultyLabels[] = { TEXT("低危"), TEXT("常规"), TEXT("高危") };
+			UButton* DifficultyButtons[3];
+			DifficultyButtons[0] = MakeStyledButton(
+				FLinearColor(0.129f, 0.145f, 0.169f, 1.0f), Amber, FLinearColor(0.780f, 0.525f, 0.098f, 1.0f));
+			DifficultyButtons[0]->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleMissionLobbyDifficultyLowClicked);
+			DifficultyButtons[1] = MakeStyledButton(
+				FLinearColor(0.129f, 0.145f, 0.169f, 1.0f), Amber, FLinearColor(0.780f, 0.525f, 0.098f, 1.0f));
+			DifficultyButtons[1]->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleMissionLobbyDifficultyNormalClicked);
+			DifficultyButtons[2] = MakeStyledButton(
+				FLinearColor(0.129f, 0.145f, 0.169f, 1.0f), Amber, FLinearColor(0.780f, 0.525f, 0.098f, 1.0f));
+			DifficultyButtons[2]->OnClicked.AddDynamic(this, &UWeaponLobbyWidget::HandleMissionLobbyDifficultyHighClicked);
+			for (int32 Index = 0; Index < 3; ++Index)
+			{
+				DifficultyButtons[Index]->AddChild(MakeText(DifficultyLabels[Index], 12, TextPrimary, true, 100));
+				UHorizontalBoxSlot* ButtonSlot = HostRow->AddChildToHorizontalBox(DifficultyButtons[Index]);
+				ButtonSlot->SetPadding(FMargin(Index == 0 ? 0.0f : 12.0f, 0.0f, 0.0f, 0.0f));
+			}
 		}
 
-		{
-			UTextBlock* Main = MakeText(TEXT("任务选择区域"), 22, TextMuted, true, 200);
-			Main->SetJustification(ETextJustify::Center);
-			UVerticalBoxSlot* MainSlot = Center->AddChildToVerticalBox(Main);
-			MainSlot->SetHorizontalAlignment(HAlign_Center);
-		}
+		UVerticalBoxSlot* PanelSlot = PageColumn->AddChildToVerticalBox(Panel);
+		PanelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		PanelSlot->SetHorizontalAlignment(HAlign_Fill);
+		PanelSlot->SetVerticalAlignment(VAlign_Fill);
+	}
+}
 
-		{
-			UTextBlock* Sub = MakeText(TEXT("任务列表与星球地图将在此处接入"), 11, TextMuted, false, 100);
-			Sub->SetJustification(ETextJustify::Center);
-			UVerticalBoxSlot* SubSlot = Center->AddChildToVerticalBox(Sub);
-			SubSlot->SetHorizontalAlignment(HAlign_Center);
-			SubSlot->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 0.0f));
-		}
+void UWeaponLobbyWidget::HandleMissionLobbyRandomSeedClicked()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	RequestMissionSettings(
+		FMath::RandRange(1, 999999),
+		WeaponGameState ? WeaponGameState->GetMissionSettings().Difficulty : 2);
+}
 
-		{
-			USpacer* Gap = WidgetTree->ConstructWidget<USpacer>();
-			UVerticalBoxSlot* GapSlot = Center->AddChildToVerticalBox(Gap);
-			GapSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		}
+void UWeaponLobbyWidget::HandleMissionLobbyDifficultyLowClicked()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	RequestMissionSettings(WeaponGameState ? WeaponGameState->GetMissionSettings().Seed : 0, 1);
+}
 
-		UVerticalBoxSlot* PlaceholderSlot = PageColumn->AddChildToVerticalBox(Placeholder);
-		PlaceholderSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		PlaceholderSlot->SetHorizontalAlignment(HAlign_Fill);
-		PlaceholderSlot->SetVerticalAlignment(VAlign_Fill);
+void UWeaponLobbyWidget::HandleMissionLobbyDifficultyNormalClicked()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	RequestMissionSettings(WeaponGameState ? WeaponGameState->GetMissionSettings().Seed : 0, 2);
+}
+
+void UWeaponLobbyWidget::HandleMissionLobbyDifficultyHighClicked()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	RequestMissionSettings(WeaponGameState ? WeaponGameState->GetMissionSettings().Seed : 0, 3);
+}
+
+void UWeaponLobbyWidget::RequestMissionSettings(const int32 Seed, const int32 Difficulty)
+{
+	if (AWeaponPlayerState* PlayerState = GetOwningPlayerState<AWeaponPlayerState>())
+	{
+		PlayerState->RequestSetMissionSettings(Seed, Difficulty);
 	}
 }
 
@@ -1223,6 +1290,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 
 	const int32 MaxPlayers = WeaponGameState ? WeaponGameState->GetMaxPlayers() : RosterSlotCount;
 	const int32 ConnectedCount = WeaponGameState ? WeaponGameState->GetConnectedPlayerCount() : 1;
+	// Standalone 单人：不呈现"等待其他矿工接入"的多人观感。
+	const bool bStandalone = World && World->GetNetMode() == NM_Standalone;
 
 	const APlayerState* LocalPlayerState = GetOwningPlayerState();
 	const bool bLocalReady = IsLocalPlayerReady();
@@ -1230,7 +1299,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	// ---- 小窗 ----
 	if (DockCountText)
 	{
-		DockCountText->SetText(FText::FromString(FString::Printf(TEXT("%d/%d"), ConnectedCount, MaxPlayers)));
+		DockCountText->SetText(FText::FromString(bStandalone ?
+			TEXT("1/1") : FString::Printf(TEXT("%d/%d"), ConnectedCount, MaxPlayers)));
 	}
 	if (DockStatusText)
 	{
@@ -1245,12 +1315,44 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	// ---- 顶栏 ----
 	if (HeaderCountText)
 	{
-		HeaderCountText->SetText(
-			FText::FromString(FString::Printf(TEXT("小队 %d/%d"), ConnectedCount, MaxPlayers)));
+		HeaderCountText->SetText(FText::FromString(bStandalone ?
+			TEXT("单人任务") : FString::Printf(TEXT("小队 %d/%d"), ConnectedCount, MaxPlayers)));
 	}
 	if (HeaderPhaseText)
 	{
-		HeaderPhaseText->SetText(FText::FromString(IsLocalHost() ? TEXT("房主 · 待命中") : TEXT("队员 · 待命中")));
+		HeaderPhaseText->SetText(FText::FromString(bStandalone ? TEXT("单人 · 待命中") :
+			(IsLocalHost() ? TEXT("房主 · 待命中") : TEXT("队员 · 待命中"))));
+	}
+	if (DockModeText)
+	{
+		DockModeText->SetText(FText::FromString(bStandalone ? TEXT("SOLO RUN") : TEXT("LOCAL P2P")));
+	}
+
+	// ---- 任务终端（A0：种子/难度显示 + 房主控件可见性）----
+	if (WeaponGameState)
+	{
+		const FWeaponMissionSettings& Mission = WeaponGameState->GetMissionSettings();
+		const TCHAR* DifficultyNames[] = { TEXT("低危"), TEXT("常规"), TEXT("高危") };
+		if (MissionSeedValueText)
+		{
+			MissionSeedValueText->SetText(FText::FromString(
+				Mission.Seed > 0 ? FString::FromInt(Mission.Seed) : FString(TEXT("默认（资产配置）"))));
+		}
+		if (MissionDifficultyValueText)
+		{
+			MissionDifficultyValueText->SetText(FText::FromString(
+				DifficultyNames[FMath::Clamp(Mission.Difficulty, 1, 3) - 1]));
+		}
+		const ESlateVisibility HostVisibility =
+			IsLocalHost() ? ESlateVisibility::Visible : ESlateVisibility::Collapsed;
+		if (MissionRandomSeedButton)
+		{
+			MissionRandomSeedButton->SetVisibility(HostVisibility);
+		}
+		if (MissionHostControls)
+		{
+			MissionHostControls->SetVisibility(HostVisibility);
+		}
 	}
 
 	// ---- 名单：按服务端分配的 SlotIndex 排布（槽位 0..MaxPlayers-1 对应行）----

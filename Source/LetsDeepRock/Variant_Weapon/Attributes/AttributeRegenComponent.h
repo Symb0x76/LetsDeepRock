@@ -4,18 +4,22 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "GameplayEffect.h"
 #include "AttributeRegenComponent.generated.h"
 
+class UGameplayEffect;
 class UAbilitySystemComponent;
 
 /**
- * 属性自动恢复组件
+ *  属性自动恢复组件（GE 生命周期控制器）
  *
- * 处理护盾延迟再生和能量持续恢复。
- * 挂在玩家 Character 上（Tick 驱动），从 ASC 读取 Rate/Delay 属性控制恢复速度。
- * 仅服务端执行实际属性写入，写入使用 ASC->SetNumericAttributeBase()。
+ *  再生本身由 UGE_EnergyRegen / UGE_ShieldRegen（Infinite + Periodic）承担，
+ *  本组件只负责 GE 的挂载/摘除编排：
+ *  - BeginPlay（服务端）应用能量再生 GE 与护盾再生 GE；
+ *  - NotifyDamageTaken() 摘除护盾 GE，延迟 ShieldRegenDelay 秒后重新应用；
+ *  - 恢复屏障（IsGameplayRecoveryBlockedFor）激活期间摘除，释放后自动恢复。
  *
- * 挂载方式：在 BP_WeaponCharacter 蓝图中手动添加本组件即可。
+ *  挂载方式：在 BP_WeaponCharacter 蓝图中手动添加本组件（与旧版一致）。
  */
 UCLASS(ClassGroup = (GAS), meta = (BlueprintSpawnableComponent))
 class UAttributeRegenComponent : public UActorComponent
@@ -25,21 +29,44 @@ class UAttributeRegenComponent : public UActorComponent
 public:
 	UAttributeRegenComponent();
 
-	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
-
-	/** 通知受到伤害，重置护盾再生延迟计时器 */
+	/** 通知受到伤害：摘除护盾再生 GE，ShieldRegenDelay 秒后重新应用 */
 	void NotifyDamageTaken();
 
 protected:
 	virtual void BeginPlay() override;
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
 	/** 获取 Owner 的 ASC */
 	UAbilitySystemComponent* GetASC() const;
 
-	/** 护盾再生延迟计时器（受击后倒计时，归零后开始恢复） */
-	float ShieldRegenTimer = 0.0f;
+	/** 应用/摘除两类再生 GE（幂等；屏障激活时挂起为 pending） */
+	void ApplyEnergyRegen();
+	void ApplyShieldRegen();
+	void RemoveEnergyRegen();
+	void RemoveShieldRegen();
 
-	/** 是否正在等待护盾恢复延迟 */
-	bool bShieldRegenDelayed = true;
+	/** 屏障同步：屏障激活期间摘除 GE，释放后补挂 pending 的 GE */
+	void SyncWithRecoveryBarrier();
+
+	/** 再生 GE 类（默认 C++ 构造的实现，可在 BP 里替换） */
+	UPROPERTY(EditDefaultsOnly, Category = "GAS")
+	TSubclassOf<UGameplayEffect> EnergyRegenEffectClass;
+
+	UPROPERTY(EditDefaultsOnly, Category = "GAS")
+	TSubclassOf<UGameplayEffect> ShieldRegenEffectClass;
+
+	/** 活跃 GE 句柄 */
+	FActiveGameplayEffectHandle EnergyRegenHandle;
+
+	FActiveGameplayEffectHandle ShieldRegenHandle;
+
+	/** 受击后的护盾再生延迟定时器 */
+	FTimerHandle ShieldRegenDelayTimer;
+
+	/** 屏障期间被摘除、待屏障释放后补挂的标记 */
+	bool bEnergyRegenPending = false;
+
+	bool bShieldRegenPending = false;
 };

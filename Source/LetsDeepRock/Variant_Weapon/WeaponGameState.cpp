@@ -94,6 +94,11 @@ void AWeaponGameState::OnRep_MatchState() const
 	OnMatchPhaseChanged.Broadcast(MatchState.Phase);
 }
 
+void AWeaponGameState::OnRep_MissionSettings() const
+{
+	// 任务设置由 Lobby 4Hz 轮询刷新展示，无需额外广播。
+}
+
 void AWeaponGameState::OnRep_GameplayRecoveryBlocked() const
 {
 	OnGameplayRecoveryBarrierChanged.Broadcast(bGameplayRecoveryBlocked);
@@ -109,6 +114,7 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
 	DOREPLIFETIME(AWeaponGameState, MatchState);
+	DOREPLIFETIME(AWeaponGameState, MissionSettings);
 	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 	DOREPLIFETIME(AWeaponGameState, ObjectiveState);
 }
@@ -120,4 +126,19 @@ void AWeaponGameState::SetObjectiveStateAuthority(const FWeaponObjectiveState& N
 		return;
 	}
 	ObjectiveState = NewState;
+}
+
+bool AWeaponGameState::SetMissionSettingsAuthority(const FWeaponMissionSettings& NewSettings)
+{
+	if (!HasAuthority() || IsGameplayRecoveryBlocked() ||
+		(GetMatchPhase() != EWeaponMatchPhase::Waiting && GetMatchPhase() != EWeaponMatchPhase::Starting))
+	{
+		return false;
+	}
+	if (MissionSettings.Seed == NewSettings.Seed && MissionSettings.Difficulty == NewSettings.Difficulty)
+	{
+		return true;
+	}
+	MissionSettings = NewSettings;
+	return true;
 }

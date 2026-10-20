@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/GameModeBase.h"
 #include "Online/WeaponRecoveryRoster.h"
+#include "WeaponGameState.h"
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
@@ -173,6 +174,9 @@ private:
 	float FrozenMatchPhaseRemaining = 0.0f;
 	bool bRecoveryWorldRequested = false;
 	bool bLobbyTravelRequested = false;
+
+	/** A0：travel options 解析出的任务参数，InitGameState 注入 GameState。 */
+	FWeaponMissionSettings ParsedMissionSettings;
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();
