@@ -1246,6 +1246,8 @@ void AWeaponGameMode::BeginWeaponMatch()
 			WaveManager = *ManagerIt;
 			break;
 		}
+		// A2b:难度来自任务设置(InitGameState 已写入 GameState,早于任何开局)。
+		WaveDirector->SetDifficulty(WeaponGameState->GetMissionSettings().Difficulty);
 		WaveDirector->OnMatchStarted(WaveManager);
 	}
 
@@ -1351,6 +1353,12 @@ void AWeaponGameMode::HandleObjectiveCompleted()
 		FMath::Max(ExtractionCountdownSeconds, 0.1f),
 		false);
 	UE_LOG(LogLetsDeepRock, Log, TEXT("[A1] Objective complete; extraction opens in %.1fs"), ExtractionCountdownSeconds);
+
+	// A2b:撤离倒计时期间,在撤离区附近压一波防御怪。
+	if (WaveDirector && ExtractionActor)
+	{
+		WaveDirector->StartDefenseWave(ExtractionActor->GetActorLocation());
+	}
 }
 
 void AWeaponGameMode::OpenExtraction()
