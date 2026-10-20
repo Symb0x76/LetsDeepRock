@@ -12,6 +12,7 @@ class AWeaponCharacter;
 class AWeaponPlayerController;
 class AGridMapObjectiveActor;
 class AGridMapExtractionActor;
+class UWeaponWaveDirectorComponent;
 class AWeaponPlayerState;
 class AWeaponProjectile;
 enum class EWeaponMatchPhase : uint8;
@@ -91,6 +92,10 @@ public:
 
 	/** A1:目标点充能完成的服务器入口(由 AGridMapObjectiveActor 调用)。 */
 	void HandleObjectiveCompleted();
+
+	/** A2:Combat 房间波次导演(服务器) */
+	UPROPERTY(VisibleAnywhere, Category = "Match|Waves")
+	TObjectPtr<UWeaponWaveDirectorComponent> WaveDirector;
 	/** PlayerState ready 改变后的服务器通知入口。 */
 	void HandlePlayerReadyChanged();
 
