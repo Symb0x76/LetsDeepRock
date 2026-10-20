@@ -9,6 +9,7 @@
 #include "Engine/GameInstance.h"
 #include "EngineUtils.h"
 #include "GameFramework/Character.h"
+#include "GameFramework/PlayerController.h"
 #include "GridMap/GridMapManager.h"
 #include "Variant_Weapon/WeaponGameState.h"
 
@@ -131,12 +132,12 @@ void UWeaponWaveDirectorComponent::TickComponent(
 
 	const double Now = World->GetTimeSeconds();
 
-	// 未触发的房间:任一玩家 Pawn 进入 2D 边界即触发。
+	// 未触发的房间:任一玩家 Pawn 进入 2D 边界即触发(只遍历 PlayerController,追击的敌人不触发别的房)。
 	for (FRoomWave& Room : RoomWaves)
 	{
 		if (!Room.bTriggered && Room.RemainingToSpawn <= 0)
 		{
-			for (FConstControllerIterator It = World->GetControllerIterator(); It; ++It)
+			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 			{
 				const AController* Controller = It->Get();
 				const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
