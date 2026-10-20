@@ -17,6 +17,7 @@
 #include "WeaponGameState.h"
 #include "Online/WeaponHostMigrationSubsystem.h"
 #include "Online/WeaponSnapshotCoordinator.h"
+#include "Online/WeaponSnapshot.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "GridMap/GridMapManager.h"
@@ -1132,12 +1133,17 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 		return;
 	}
 	
-	FTimerHandle& RespawnTimer = RespawnTimers.FindOrAdd(DeadPlayerController);
+	ArmRespawnTimer(DeadPlayerController, RespawnDelay);
+}
+
+void AWeaponGameMode::ArmRespawnTimer(AController* PlayerToRespawn, const float DelaySeconds)
+{
+	FTimerHandle& RespawnTimer = RespawnTimers.FindOrAdd(PlayerToRespawn);
 	
 	// 同一玩家的重复死亡通知不会创建第二个重生 Timer。
 	GetWorldTimerManager().ClearTimer(RespawnTimer);
 	
-	TWeakObjectPtr<AController> WeakController(DeadPlayerController);
+	TWeakObjectPtr<AController> WeakController(PlayerToRespawn);
 	
 	GetWorldTimerManager().SetTimer(
 		RespawnTimer, [this, WeakController]
@@ -1154,14 +1160,14 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 
 			RespawnPlayer(PlayerController);
 		},
-		RespawnDelay,
+		DelaySeconds,
 		false); // 不循环
 
 	// A3:复活倒计时以绝对时间戳复制给 HUD。
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (AWeaponPlayerState* PS = DeadPlayerController->GetPlayerState<AWeaponPlayerState>(); PS && WeaponGameState)
+	if (AWeaponPlayerState* PS = PlayerToRespawn->GetPlayerState<AWeaponPlayerState>(); PS && WeaponGameState)
 	{
-		PS->SetRespawnServerTime(WeaponGameState->GetServerWorldTimeSeconds() + RespawnDelay);
+		PS->SetRespawnServerTime(WeaponGameState->GetServerWorldTimeSeconds() + DelaySeconds);
 	}
 }
 
@@ -1275,12 +1281,12 @@ void AWeaponGameMode::BeginWeaponMatch()
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::InGame);
 }
 
-void AWeaponGameMode::SpawnObjectiveActors()
+void AWeaponGameMode::SpawnObjectiveActors(const bool bForRecovery)
 {
 	UWorld* World = GetWorld();
 	AWeaponGameState* WeaponGameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
 	if (!World || !HasAuthority() || !WeaponGameState || ObjectiveActor || ExtractionActor ||
-		WeaponGameState->IsGameplayRecoveryBlocked())
+		(WeaponGameState->IsGameplayRecoveryBlocked() && !bForRecovery))
 	{
 		return;
 	}
@@ -1548,5 +1554,82 @@ void AWeaponGameMode::RefreshMatchPhase()
 	{
 		GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
 		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
+	}
+}
+
+void AWeaponGameMode::CaptureObjectiveSnapshot(FWeaponObjectiveSnapshot& OutSnapshot) const
+{
+	OutSnapshot = FWeaponObjectiveSnapshot();
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || !ObjectiveActor || !ExtractionActor)
+	{
+		return;
+	}
+
+	const FWeaponObjectiveState& State = WeaponGameState->GetObjectiveState();
+	OutSnapshot.bActorsSpawned = true;
+	OutSnapshot.bObjectiveComplete = State.bObjectiveComplete;
+	OutSnapshot.bExtractionOpen = State.bExtractionOpen;
+	OutSnapshot.ObjectiveChargeProgress = ObjectiveActor->GetChargeProgress();
+	OutSnapshot.ExtractionHoldProgress = ExtractionActor->GetHoldProgress();
+	if (State.bObjectiveComplete && !State.bExtractionOpen)
+	{
+		// 以 Timer 为准(绝对时间戳只是它的复制投影)。
+		const FTimerManager& TimerManager = GetWorldTimerManager();
+		OutSnapshot.ExtractionRemainingSeconds = TimerManager.TimerExists(ExtractionTimer)
+			? FMath::Max(0.0f, TimerManager.GetTimerRemaining(ExtractionTimer))
+			: 0.0f;
+	}
+}
+
+void AWeaponGameMode::RestoreObjectiveSnapshot(const FWeaponObjectiveSnapshot& Snapshot)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || !Snapshot.bActorsSpawned)
+	{
+		return;
+	}
+
+	// Recipe 已在 Apply 前恢复,marker 位置与原世界一致。
+	SpawnObjectiveActors(true);
+	if (!ObjectiveActor || !ExtractionActor)
+	{
+		UE_LOG(LogLetsDeepRock, Warning, TEXT("[A1] Recovery could not respawn objective/extraction actors"));
+		return;
+	}
+	ObjectiveActor->RestoreProgress(Snapshot.ObjectiveChargeProgress, Snapshot.bObjectiveComplete);
+	ExtractionActor->RestoreState(Snapshot.bExtractionOpen, Snapshot.ExtractionHoldProgress);
+
+	FWeaponObjectiveState State;
+	State.bObjectiveComplete = Snapshot.bObjectiveComplete;
+	State.bExtractionOpen = Snapshot.bExtractionOpen;
+	if (Snapshot.bObjectiveComplete && !Snapshot.bExtractionOpen)
+	{
+		const float Remaining = FMath::Max(Snapshot.ExtractionRemainingSeconds, 0.1f);
+		State.ExtractionReadyServerTime = WeaponGameState->GetServerWorldTimeSeconds() + Remaining;
+		GetWorldTimerManager().SetTimer(ExtractionTimer, this, &AWeaponGameMode::OpenExtraction, Remaining, false);
+		// 屏障释放时按暂停中的剩余时间续跑并重新锚定 ExtractionReadyServerTime。
+		if (WeaponGameState->IsGameplayRecoveryBlocked())
+		{
+			GetWorldTimerManager().PauseTimer(ExtractionTimer);
+		}
+	}
+	WeaponGameState->SetObjectiveStateAuthority(State);
+}
+
+void AWeaponGameMode::RestorePendingRespawn(AController* PlayerController, const float DelaySeconds)
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !PlayerController || !WeaponGameState)
+	{
+		return;
+	}
+	ArmRespawnTimer(PlayerController, FMath::Max(DelaySeconds, 0.1f));
+	if (WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		if (FTimerHandle* RespawnTimer = RespawnTimers.Find(PlayerController))
+		{
+			GetWorldTimerManager().PauseTimer(*RespawnTimer);
+		}
 	}
 }

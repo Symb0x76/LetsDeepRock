@@ -15,6 +15,7 @@ class AGridMapExtractionActor;
 class UWeaponWaveDirectorComponent;
 class AWeaponPlayerState;
 class AWeaponProjectile;
+struct FWeaponObjectiveSnapshot;
 enum class EWeaponMatchPhase : uint8;
 
 /**
@@ -57,6 +58,14 @@ public:
 	bool ReleaseGameplayRecoveryBarrier();
 	/** Apply Snapshot phase/deadline without starting the phase timer while the barrier is closed. */
 	void ApplyRecoveredMatchPhase(EWeaponMatchPhase Phase, float RemainingPhaseTime);
+
+	/** Snapshot v10:目标/撤离进度(时间存相对秒数)。 */
+	void CaptureObjectiveSnapshot(FWeaponObjectiveSnapshot& OutSnapshot) const;
+	/** Snapshot v10 恢复:屏障内重建目标/撤离 Actor 与进度;撤离倒计时以暂停 Timer 交给屏障释放续跑。 */
+	void RestoreObjectiveSnapshot(const FWeaponObjectiveSnapshot& Snapshot);
+	/** Snapshot v10 恢复:为无 Pawn 的玩家安排复活;屏障关闭时 Timer 暂停,随释放续跑并重新锚定 HUD 时间戳。 */
+	void RestorePendingRespawn(AController* PlayerController, float DelaySeconds);
+	float GetRespawnDelay() const { return RespawnDelay; }
 
 	/** Intercept PawnLeavingGame when active projectiles still need this Pawn/ASC as source context. */
 	bool PreserveLeavingPlayerAttribution(AWeaponPlayerController* LeavingController);
@@ -147,6 +156,9 @@ protected:
 	/** 重生玩家：销毁旧 Pawn、生成新 Pawn、恢复状态 */
 	void RespawnPlayer(AController* PlayerController);
 
+	/** 设置(或重置)单个玩家的复活 Timer,并写入复制给 HUD 的复活时间戳 */
+	void ArmRespawnTimer(AController* PlayerToRespawn, float DelaySeconds);
+
 private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;
 	int32 FindSmallestUnreservedPlayerSlot() const;
@@ -209,7 +221,7 @@ private:
 	FTimerHandle ExtractionTimer;
 
 	/** InGame 开始时在 marker 处生成目标/撤离 actor */
-	void SpawnObjectiveActors();
+	void SpawnObjectiveActors(bool bForRecovery = false);
 
 	/** 目标倒计时结束:开启撤离区 */
 	void OpenExtraction();

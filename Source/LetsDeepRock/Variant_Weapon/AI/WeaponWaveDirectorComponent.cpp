@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GridMap/GridMapManager.h"
 #include "Variant_Weapon/WeaponGameState.h"
+#include "Online/WeaponSnapshot.h"
 
 UWeaponWaveDirectorComponent::UWeaponWaveDirectorComponent()
 {
@@ -41,6 +42,9 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 	RoomWaves.Reset();
 	EnemySpawnMarkers.Reset();
 	SpawnedEnemies.Reset();
+	CombatRoomCount = 0;
+	bHasDefenseWave = false;
+	DefenseCenter = FVector::ZeroVector;
 
 	// 解析敌人 BP 类;软路径失效(资产改名/未同步)时丢弃该条,不阻塞开局。
 	ResolvedEnemyClasses.Reset();
@@ -90,6 +94,8 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 			Room.SpawnPoints.Add(FVector(Center.X, Center.Y, 0.0f));
 		}
 	}
+
+	CombatRoomCount = RoomWaves.Num();
 
 	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	const UGameDataSubsystem* DataSubsystem =
@@ -150,6 +156,85 @@ void UWeaponWaveDirectorComponent::StartDefenseWave(const FVector& Center)
 	UE_LOG(LogTemp, Log, TEXT("[A2b] Defense wave started: quota=%d SpawnPoints=%d Difficulty=%d"),
 		DefenseWave.RemainingToSpawn, DefenseWave.SpawnPoints.Num(), Difficulty);
 	RoomWaves.Add(MoveTemp(DefenseWave));
+	bHasDefenseWave = true;
+	DefenseCenter = Center;
+}
+
+void UWeaponWaveDirectorComponent::CaptureSnapshotState(FWeaponWaveDirectorSnapshot& OutSnapshot) const
+{
+	OutSnapshot = FWeaponWaveDirectorSnapshot();
+	const UWorld* World = GetWorld();
+	if (!World || RoomWaves.IsEmpty())
+	{
+		return;
+	}
+
+	const double Now = World->GetTimeSeconds();
+	auto ToSnapshot = [Now](const FRoomWave& Room)
+	{
+		FWeaponWaveRoomSnapshot Saved;
+		Saved.bTriggered = Room.bTriggered;
+		Saved.RemainingToSpawn = Room.RemainingToSpawn;
+		Saved.SecondsToNextSpawn = static_cast<float>(FMath::Max(0.0, Room.NextSpawnTime - Now));
+		return Saved;
+	};
+
+	OutSnapshot.bArmed = true;
+	OutSnapshot.Difficulty = Difficulty;
+	for (int32 Index = 0; Index < CombatRoomCount && RoomWaves.IsValidIndex(Index); ++Index)
+	{
+		OutSnapshot.CombatRooms.Add(ToSnapshot(RoomWaves[Index]));
+	}
+	if (bHasDefenseWave && RoomWaves.IsValidIndex(CombatRoomCount))
+	{
+		OutSnapshot.bHasDefenseWave = true;
+		OutSnapshot.DefenseCenter = DefenseCenter;
+		OutSnapshot.DefenseWave = ToSnapshot(RoomWaves[CombatRoomCount]);
+	}
+}
+
+void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager, const FWeaponWaveDirectorSnapshot& Snapshot)
+{
+	UWorld* World = GetWorld();
+	if (!World || !Snapshot.bArmed)
+	{
+		return;
+	}
+
+	SetDifficulty(Snapshot.Difficulty);
+	// 房间边界与刷怪点由 Recipe 决定,恢复世界的 Recipe 与原世界一致,重建后顺序相同。
+	OnMatchStarted(Manager);
+	if (CombatRoomCount != Snapshot.CombatRooms.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[A2] Restored combat room count %d differs from snapshot %d; applying the overlap"),
+			CombatRoomCount, Snapshot.CombatRooms.Num());
+	}
+
+	const double Now = World->GetTimeSeconds();
+	auto Apply = [Now](FRoomWave& Room, const FWeaponWaveRoomSnapshot& Saved)
+	{
+		Room.bTriggered = Saved.bTriggered;
+		Room.RemainingToSpawn = FMath::Max(0, Saved.RemainingToSpawn);
+		Room.NextSpawnTime = Now + FMath::Max(0.0f, Saved.SecondsToNextSpawn);
+	};
+	for (int32 Index = 0; Index < CombatRoomCount && Snapshot.CombatRooms.IsValidIndex(Index); ++Index)
+	{
+		Apply(RoomWaves[Index], Snapshot.CombatRooms[Index]);
+	}
+	if (Snapshot.bHasDefenseWave)
+	{
+		StartDefenseWave(Snapshot.DefenseCenter);
+		if (bHasDefenseWave && RoomWaves.IsValidIndex(CombatRoomCount))
+		{
+			Apply(RoomWaves[CombatRoomCount], Snapshot.DefenseWave);
+		}
+	}
+
+	// 快照恢复出的敌人不是本组件刷出的;接管它们,使 NPC 上限与局末清理照常生效。
+	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
+	{
+		SpawnedEnemies.Add(*It);
+	}
 }
 
 void UWeaponWaveDirectorComponent::ResetWaves(const bool bDestroySpawned)

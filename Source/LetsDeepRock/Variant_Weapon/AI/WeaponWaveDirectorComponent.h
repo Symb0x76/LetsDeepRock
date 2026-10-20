@@ -9,6 +9,7 @@
 class AEnemyCharacter;
 class AGridMapManager;
 struct FSpawnerConfigRow;
+struct FWeaponWaveDirectorSnapshot;
 
 /** 敌人类型条目:配置行(属性)+ BP 类软路径(视觉/AI)+ 刷出权重。 */
 USTRUCT(BlueprintType)
@@ -74,6 +75,12 @@ public:
 	/** 局末:销毁在册敌人并复位(房间触发状态清零) */
 	void ResetWaves(bool bDestroySpawned);
 
+	/** Host Migration 快照:难度、各战斗房与防御波进度(时间存相对秒数) */
+	void CaptureSnapshotState(FWeaponWaveDirectorSnapshot& OutSnapshot) const;
+
+	/** 恢复:按已恢复的 Recipe 重建房间后按下标写回进度,重建防御波,并接管在场敌人(上限/局末清理) */
+	void RestoreSnapshotState(AGridMapManager* Manager, const FWeaponWaveDirectorSnapshot& Snapshot);
+
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
 private:
@@ -105,6 +112,11 @@ private:
 	TArray<TWeakObjectPtr<AEnemyCharacter>> SpawnedEnemies;
 
 	int32 Difficulty = 2;
+
+	/** RoomWaves 中前 CombatRoomCount 个为战斗房(顺序由 Recipe 决定),之后为防御波 */
+	int32 CombatRoomCount = 0;
+	bool bHasDefenseWave = false;
+	FVector DefenseCenter = FVector::ZeroVector;
 
 	/** 解析后的敌人类(与 CombatWaveEntries 同下标;无效为 null) */
 	TArray<TSubclassOf<AEnemyCharacter>> ResolvedEnemyClasses;

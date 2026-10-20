@@ -3,6 +3,7 @@
 #include "AbilitySystemComponent.h"
 #include "AttributeModifierManager.h"
 #include "Attributes/StatusEffectComponent.h"
+#include "AI/WeaponWaveDirectorComponent.h"
 #include "EnemyCharacter.h"
 #include "EngineUtils.h"
 #include "Engine/World.h"
@@ -696,6 +697,16 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(
 	MatchSnapshot.Revision = NextSnapshotRevision++;
 	MatchSnapshot.MatchPhase = GameState->GetMatchPhase();
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
+	MatchSnapshot.MissionSeed = GameState->GetMissionSettings().Seed;
+	MatchSnapshot.MissionDifficulty = GameState->GetMissionSettings().Difficulty;
+	if (const AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>())
+	{
+		GameMode->CaptureObjectiveSnapshot(MatchSnapshot.Objective);
+		if (GameMode->WaveDirector)
+		{
+			GameMode->WaveDirector->CaptureSnapshotState(MatchSnapshot.WaveDirector);
+		}
+	}
 
 	if (!CaptureRecoveryRoster(World, MatchSnapshot, OutError) ||
 		!CapturePlayers(World, MatchSnapshot, OutError) ||
@@ -728,6 +739,25 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 	{
 		OutError = TEXT("Snapshot recovery roster or SaveGame capacity is invalid");
 		return false;
+	}
+
+	if (Snapshot.MissionDifficulty < 1 || Snapshot.MissionDifficulty > 3 || Snapshot.MissionSeed < 0 ||
+		!FMath::IsFinite(Snapshot.Objective.ExtractionRemainingSeconds) || Snapshot.Objective.ExtractionRemainingSeconds < 0.0f ||
+		!FMath::IsFinite(Snapshot.Objective.ObjectiveChargeProgress) || !FMath::IsFinite(Snapshot.Objective.ExtractionHoldProgress) ||
+		(Snapshot.WaveDirector.bArmed &&
+			(Snapshot.WaveDirector.Difficulty < 1 || Snapshot.WaveDirector.Difficulty > 3)))
+	{
+		OutError = TEXT("Snapshot mission, objective or wave director state is invalid");
+		return false;
+	}
+	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
+	{
+		if (Player.bRespawnPending &&
+			(!FMath::IsFinite(Player.RespawnRemainingSeconds) || Player.RespawnRemainingSeconds < 0.0f))
+		{
+			OutError = TEXT("Snapshot player respawn timer is invalid");
+			return false;
+		}
 	}
 
 	return ValidateRecoveryRoster(Snapshot, MaxPlayers, OutError) &&
@@ -1046,6 +1076,13 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 			}
 			Target.ASC->InitAbilityActorInfo(Target.PlayerState, nullptr);
 			RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
+			// v10:InGame 中无 Pawn = 死亡等待复活。恢复世界没有原 Timer,在此重建(屏障内暂停)。
+			if (Snapshot.MatchPhase == EWeaponMatchPhase::InGame && Target.PlayerController)
+			{
+				Context.GameMode->RestorePendingRespawn(
+					Target.PlayerController,
+					Player.bRespawnPending ? Player.RespawnRemainingSeconds : Context.GameMode->GetRespawnDelay());
+			}
 			continue;
 		}
 
@@ -1166,6 +1203,18 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 	}
 
 	Context.GameMode->ApplyRecoveredMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
+
+	// v10:恢复世界不解析 travel options,任务设置以快照为准。
+	FWeaponMissionSettings RestoredMission;
+	RestoredMission.Seed = Snapshot.MissionSeed;
+	RestoredMission.Difficulty = Snapshot.MissionDifficulty;
+	Context.GameState->RestoreMissionSettingsForRecovery(RestoredMission);
+	// GridMap Recipe 与敌人已在前面恢复:目标/撤离 Actor 依赖 marker,导演依赖 Recipe 与在场敌人。
+	Context.GameMode->RestoreObjectiveSnapshot(Snapshot.Objective);
+	if (Context.GameMode->WaveDirector)
+	{
+		Context.GameMode->WaveDirector->RestoreSnapshotState(Context.GridMap, Snapshot.WaveDirector);
+	}
 	ActiveMatchId = Snapshot.MatchId;
 	NextSnapshotRevision = Snapshot.Revision + 1;
 }
@@ -1187,7 +1236,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 	TMap<FUniqueNetIdRepl, AWeaponCharacter*> TombstonePawns;
 	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> TombstonePlayerStates;
 	GameMode->GetAttributionTombstoneActors(TombstonePawns, TombstonePlayerStates);
-	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds](
+	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds, GameState](
 		const AWeaponPlayerState* PlayerState,
 		const AWeaponCharacter* Character) -> bool
 	{
@@ -1208,6 +1257,12 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		Player.SecondaryWeaponId = PlayerState->GetSecondaryWeaponId();
 		Player.AttributeState.Values = CaptureAttributeValues(PlayerState->GetAbilitySystemComponent());
 		CapturedPlayerIds.Add(Player.PlayerId);
+		// v10:死亡等待复活的剩余秒数(RespawnServerTime 为复活 Timer 的复制投影)
+		if (const float RespawnServerTime = PlayerState->GetRespawnServerTime(); RespawnServerTime > 0.0f)
+		{
+			Player.bRespawnPending = true;
+			Player.RespawnRemainingSeconds = FMath::Max(0.0f, RespawnServerTime - GameState->GetServerWorldTimeSeconds());
+		}
 
 		if (!Character)
 		{

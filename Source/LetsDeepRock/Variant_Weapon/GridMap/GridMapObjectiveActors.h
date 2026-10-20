@@ -33,6 +33,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Objective")
 	float GetChargeProgress() const { return ChargeProgress; }
 
+	/** Host Migration 恢复:直接写入进度与完成态,不触发 GameMode 的完成流程 */
+	void RestoreProgress(float InChargeProgress, bool bInComplete);
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -84,6 +87,9 @@ public:
 
 	/** 目标倒计时结束,服务器激活撤离区 */
 	void SetActive();
+
+	/** Host Migration 恢复:撤离区是否已开启与滞留进度 */
+	void RestoreState(bool bInActive, float InHoldProgress);
 
 protected:
 	virtual void BeginPlay() override;

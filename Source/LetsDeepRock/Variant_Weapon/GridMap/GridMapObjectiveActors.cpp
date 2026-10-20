@@ -138,6 +138,17 @@ void AGridMapObjectiveActor::SetComplete()
 	}
 }
 
+void AGridMapObjectiveActor::RestoreProgress(const float InChargeProgress, const bool bInComplete)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	ChargeProgress = FMath::Clamp(InChargeProgress, 0.0f, ChargeSeconds);
+	bComplete = bInComplete;
+	TintMesh(Mesh, bComplete ? FLinearColor::Green : FLinearColor::Yellow);
+}
+
 void AGridMapObjectiveActor::OnRep_Complete()
 {
 	TintMesh(Mesh, bComplete ? FLinearColor::Green : FLinearColor::Yellow);
@@ -186,6 +197,17 @@ void AGridMapExtractionActor::SetActive()
 	}
 	bActive = true;
 	TintMesh(Mesh, FLinearColor::Green);
+}
+
+void AGridMapExtractionActor::RestoreState(const bool bInActive, const float InHoldProgress)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	bActive = bInActive;
+	HoldProgress = FMath::Clamp(InHoldProgress, 0.0f, HoldSeconds);
+	TintMesh(Mesh, bActive ? FLinearColor::Green : FLinearColor::Gray);
 }
 
 void AGridMapExtractionActor::Tick(float DeltaTime)
