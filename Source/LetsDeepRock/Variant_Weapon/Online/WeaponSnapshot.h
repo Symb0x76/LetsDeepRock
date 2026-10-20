@@ -25,7 +25,8 @@ struct FWeaponAttributeState
 	GENERATED_BODY()
 
 	// 所有需要快照的属性值，key 为 GameplayTag（如 "Attr.Health"）
-	// Capture 时遍历 AttributeSet 获取当前值，Restore 时 SetNumericAttributeBase 写入
+	// Capture 时读 Base（GetNumericAttributeBase），Restore 时 SetNumericAttributeBase 写入；
+	// GE 修饰器不在此处，由各自的 GE 快照/重新施加恢复。
 	UPROPERTY(SaveGame)
 	TMap<FGameplayTag, float> Values;
 };

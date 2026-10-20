@@ -1611,7 +1611,8 @@ TMap<FGameplayTag, float> UWeaponSnapshotCoordinator::CaptureAttributeValues(
 	{
 		if (ASC->HasAttributeSetForAttribute(Attribute))
 		{
-			Result.Add(Tag, ASC->GetNumericAttribute(Attribute));
+			// 读 Base 与 Restore 写 Base 对称:Current 含 GE 修饰器(增益/叠层),写回 Base 会把修饰器重复计入。
+			Result.Add(Tag, ASC->GetNumericAttributeBase(Attribute));
 		}
 	}
 	return Result;
