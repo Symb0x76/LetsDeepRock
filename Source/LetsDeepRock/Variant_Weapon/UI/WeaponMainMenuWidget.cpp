@@ -356,6 +356,7 @@ void UWeaponMainMenuWidget::BuildRightPanel(UCanvasPanel* DesignCanvas)
 		TEXT("画质、音频与操作设置正在制作中。")));           // 2
 	PanelSwitcher->AddChild(BuildComingSoonPage(
 		TEXT("敌人、矿物与装备资料将在这里展开。")));         // 3
+	BuildMissionPage();                                     // 4
 
 	PanelSwitcher->SetActiveWidgetIndex(IdlePageIndex);
 }
@@ -636,7 +637,142 @@ void UWeaponMainMenuWidget::ShowPanelPage(int32 PageIndex, const FString& Title)
 
 void UWeaponMainMenuWidget::HandleSinglePlayerClicked()
 {
-	UGameplayStatics::OpenLevel(this, FName(WeaponMainMenuStyle::GameplayLevelPath));
+	// A0：单人先进入任务设置页（种子/难度），不再直连固定地图。
+	ShowPanelPage(MissionPageIndex, TEXT("任务设置"));
+}
+
+void UWeaponMainMenuWidget::BuildMissionPage()
+{
+	using namespace WeaponMainMenuStyle;
+
+	UVerticalBox* Page = WidgetTree->ConstructWidget<UVerticalBox>();
+	PanelSwitcher->AddChild(Page);
+
+	UVerticalBoxSlot* MapLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("地图"), TEXT("Bold"), 17.f, Amber, 120));
+	MapLabelSlot->SetPadding(FMargin(0.f, 24.f, 0.f, 10.f));
+
+	UVerticalBoxSlot* MapValueSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("GRIDMAP · 程序化房间图（白盒固定）"), TEXT("Regular"), 16.f, TextSecondary));
+	MapValueSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 18.f));
+
+	// ---- 种子 ----
+	UVerticalBoxSlot* SeedLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("种子"), TEXT("Bold"), 17.f, Amber, 120));
+	SeedLabelSlot->SetPadding(FMargin(0.f, 8.f, 0.f, 10.f));
+
+	UHorizontalBox* SeedRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* SeedRowSlot = Page->AddChildToVerticalBox(SeedRow);
+	SeedRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	MissionSeedInput = WidgetTree->ConstructWidget<UEditableTextBox>();
+	FEditableTextBoxStyle SeedInputStyle =
+		FCoreStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>(TEXT("NormalEditableTextBox"));
+	SeedInputStyle.SetFont(FCoreStyle::GetDefaultFontStyle(TEXT("Regular"), 16.f));
+	SeedInputStyle.SetForegroundColor(FSlateColor(TextPrimary));
+	SeedInputStyle.SetBackgroundColor(FSlateColor(PanelInner));
+	MissionSeedInput->SetWidgetStyle(SeedInputStyle);
+	MissionSeedInput->SetHintText(FText::FromString(TEXT("留空 = 默认种子；数字可复现同一张图")));
+	MissionSeedInput->SetMinDesiredWidth(320.f);
+	MissionSeedInput->SetSelectAllTextWhenFocused(true);
+	UHorizontalBoxSlot* SeedInputSlot = SeedRow->AddChildToHorizontalBox(MissionSeedInput);
+	SeedInputSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+	SeedInputSlot->SetVerticalAlignment(VAlign_Fill);
+
+	UButton* RandomSeedButton = MakeActionButton(TEXT("随机"), false);
+	RandomSeedButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleMissionRandomSeedClicked);
+	UHorizontalBoxSlot* RandomSeedSlot = SeedRow->AddChildToHorizontalBox(RandomSeedButton);
+	RandomSeedSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+	RandomSeedSlot->SetVerticalAlignment(VAlign_Fill);
+
+	// ---- 难度 ----
+	UVerticalBoxSlot* DifficultyLabelSlot = Page->AddChildToVerticalBox(
+		MakeText(TEXT("难度"), TEXT("Bold"), 17.f, Amber, 120));
+	DifficultyLabelSlot->SetPadding(FMargin(0.f, 26.f, 0.f, 10.f));
+
+	UHorizontalBox* DifficultyRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* DifficultyRowSlot = Page->AddChildToVerticalBox(DifficultyRow);
+	DifficultyRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	UButton* LowButton = MakeActionButton(TEXT("低危"), false);
+	LowButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleMissionDifficultyLowClicked);
+	DifficultyRow->AddChildToHorizontalBox(LowButton);
+
+	UButton* NormalButton = MakeActionButton(TEXT("常规"), false);
+	NormalButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleMissionDifficultyNormalClicked);
+	UHorizontalBoxSlot* NormalSlot = DifficultyRow->AddChildToHorizontalBox(NormalButton);
+	NormalSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+
+	UButton* HighButton = MakeActionButton(TEXT("高危"), false);
+	HighButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleMissionDifficultyHighClicked);
+	UHorizontalBoxSlot* HighSlot = DifficultyRow->AddChildToHorizontalBox(HighButton);
+	HighSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+
+	MissionDifficultyText = MakeText(TEXT("当前难度：常规"), TEXT("Regular"), 16.f, TextSecondary);
+	UVerticalBoxSlot* DifficultyTextSlot = Page->AddChildToVerticalBox(MissionDifficultyText);
+	DifficultyTextSlot->SetPadding(FMargin(0.f, 14.f, 0.f, 0.f));
+
+	// ---- 开始 ----
+	UHorizontalBox* StartRow = WidgetTree->ConstructWidget<UHorizontalBox>();
+	UVerticalBoxSlot* StartRowSlot = Page->AddChildToVerticalBox(StartRow);
+	StartRowSlot->SetPadding(FMargin(0.f, 30.f, 0.f, 0.f));
+	StartRowSlot->SetHorizontalAlignment(HAlign_Fill);
+
+	UButton* StartButton = MakeActionButton(TEXT("开始任务"), true);
+	StartButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleMissionStartClicked);
+	StartRow->AddChildToHorizontalBox(StartButton);
+
+	UButton* BackButton = MakeActionButton(TEXT("返回"), false);
+	BackButton->OnClicked.AddDynamic(this, &UWeaponMainMenuWidget::HandleBackClicked);
+	UHorizontalBoxSlot* BackSlot = StartRow->AddChildToHorizontalBox(BackButton);
+	BackSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+}
+
+void UWeaponMainMenuWidget::SetSelectedMissionDifficulty(const int32 Difficulty)
+{
+	SelectedMissionDifficulty = FMath::Clamp(Difficulty, 1, 3);
+	if (MissionDifficultyText)
+	{
+		const TCHAR* Names[] = { TEXT("低危"), TEXT("常规"), TEXT("高危") };
+		MissionDifficultyText->SetText(FText::FromString(FString::Printf(
+			TEXT("当前难度：%s"), Names[SelectedMissionDifficulty - 1])));
+	}
+}
+
+void UWeaponMainMenuWidget::HandleMissionRandomSeedClicked()
+{
+	if (MissionSeedInput)
+	{
+		MissionSeedInput->SetText(FText::AsNumber(FMath::RandRange(1, 999999)));
+	}
+}
+
+void UWeaponMainMenuWidget::HandleMissionDifficultyLowClicked()
+{
+	SetSelectedMissionDifficulty(1);
+}
+
+void UWeaponMainMenuWidget::HandleMissionDifficultyNormalClicked()
+{
+	SetSelectedMissionDifficulty(2);
+}
+
+void UWeaponMainMenuWidget::HandleMissionDifficultyHighClicked()
+{
+	SetSelectedMissionDifficulty(3);
+}
+
+void UWeaponMainMenuWidget::HandleMissionStartClicked()
+{
+	int32 Seed = 0;
+	if (MissionSeedInput)
+	{
+		Seed = FMath::Max(FCString::Atoi(*MissionSeedInput->GetText().ToString()), 0);
+	}
+	const FString Options = FString::Printf(
+		TEXT("?Seed=%d?Difficulty=%d"), Seed, FMath::Clamp(SelectedMissionDifficulty, 1, 3));
+	// 与多人大厅一致进入程序化 GridMap（种子在这里被 GridMapManager 消费）。
+	UGameplayStatics::OpenLevel(this, FName(TEXT("/Game/GridMap/Maps/L_GridMapStage4Test")), true, Options);
 }
 
 void UWeaponMainMenuWidget::HandleMultiplayerClicked()

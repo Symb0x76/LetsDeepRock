@@ -303,6 +303,37 @@ private:
 	UPROPERTY()
 	TObjectPtr<UTextBlock> DockModeText = nullptr;
 
+
+	// ---- 任务终端页（A0：种子/难度，房主可改）----
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> MissionSeedValueText = nullptr;
+
+	UPROPERTY()
+	TObjectPtr<UTextBlock> MissionDifficultyValueText = nullptr;
+
+	/** 房主操作行（随机种子 + 三档难度）；非房主折叠 */
+	/** 房主专用"随机"按钮；非房主隐藏 */
+	UPROPERTY()
+	TObjectPtr<UButton> MissionRandomSeedButton = nullptr;
+
+	/** 房主专用三档难度按钮行；非房主折叠 */
+	UPROPERTY()
+	TObjectPtr<UPanelWidget> MissionHostControls = nullptr;
+
+	UFUNCTION()
+	void HandleMissionLobbyRandomSeedClicked();
+
+	UFUNCTION()
+	void HandleMissionLobbyDifficultyLowClicked();
+
+	UFUNCTION()
+	void HandleMissionLobbyDifficultyNormalClicked();
+
+	UFUNCTION()
+	void HandleMissionLobbyDifficultyHighClicked();
+
+	void RequestMissionSettings(int32 Seed, int32 Difficulty);
 	/** 全屏面板顶栏下方的联机信息行（模式 / 角色 / 房间号 / 端口） */
 	UPROPERTY()
 	TObjectPtr<UVerticalBox> SessionInfoBox = nullptr;

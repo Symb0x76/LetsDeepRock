@@ -159,6 +159,9 @@ private:
 	/** 右侧页面 0：未设计占位 */
 	void BuildIdlePage();
 
+
+	/** 右侧页面 4：单人任务设置（种子/难度，A0） */
+	void BuildMissionPage();
 	/** 右侧页面 1：组队 */
 	void BuildTeamPage();
 
@@ -188,6 +191,21 @@ private:
 
 	UFUNCTION()
 	void HandleMultiplayerClicked();
+
+	UFUNCTION()
+	void HandleMissionRandomSeedClicked();
+
+	UFUNCTION()
+	void HandleMissionDifficultyLowClicked();
+
+	UFUNCTION()
+	void HandleMissionDifficultyNormalClicked();
+
+	UFUNCTION()
+	void HandleMissionDifficultyHighClicked();
+
+	UFUNCTION()
+	void HandleMissionStartClicked();
 
 	UFUNCTION()
 	void HandleOptionsClicked();
@@ -325,4 +343,17 @@ private:
 	static constexpr int32 TeamPageIndex = 1;
 	static constexpr int32 OptionsPageIndex = 2;
 	static constexpr int32 CodexPageIndex = 3;
+	static constexpr int32 MissionPageIndex = 4;
+
+	// ---- 任务设置页（A0）----
+
+	/** 种子输入框（空 = 默认种子） */
+	UEditableTextBox* MissionSeedInput = nullptr;
+
+	/** 当前难度选择展示（1 低危 / 2 常规 / 3 高危） */
+	UTextBlock* MissionDifficultyText = nullptr;
+
+	int32 SelectedMissionDifficulty = 2;
+
+	void SetSelectedMissionDifficulty(int32 Difficulty);
 };
