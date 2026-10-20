@@ -1223,6 +1223,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 
 	const int32 MaxPlayers = WeaponGameState ? WeaponGameState->GetMaxPlayers() : RosterSlotCount;
 	const int32 ConnectedCount = WeaponGameState ? WeaponGameState->GetConnectedPlayerCount() : 1;
+	// Standalone 单人：不呈现"等待其他矿工接入"的多人观感。
+	const bool bStandalone = World && World->GetNetMode() == NM_Standalone;
 
 	const APlayerState* LocalPlayerState = GetOwningPlayerState();
 	const bool bLocalReady = IsLocalPlayerReady();
@@ -1230,7 +1232,8 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	// ---- 小窗 ----
 	if (DockCountText)
 	{
-		DockCountText->SetText(FText::FromString(FString::Printf(TEXT("%d/%d"), ConnectedCount, MaxPlayers)));
+		DockCountText->SetText(FText::FromString(bStandalone ?
+			TEXT("1/1") : FString::Printf(TEXT("%d/%d"), ConnectedCount, MaxPlayers)));
 	}
 	if (DockStatusText)
 	{
@@ -1245,12 +1248,17 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 	// ---- 顶栏 ----
 	if (HeaderCountText)
 	{
-		HeaderCountText->SetText(
-			FText::FromString(FString::Printf(TEXT("小队 %d/%d"), ConnectedCount, MaxPlayers)));
+		HeaderCountText->SetText(FText::FromString(bStandalone ?
+			TEXT("单人任务") : FString::Printf(TEXT("小队 %d/%d"), ConnectedCount, MaxPlayers)));
 	}
 	if (HeaderPhaseText)
 	{
-		HeaderPhaseText->SetText(FText::FromString(IsLocalHost() ? TEXT("房主 · 待命中") : TEXT("队员 · 待命中")));
+		HeaderPhaseText->SetText(FText::FromString(bStandalone ? TEXT("单人 · 待命中") :
+			(IsLocalHost() ? TEXT("房主 · 待命中") : TEXT("队员 · 待命中"))));
+	}
+	if (DockModeText)
+	{
+		DockModeText->SetText(FText::FromString(bStandalone ? TEXT("SOLO RUN") : TEXT("LOCAL P2P")));
 	}
 
 	// ---- 名单：按服务端分配的 SlotIndex 排布（槽位 0..MaxPlayers-1 对应行）----
