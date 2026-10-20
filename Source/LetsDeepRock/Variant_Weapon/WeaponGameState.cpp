@@ -108,6 +108,7 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 {
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponGameState, MaxPlayers);
+	DOREPLIFETIME(AWeaponGameState, MatchState);
 	DOREPLIFETIME(AWeaponGameState, MissionSettings);
 	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 }
