@@ -91,8 +91,18 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 		}
 	}
 
+	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
+	const UGameDataSubsystem* DataSubsystem =
+		GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
+	if (!DataSubsystem || !DataSubsystem->GetSpawnerConfig(DifficultySpawnerRows[Difficulty - 1]))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("[A2] Spawner row '%s' not found (DT_SpawnerConfig missing?); using built-in tier %d defaults"),
+			*DifficultySpawnerRows[Difficulty - 1].ToString(), Difficulty);
+	}
+
 	UE_LOG(LogTemp, Log,
-		TEXT("[A2] Wave director armed: CombatRooms=%d EnemyMarkers=%d ResolvedClasses=%d Difficulty=%d"),
+		TEXT("[A2] Wave director armed:CombatRooms=%d EnemyMarkers=%d ResolvedClasses=%d Difficulty=%d"),
 		RoomWaves.Num(), EnemySpawnMarkers.Num(),
 		static_cast<int32>(ResolvedEnemyClasses.Num()), Difficulty);
 }
@@ -207,7 +217,29 @@ const FSpawnerConfigRow* UWeaponWaveDirectorComponent::GetSpawnerRow() const
 	const UGameInstance* GameInstance = GetWorld() ? GetWorld()->GetGameInstance() : nullptr;
 	const UGameDataSubsystem* DataSubsystem =
 		GameInstance ? GameInstance->GetSubsystem<UGameDataSubsystem>() : nullptr;
-	return DataSubsystem ? DataSubsystem->GetSpawnerConfig(DifficultySpawnerRows[Difficulty - 1]) : nullptr;
+	if (const FSpawnerConfigRow* Row =
+		DataSubsystem ? DataSubsystem->GetSpawnerConfig(DifficultySpawnerRows[Difficulty - 1]) : nullptr)
+	{
+		return Row;
+	}
+
+	// DT_SpawnerConfig(Content/P4)缺失或缺行时退回内置三档,保证白盒仍有波次;配表到位后自动以表为准。
+	static const TArray<FSpawnerConfigRow> FallbackRows = []
+	{
+		const int32 GroupSizes[3] = { 3, 5, 8 };
+		const int32 NPCCaps[3] = { 10, 16, 24 };
+		const float GroupDelays[3] = { 6.0f, 5.0f, 4.0f };
+		TArray<FSpawnerConfigRow> Rows;
+		Rows.SetNum(3);
+		for (int32 Index = 0; Index < 3; ++Index)
+		{
+			Rows[Index].SpawnGroupSize = GroupSizes[Index];
+			Rows[Index].NPCCap = NPCCaps[Index];
+			Rows[Index].SpawnGroupDelay = GroupDelays[Index];
+		}
+		return Rows;
+	}();
+	return &FallbackRows[FMath::Clamp(Difficulty, 1, 3) - 1];
 }
 
 void UWeaponWaveDirectorComponent::TriggerRoom(FRoomWave& Room)

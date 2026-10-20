@@ -387,6 +387,12 @@ void AWeaponCharacter::Tick(float DeltaTime)
 		return;
 	}
 
+	// G 键快速投掷没有 Enhanced Input 的 Triggered 事件,按住期间在 Tick 里刷新预览。
+	if (bQuickGrenadeHeld)
+	{
+		ThrowGrenadeTriggered(FInputActionValue());
+	}
+
 	// Recovery blocking is server-owned, so the client-side Character does not run
 	// SetGameplayRecoveryBlocked(). A newly replicated Pawn can consequently remain
 	// at MOVE_None until the first unrelated movement update (often a fire RPC).
@@ -690,6 +696,8 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	PlayerInputComponent->BindKey(EKeys::Two, IE_Pressed, this, &AWeaponCharacter::SelectSecondary);
 	PlayerInputComponent->BindKey(EKeys::Three, IE_Pressed, this, &AWeaponCharacter::SelectSkill);
 	PlayerInputComponent->BindKey(EKeys::Four, IE_Pressed, this, &AWeaponCharacter::SelectTool);
+	PlayerInputComponent->BindKey(EKeys::G, IE_Pressed, this, &AWeaponCharacter::QuickThrowGrenadePressed);
+	PlayerInputComponent->BindKey(EKeys::G, IE_Released, this, &AWeaponCharacter::QuickThrowGrenadeReleased);
 	PlayerInputComponent->BindKey(EKeys::R, IE_Pressed, this, &AWeaponCharacter::ReloadWeapon);
 	PlayerInputComponent->BindKey(EKeys::B, IE_Pressed, this, &AWeaponCharacter::CycleFireMode);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AWeaponCharacter::RawFirePressed);
@@ -1349,6 +1357,32 @@ void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
 			AbilitySystemComponent->TryActivateAbilityByClass(GrenadeAbilityClass);
 		}
 	}
+}
+
+void AWeaponCharacter::QuickThrowGrenadePressed()
+{
+	// 3 号槽 + 左键的投掷进行中时不再叠一次快速投掷;无手雷职业直接忽略(服务器仍会再校验)。
+	if (IsDead() || !bHasSkillItem || ActiveFireInputSlot == 2 || bQuickGrenadeHeld)
+	{
+		return;
+	}
+	bQuickGrenadeHeld = true;
+	ThrowGrenadeStarted(FInputActionValue());
+}
+
+void AWeaponCharacter::QuickThrowGrenadeReleased()
+{
+	if (!bQuickGrenadeHeld)
+	{
+		return;
+	}
+	bQuickGrenadeHeld = false;
+	if (IsDead())
+	{
+		ThrowGrenadeCanceled(FInputActionValue());
+		return;
+	}
+	ThrowGrenadeCompleted(FInputActionValue());
 }
 
 void AWeaponCharacter::ThrowGrenadeCanceled(const FInputActionValue& Value)

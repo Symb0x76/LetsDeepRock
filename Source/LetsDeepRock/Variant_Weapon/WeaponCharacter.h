@@ -252,6 +252,10 @@ protected:
 	void ThrowGrenadeCompleted(const FInputActionValue& Value);
 	void ThrowGrenadeCanceled(const FInputActionValue& Value);
 
+	/** G 键快速投掷:按下开始预览,松开投掷;与"3 号槽 + 左键"并存,不切换当前装备槽 */
+	void QuickThrowGrenadePressed();
+	void QuickThrowGrenadeReleased();
+
 	// === 手雷预览（仅本地控制 Pawn 执行） ===
 
 	/** 获取鼠标地面位置（通过 Visibility 通道射线检测），返回是否命中地面 */
@@ -297,6 +301,9 @@ protected:
 
 	/** 是否正在预览（按住 G 键期间） */
 	bool bIsPreviewingGrenade = false;
+
+	/** G 键快速投掷按住中(Tick 内持续刷新预览) */
+	bool bQuickGrenadeHeld = false;
 
 	/** 最近一次预览解算使用的目标点，Completed 时沿同一路径投掷 */
 	mutable FVector PreviewGrenadeTarget = FVector::ZeroVector;

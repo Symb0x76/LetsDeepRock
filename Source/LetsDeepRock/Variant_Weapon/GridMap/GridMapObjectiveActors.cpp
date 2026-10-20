@@ -162,13 +162,12 @@ AGridMapExtractionActor::AGridMapExtractionActor()
 		Mesh->SetStaticMesh(CylinderMesh.Object);
 	}
 	Mesh->SetWorldScale3D(FVector(2.0f, 2.0f, 0.2f));
-	SetActorHiddenInGame(true);
 }
 
 void AGridMapExtractionActor::BeginPlay()
 {
 	Super::BeginPlay();
-	SetActorHiddenInGame(!bActive);
+	// 撤离区从开局就可见(灰色=未开启),玩家能提前知道撤离点;开启后变绿。
 	SetActorEnableCollision(false);
 	TintMesh(Mesh, bActive ? FLinearColor::Green : FLinearColor::Gray);
 }
@@ -186,7 +185,6 @@ void AGridMapExtractionActor::SetActive()
 		return;
 	}
 	bActive = true;
-	SetActorHiddenInGame(false);
 	TintMesh(Mesh, FLinearColor::Green);
 }
 
@@ -223,6 +221,5 @@ void AGridMapExtractionActor::Tick(float DeltaTime)
 
 void AGridMapExtractionActor::OnRep_Active()
 {
-	SetActorHiddenInGame(!bActive);
 	TintMesh(Mesh, bActive ? FLinearColor::Green : FLinearColor::Gray);
 }
