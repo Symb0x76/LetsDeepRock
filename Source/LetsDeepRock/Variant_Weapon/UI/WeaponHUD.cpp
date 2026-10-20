@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponHUD.h"
+#include "AbilitySystemComponent.h"
 #include "Attributes/WeaponHealthSet.h"
 #include "WeaponGameState.h"
 #include "Data/GameDataSubsystem.h"
@@ -54,8 +55,109 @@ void AWeaponHUD::DrawHUD()
 		DrawLastDamageDetails();
 		DrawAmmoPanel();
 	}
+	else
+	{
+		DrawEnemyOverheadBars();
+	}
 	DrawChargeFireBar(bDebugUIEnabled);
 	DrawObjectiveStatus();
+}
+
+void AWeaponHUD::DrawEnemyOverheadBars()
+{
+	const APawn* OwningPawn = GetOwningPawn();
+	if (!OwningPawn || !PlayerOwner)
+	{
+		return;
+	}
+
+	struct FStatusIcon
+	{
+		FGameplayTag Tag;
+		const TCHAR* Label;
+		FLinearColor Color;
+	};
+	// 状态标签在 DefaultGameplayTags.ini 里注册;缺失时 RequestGameplayTag(…, false) 返回无效标签并被跳过。
+	static const FStatusIcon StatusIcons[] =
+	{
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Burning"), false), TEXT("B"), FLinearColor(1.0f, 0.4f, 0.05f) },
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Frozen"), false), TEXT("F"), FLinearColor(0.45f, 0.8f, 1.0f) },
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Shocked"), false), TEXT("S"), FLinearColor(1.0f, 0.95f, 0.3f) },
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Corroded"), false), TEXT("C"), FLinearColor(0.45f, 0.85f, 0.2f) },
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Vulnerable"), false), TEXT("V"), FLinearColor(0.85f, 0.35f, 1.0f) },
+		{ FGameplayTag::RequestGameplayTag(TEXT("Status.Bleeding"), false), TEXT("X"), FLinearColor(0.75f, 0.05f, 0.1f) },
+	};
+	constexpr float MaxDrawDistance = 2500.0f;
+	constexpr float BarWidth = 64.0f;
+	constexpr float IconSize = 11.0f;
+	const FLinearColor Backdrop(0.03f, 0.03f, 0.03f, 0.8f);
+
+	UFont* Font = GEngine->GetTinyFont();
+	for (TActorIterator<AEnemyCharacter> It(GetWorld()); It; ++It)
+	{
+		const AEnemyCharacter* NPC = *It;
+		if (NPC->IsHidden() ||
+			FVector::DistSquared(OwningPawn->GetActorLocation(), NPC->GetActorLocation()) > FMath::Square(MaxDrawDistance))
+		{
+			continue;
+		}
+		const UWeaponHealthSet* HealthSet = NPC->GetHealthSet();
+		if (!HealthSet || HealthSet->GetHealth() <= 0.0f)
+		{
+			continue;
+		}
+
+		const float Health = HealthSet->GetHealth();
+		const float MaxHealth = HealthSet->GetMaxHealth();
+		const float Shield = HealthSet->GetShield();
+		const float MaxShield = HealthSet->GetMaxShield();
+		const UAbilitySystemComponent* ASC = NPC->GetAbilitySystemComponent();
+
+		TArray<const FStatusIcon*, TInlineAllocator<6>> ActiveIcons;
+		for (const FStatusIcon& Icon : StatusIcons)
+		{
+			if (Icon.Tag.IsValid() && ASC && ASC->HasMatchingGameplayTag(Icon.Tag))
+			{
+				ActiveIcons.Add(&Icon);
+			}
+		}
+		const bool bDamaged = Health < MaxHealth || (MaxShield > 0.0f && Shield < MaxShield);
+		if (!bDamaged && ActiveIcons.IsEmpty())
+		{
+			continue;
+		}
+
+		FVector2D Screen;
+		const FVector HeadLocation = NPC->GetActorLocation() + FVector(0.0f, 0.0f, NPC->GetSimpleCollisionHalfHeight() + 30.0f);
+		if (!PlayerOwner->ProjectWorldLocationToScreen(HeadLocation, Screen, true) ||
+			Screen.X < 0.0f || Screen.Y < 0.0f || Screen.X > Canvas->ClipX || Screen.Y > Canvas->ClipY)
+		{
+			continue;
+		}
+
+		const float BarX = Screen.X - BarWidth * 0.5f;
+		float Y = Screen.Y;
+		if (MaxShield > 0.0f)
+		{
+			DrawRect(Backdrop, BarX - 1.0f, Y - 1.0f, BarWidth + 2.0f, 5.0f);
+			DrawRect(FLinearColor(0.1f, 0.55f, 1.0f), BarX, Y, BarWidth * FMath::Clamp(Shield / MaxShield, 0.0f, 1.0f), 3.0f);
+			Y += 5.0f;
+		}
+		DrawRect(Backdrop, BarX - 1.0f, Y - 1.0f, BarWidth + 2.0f, 7.0f);
+		DrawRect(FLinearColor(0.85f, 0.1f, 0.06f), BarX, Y,
+			BarWidth * FMath::Clamp(MaxHealth > 0.0f ? Health / MaxHealth : 0.0f, 0.0f, 1.0f), 5.0f);
+
+		// 状态图标排在血条上方,居中。
+		const float IconsWidth = ActiveIcons.Num() * (IconSize + 2.0f) - 2.0f;
+		float IconX = Screen.X - IconsWidth * 0.5f;
+		const float IconY = Screen.Y - IconSize - 4.0f;
+		for (const FStatusIcon* Icon : ActiveIcons)
+		{
+			DrawRect(Icon->Color, IconX, IconY, IconSize, IconSize);
+			WeaponHUDPrivate::DrawLine(Canvas, Font, Icon->Label, IconX + IconSize * 0.5f, IconY - 1.0f, FLinearColor::Black, true);
+			IconX += IconSize + 2.0f;
+		}
+	}
 }
 
 void AWeaponHUD::AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event)
