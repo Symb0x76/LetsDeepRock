@@ -105,6 +105,16 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	Player.Rotation = FRotator(0.0, 30.0, 0.0);
 	Player.Velocity = FVector(10.0, 20.0, 0.0);
 	Player.CharacterConfigRowName = TEXT("Default");
+	// A pawned player must carry a complete profession loadout (ValidatePlayers, since 0f052be).
+	Player.ProfessionId = TEXT("Ranger");
+	Player.PrimaryWeaponId = TEXT("Ranger_ArcaneCrossbow");
+	Player.SecondaryWeaponId = TEXT("Ranger_SawedOffShotgun");
+	// CurrentWeaponIndex = 0 must index a real inventory entry with matching ammo state.
+	Player.WeaponInventory.Add(FSoftObjectPath(
+		TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_ArcaneCrossbow.DA_Ranger_ArcaneCrossbow")));
+	FWeaponAmmoSnapshot& Ammo = Player.WeaponAmmoStates.AddDefaulted_GetRef();
+	Ammo.MagazineAmmo = 30;
+	Ammo.ReserveAmmo = 120;
 	Player.CurrentWeaponIndex = 0;
 	Player.AttributeState.Values.Add(AttributeTag, 100.0f);
 
