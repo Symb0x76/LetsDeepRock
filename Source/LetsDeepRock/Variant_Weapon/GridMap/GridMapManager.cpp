@@ -67,6 +67,16 @@ void AGridMapManager::BeginPlay()
 
 	if (HasAuthority() && bAutoGenerateOnBeginPlay)
 	{
+		// 任务种子接管：travel options（单人任务页 / 大厅房主设置）写入 GameState，
+		// 此处在生成前覆写 RequestedSeed；0 = 沿用资产内默认。
+		if (const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr)
+		{
+			const int32 MissionSeed = WeaponGameState->GetMissionSettings().Seed;
+			if (MissionSeed != 0)
+			{
+				RequestedSeed = MissionSeed;
+			}
+		}
 		GenerateMap();
 	}
 	else if (!HasAuthority() && BaselineState.bGenerated)

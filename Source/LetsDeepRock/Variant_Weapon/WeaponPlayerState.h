@@ -133,6 +133,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Player")
 	void RequestSetPlayerReady(bool bNewIsReady);
 
+	/** 房主提交任务设置（种子/难度）；仅 Listen Host / Standalone 生效（A0）。 */
+	UFUNCTION(BlueprintCallable, Category = "Player")
+	void RequestSetMissionSettings(int32 Seed, int32 Difficulty);
+
 	UPROPERTY(BlueprintAssignable, Category = "Player")
 	FOnWeaponPlayerLobbyStateChanged OnLobbyStateChanged;
 	
@@ -142,6 +146,12 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerSetPlayerReady(bool bNewIsReady);
 
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetMissionSettings(int32 Seed, int32 Difficulty);
+
+	void ApplyMissionSettingsRequest(int32 Seed, int32 Difficulty);
+	
 	void ApplyPlayerReadyRequest(bool bNewIsReady);
 
 	UPROPERTY(Replicated, EditAnywhere, BlueprintReadOnly, Category = "Vision")

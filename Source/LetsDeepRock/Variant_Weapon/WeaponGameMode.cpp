@@ -49,17 +49,30 @@ void AWeaponGameMode::InitGame(
 	FString& ErrorMessage)
 {
 	bRecoveryWorldRequested = UGameplayStatics::HasOption(Options, TEXT("WeaponRecovery"));
+	if (!bRecoveryWorldRequested)
+	{
+		// 任务参数（A0）：单人任务页 / 大厅房主设置随 travel options 带入。
+		// Seed=0 表示未指定（沿用资产默认）；难度白盒三档。
+		ParsedMissionSettings.Seed = UGameplayStatics::GetIntOption(Options, TEXT("Seed"), 0);
+		ParsedMissionSettings.Difficulty = FMath::Clamp(
+			UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), 1), 1, 3);
+	}
 	Super::InitGame(MapName, Options, ErrorMessage);
 }
 
 void AWeaponGameMode::InitGameState()
 {
 	Super::InitGameState();
+	if (AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr)
+	{
+		WeaponGameState->SetMissionSettingsAuthority(ParsedMissionSettings);
+	}
 	if (bRecoveryWorldRequested && !EnterGameplayRecoveryBarrier())
 	{
 		UE_LOG(LogLetsDeepRock, Fatal, TEXT("Recovery World could not enter its gameplay barrier during InitGameState"));
 	}
 }
+
 
 bool AWeaponGameMode::RefreshHostMigrationRoles(FString& OutError)
 {
@@ -1192,7 +1205,12 @@ bool AWeaponGameMode::TryStartLobbyTravel()
 	}
 
 	bLobbyTravelRequested = true;
-	if (World->ServerTravel(TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen")))
+	// A0：任务设置随 travel options 带入 GridMap（房主在大厅任务终端设置）。
+	const FWeaponMissionSettings& Mission = WeaponGameState->GetMissionSettings();
+	const FString TravelURL = FString::Printf(
+		TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen?Seed=%d?Difficulty=%d"),
+		Mission.Seed, Mission.Difficulty);
+	if (World->ServerTravel(TravelURL))
 	{
 		return true;
 	}
