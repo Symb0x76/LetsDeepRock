@@ -128,6 +128,16 @@ void AWeaponGameState::SetObjectiveStateAuthority(const FWeaponObjectiveState& N
 	ObjectiveState = NewState;
 }
 
+void AWeaponGameState::RestoreMissionSettingsForRecovery(const FWeaponMissionSettings& RestoredSettings)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	MissionSettings.Seed = FMath::Max(RestoredSettings.Seed, 0);
+	MissionSettings.Difficulty = FMath::Clamp(RestoredSettings.Difficulty, 1, 3);
+}
+
 bool AWeaponGameState::SetMissionSettingsAuthority(const FWeaponMissionSettings& NewSettings)
 {
 	if (!HasAuthority() || IsGameplayRecoveryBlocked() ||

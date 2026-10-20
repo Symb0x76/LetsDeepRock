@@ -105,6 +105,16 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	Player.Rotation = FRotator(0.0, 30.0, 0.0);
 	Player.Velocity = FVector(10.0, 20.0, 0.0);
 	Player.CharacterConfigRowName = TEXT("Default");
+	// A pawned player must carry a complete profession loadout (ValidatePlayers, since 0f052be).
+	Player.ProfessionId = TEXT("Ranger");
+	Player.PrimaryWeaponId = TEXT("Ranger_ArcaneCrossbow");
+	Player.SecondaryWeaponId = TEXT("Ranger_SawedOffShotgun");
+	// CurrentWeaponIndex = 0 must index a real inventory entry with matching ammo state.
+	Player.WeaponInventory.Add(FSoftObjectPath(
+		TEXT("/Game/Variant_Weapon/Weapons/DA_Ranger_ArcaneCrossbow.DA_Ranger_ArcaneCrossbow")));
+	FWeaponAmmoSnapshot& Ammo = Player.WeaponAmmoStates.AddDefaulted_GetRef();
+	Ammo.MagazineAmmo = 30;
+	Ammo.ReserveAmmo = 120;
 	Player.CurrentWeaponIndex = 0;
 	Player.AttributeState.Values.Add(AttributeTag, 100.0f);
 
@@ -116,6 +126,31 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	Enemy.Velocity = FVector::ZeroVector;
 	Enemy.EnemyConfigRowName = TEXT("BasicGrunt");
 	Enemy.AttributeState.Values.Add(AttributeTag, 75.0f);
+
+	// v10 domains: status effects, mission settings, objective progress and wave director.
+	FWeaponStatusEffectSnapshot& Burning = Enemy.StatusEffects.AddDefaulted_GetRef();
+	Burning.StatusEffectId = TEXT("Burning");
+	Burning.StackCount = 3;
+	Burning.RemainingDuration = 4.5f;
+	Burning.PendingHits = 1;
+	Burning.DamageEffectClass = FSoftClassPath(TEXT("/Game/Variant_Weapon/BluePrints/GE_Damage.GE_Damage_C"));
+	Snapshot.MissionSeed = 1234;
+	Snapshot.MissionDifficulty = 3;
+	Snapshot.Objective.bActorsSpawned = true;
+	Snapshot.Objective.bObjectiveComplete = true;
+	Snapshot.Objective.ExtractionRemainingSeconds = 12.5f;
+	Snapshot.Objective.ObjectiveChargeProgress = 5.0f;
+	Snapshot.WaveDirector.bArmed = true;
+	Snapshot.WaveDirector.Difficulty = 3;
+	FWeaponWaveRoomSnapshot& TriggeredRoom = Snapshot.WaveDirector.CombatRooms.AddDefaulted_GetRef();
+	TriggeredRoom.bTriggered = true;
+	TriggeredRoom.RemainingToSpawn = 4;
+	TriggeredRoom.SecondsToNextSpawn = 0.5f;
+	Snapshot.WaveDirector.CombatRooms.AddDefaulted();
+	Snapshot.WaveDirector.bHasDefenseWave = true;
+	Snapshot.WaveDirector.DefenseCenter = FVector(850.0, 950.0, 10.0);
+	Snapshot.WaveDirector.DefenseWave.bTriggered = true;
+	Snapshot.WaveDirector.DefenseWave.RemainingToSpawn = 2;
 
 	FGridMapRecoveryState& GridMap = Snapshot.GridMap;
 	GridMap.GenerationVersion = 1;
@@ -332,6 +367,34 @@ bool FWeaponMigrationPayloadBufferAutomationTest::RunTest(const FString& Paramet
 		RoundTrippedSaveGame->Snapshot.Projectiles.Num(), 1);
 	TestEqual(TEXT("Grenade state survives the byte round trip"),
 		RoundTrippedSaveGame->Snapshot.Grenades.Num(), 1);
+
+	const FWeaponSnapshot& RoundTripped = RoundTrippedSaveGame->Snapshot;
+	if (TestEqual(TEXT("Enemy status effects survive the byte round trip"),
+		RoundTripped.Enemies[0].StatusEffects.Num(), 1))
+	{
+		const FWeaponStatusEffectSnapshot& Status = RoundTripped.Enemies[0].StatusEffects[0];
+		TestTrue(TEXT("Status id"), Status.StatusEffectId == FName(TEXT("Burning")));
+		TestEqual(TEXT("Status stacks"), Status.StackCount, 3);
+		TestEqual(TEXT("Status remaining duration"), Status.RemainingDuration, 4.5f);
+		TestEqual(TEXT("Status pending hits"), Status.PendingHits, 1);
+		TestTrue(TEXT("Status damage effect class"), Status.DamageEffectClass.IsValid());
+	}
+	TestEqual(TEXT("Mission seed"), RoundTripped.MissionSeed, 1234);
+	TestEqual(TEXT("Mission difficulty"), RoundTripped.MissionDifficulty, 3);
+	TestTrue(TEXT("Objective actors flag"), RoundTripped.Objective.bActorsSpawned);
+	TestTrue(TEXT("Objective complete"), RoundTripped.Objective.bObjectiveComplete);
+	TestFalse(TEXT("Extraction not yet open"), RoundTripped.Objective.bExtractionOpen);
+	TestEqual(TEXT("Extraction countdown"), RoundTripped.Objective.ExtractionRemainingSeconds, 12.5f);
+	TestTrue(TEXT("Wave director armed"), RoundTripped.WaveDirector.bArmed);
+	TestEqual(TEXT("Wave director combat rooms"), RoundTripped.WaveDirector.CombatRooms.Num(), 2);
+	if (RoundTripped.WaveDirector.CombatRooms.Num() == 2)
+	{
+		TestTrue(TEXT("Triggered room"), RoundTripped.WaveDirector.CombatRooms[0].bTriggered);
+		TestEqual(TEXT("Room remaining quota"), RoundTripped.WaveDirector.CombatRooms[0].RemainingToSpawn, 4);
+		TestFalse(TEXT("Untriggered room"), RoundTripped.WaveDirector.CombatRooms[1].bTriggered);
+	}
+	TestTrue(TEXT("Defense wave flag"), RoundTripped.WaveDirector.bHasDefenseWave);
+	TestEqual(TEXT("Defense wave remaining quota"), RoundTripped.WaveDirector.DefenseWave.RemainingToSpawn, 2);
 
 	UWeaponMatchSaveGame* NewerSaveGame = DuplicateObject<UWeaponMatchSaveGame>(
 		SaveGame, GetTransientPackage());

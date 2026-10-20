@@ -189,6 +189,8 @@ private:
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
 	bool SetMaxPlayersAuthority(int32 NewMaxPlayers);
 	bool SetGameplayRecoveryBlockedAuthority(bool bBlocked);
+	/** Snapshot v10 恢复专用:屏障内绕过 Waiting/Starting 阶段校验写回任务设置。 */
+	void RestoreMissionSettingsForRecovery(const FWeaponMissionSettings& RestoredSettings);
 
 	/** 服务器权威写入目标/撤离进度(供 GameMode 的 A1 流程调用)。 */
 public:
