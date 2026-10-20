@@ -9,6 +9,7 @@
 #include "Engine/GameInstance.h"
 #include "GameplayEffect.h"
 #include "GameplayEffectTypes.h"
+#include "StatusEffectGameplayEffect.h"
 #include "TimerManager.h"
 #include "WeaponGameplayTags.h"
 
@@ -17,10 +18,17 @@ UStatusEffectComponent::UStatusEffectComponent()
 	PrimaryComponentTick.bCanEverTick = false;
 }
 
+UAbilitySystemComponent* UStatusEffectComponent::GetASC() const
+{
+	const IAbilitySystemInterface* ASCInterface = Cast<IAbilitySystemInterface>(GetOwner());
+	return ASCInterface ? ASCInterface->GetAbilitySystemComponent() : nullptr;
+}
+
 bool UStatusEffectComponent::TryApply(const FName StatusEffectId, TSubclassOf<UGameplayEffect> DamageEffectClass)
 {
 	AActor* Owner = GetOwner();
-	if (!Owner || !Owner->HasAuthority() || bGameplayRecoveryBlocked || StatusEffectId.IsNone() || !DamageEffectClass)
+	UAbilitySystemComponent* ASC = GetASC();
+	if (!Owner || !Owner->HasAuthority() || !ASC || bGameplayRecoveryBlocked || StatusEffectId.IsNone() || !DamageEffectClass)
 	{
 		return false;
 	}
@@ -33,7 +41,7 @@ bool UStatusEffectComponent::TryApply(const FName StatusEffectId, TSubclassOf<UG
 		return false;
 	}
 
-	FActiveStatusEffect& Effect = ActiveEffects.FindOrAdd(StatusEffectId);
+	FAppliedStatusEffect& Effect = ActiveEffects.FindOrAdd(StatusEffectId);
 	Effect.Config = *Config;
 	Effect.DamageEffectClass = DamageEffectClass;
 	++Effect.PendingHits;
@@ -41,22 +49,17 @@ bool UStatusEffectComponent::TryApply(const FName StatusEffectId, TSubclassOf<UG
 	{
 		return true;
 	}
-
 	Effect.PendingHits = 0;
-	Effect.Stacks = FMath::Min(Effect.Stacks + 1, FMath::Max(1, Config->MaxStacks));
-	GetWorld()->GetTimerManager().ClearTimer(Effect.DecayTimer);
-	GetWorld()->GetTimerManager().ClearTimer(Effect.DurationTimer);
-	if (Config->Duration > 0.0f)
+
+	// 叠层/时长/衰减全部交给 GAS：重复应用同一行缓存实例即自动叠层并刷新时长；
+	// 到期走 RemoveSingleStackAndRefreshDuration（掉一层），掉光自动移除。
+	if (UStatusEffectGameplayEffect* Def = UStatusEffectGameplayEffect::GetOrCreate(StatusEffectId, *Config))
 	{
-		GetWorld()->GetTimerManager().SetTimer(
-			Effect.DurationTimer,
-			FTimerDelegate::CreateUObject(this, &UStatusEffectComponent::BeginDecay, StatusEffectId),
-			Config->Duration,
-			false);
-	}
-	else
-	{
-		BeginDecay(StatusEffectId);
+		FGameplayEffectSpec Spec(Def, ASC->MakeEffectContext(), 1.0f);
+		// Duration=0 的旧行为是"立即开始 2 秒/层衰减"，以 2 秒时长近似。
+		const float Duration = Config->Duration > 0.0f ? Config->Duration : 2.0f;
+		Spec.SetDuration(Duration, true);
+		Effect.Handle = ASC->ApplyGameplayEffectSpecToSelf(Spec);
 	}
 
 	if (Config->DamagePerTick > 0.0f && Config->TickInterval > 0.0f &&
@@ -73,44 +76,49 @@ bool UStatusEffectComponent::TryApply(const FName StatusEffectId, TSubclassOf<UG
 
 float UStatusEffectComponent::GetVulnerableMultiplier() const
 {
-	float Bonus = 0.0f;
-	for (const TPair<FName, FActiveStatusEffect>& Pair : ActiveEffects)
+	UAbilitySystemComponent* ASC = GetASC();
+	if (!ASC)
 	{
-		if (Pair.Value.Stacks > 0 && IsEffectType(Pair.Key, Pair.Value.Config, TEXT("Vulnerable")))
+		return 1.0f;
+	}
+
+	float Bonus = 0.0f;
+	for (const TPair<FName, FAppliedStatusEffect>& Pair : ActiveEffects)
+	{
+		if (!IsEffectType(Pair.Key, Pair.Value.Config, TEXT("Vulnerable")))
 		{
-			Bonus += Pair.Value.Config.Magnitude * Pair.Value.Stacks;
+			continue;
+		}
+		int32 Stacks = 0;
+		if (const FActiveGameplayEffect* Active =
+			ASC->GetActiveGameplayEffects().GetActiveGameplayEffect(Pair.Value.Handle))
+		{
+			Stacks = Active->Spec.GetStackCount();
+		}
+		if (Stacks > 0)
+		{
+			Bonus += Pair.Value.Config.Magnitude * Stacks;
 		}
 	}
 	return 1.0f + Bonus;
 }
 
-void UStatusEffectComponent::BeginDecay(const FName StatusEffectId)
-{
-	if (FActiveStatusEffect* Effect = ActiveEffects.Find(StatusEffectId))
-	{
-		GetWorld()->GetTimerManager().SetTimer(
-			Effect->DecayTimer,
-			FTimerDelegate::CreateUObject(this, &UStatusEffectComponent::DecayStack, StatusEffectId),
-			2.0f,
-			true);
-	}
-}
-
-void UStatusEffectComponent::DecayStack(const FName StatusEffectId)
-{
-	FActiveStatusEffect* Effect = ActiveEffects.Find(StatusEffectId);
-	if (Effect && --Effect->Stacks <= 0)
-	{
-		RemoveEffect(StatusEffectId);
-	}
-}
-
 void UStatusEffectComponent::TickDamage(const FName StatusEffectId)
 {
-	FActiveStatusEffect* Effect = ActiveEffects.Find(StatusEffectId);
-	IAbilitySystemInterface* ASCInterface = Cast<IAbilitySystemInterface>(GetOwner());
-	UAbilitySystemComponent* ASC = ASCInterface ? ASCInterface->GetAbilitySystemComponent() : nullptr;
-	if (!Effect || Effect->Stacks <= 0 || !ASC || !Effect->DamageEffectClass)
+	FAppliedStatusEffect* Effect = ActiveEffects.Find(StatusEffectId);
+	UAbilitySystemComponent* ASC = GetASC();
+
+	// GE 已自然到期掉光/被移除：惰性清理本地条目。
+	if (!Effect || !ASC || !Effect->Handle.IsValid() ||
+		!ASC->GetActiveGameplayEffects().GetActiveGameplayEffect(Effect->Handle))
+	{
+		RemoveEffect(StatusEffectId);
+		return;
+	}
+
+	const FActiveGameplayEffect* Active = ASC->GetActiveGameplayEffects().GetActiveGameplayEffect(Effect->Handle);
+	const int32 Stacks = Active ? Active->Spec.GetStackCount() : 0;
+	if (Stacks <= 0 || !Effect->DamageEffectClass)
 	{
 		return;
 	}
@@ -128,7 +136,7 @@ void UStatusEffectComponent::TickDamage(const FName StatusEffectId)
 	{
 		return;
 	}
-	const float Damage = Effect->Config.DamagePerTick * (bBleeding ? Effect->Stacks : 1);
+	const float Damage = Effect->Config.DamagePerTick * (bBleeding ? Stacks : 1);
 	UAbilitySystemBlueprintLibrary::AssignTagSetByCallerMagnitude(Spec, TAG_Data_Damage, Damage);
 	Spec.Data->AddDynamicAssetTag(bBleeding ? TAG_Damage_Status_Bleeding : TAG_Damage_Status_Burning);
 	if (bBurning)
@@ -145,18 +153,17 @@ void UStatusEffectComponent::SetGameplayRecoveryBlocked(const bool bBlocked)
 		return;
 	}
 	bGameplayRecoveryBlocked = bBlocked;
-	for (TPair<FName, FActiveStatusEffect>& Pair : ActiveEffects)
+	// 已知行为差异：GE 的时长/衰减在屏障期间继续走（不可暂停），
+	// 旧实现连 DurationTimer 一起冻结。屏障窗口内伤害本身已被
+	// DamageExecCalculation 的屏障早退挡住，此处只需停周期伤害发射器。
+	for (TPair<FName, FAppliedStatusEffect>& Pair : ActiveEffects)
 	{
 		if (bBlocked)
 		{
-			GetWorld()->GetTimerManager().PauseTimer(Pair.Value.DurationTimer);
-			GetWorld()->GetTimerManager().PauseTimer(Pair.Value.DecayTimer);
 			GetWorld()->GetTimerManager().PauseTimer(Pair.Value.TickTimer);
 		}
 		else
 		{
-			GetWorld()->GetTimerManager().UnPauseTimer(Pair.Value.DurationTimer);
-			GetWorld()->GetTimerManager().UnPauseTimer(Pair.Value.DecayTimer);
 			GetWorld()->GetTimerManager().UnPauseTimer(Pair.Value.TickTimer);
 		}
 	}
@@ -164,11 +171,13 @@ void UStatusEffectComponent::SetGameplayRecoveryBlocked(const bool bBlocked)
 
 void UStatusEffectComponent::RemoveEffect(const FName StatusEffectId)
 {
-	if (FActiveStatusEffect* Effect = ActiveEffects.Find(StatusEffectId))
+	if (FAppliedStatusEffect* Effect = ActiveEffects.Find(StatusEffectId))
 	{
-		GetWorld()->GetTimerManager().ClearTimer(Effect->DurationTimer);
-		GetWorld()->GetTimerManager().ClearTimer(Effect->DecayTimer);
 		GetWorld()->GetTimerManager().ClearTimer(Effect->TickTimer);
+		if (UAbilitySystemComponent* ASC = GetASC(); ASC && Effect->Handle.IsValid())
+		{
+			ASC->RemoveActiveGameplayEffect(Effect->Handle);
+		}
 	}
 	ActiveEffects.Remove(StatusEffectId);
 }
