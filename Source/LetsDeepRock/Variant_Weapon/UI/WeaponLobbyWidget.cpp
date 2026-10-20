@@ -1355,6 +1355,33 @@ void UWeaponLobbyWidget::RefreshLobbyState()
 		}
 	}
 
+	// ---- 任务终端（A0：种子/难度显示 + 房主控件可见性）----
+	if (WeaponGameState)
+	{
+		const FWeaponMissionSettings& Mission = WeaponGameState->GetMissionSettings();
+		const TCHAR* DifficultyNames[] = { TEXT("低危"), TEXT("常规"), TEXT("高危") };
+		if (MissionSeedValueText)
+		{
+			MissionSeedValueText->SetText(FText::FromString(
+				Mission.Seed > 0 ? FString::FromInt(Mission.Seed) : FString(TEXT("默认（资产配置）"))));
+		}
+		if (MissionDifficultyValueText)
+		{
+			MissionDifficultyValueText->SetText(FText::FromString(
+				DifficultyNames[FMath::Clamp(Mission.Difficulty, 1, 3) - 1]));
+		}
+		const ESlateVisibility HostVisibility =
+			IsLocalHost() ? ESlateVisibility::Visible : ESlateVisibility::Collapsed;
+		if (MissionRandomSeedButton)
+		{
+			MissionRandomSeedButton->SetVisibility(HostVisibility);
+		}
+		if (MissionHostControls)
+		{
+			MissionHostControls->SetVisibility(HostVisibility);
+		}
+	}
+
 	// ---- 名单：按服务端分配的 SlotIndex 排布（槽位 0..MaxPlayers-1 对应行）----
 	TArray<APlayerState*> Players;
 	if (WeaponGameState)

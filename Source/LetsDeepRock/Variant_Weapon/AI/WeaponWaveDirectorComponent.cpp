@@ -39,6 +39,7 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 {
 	CachedManager = Manager;
 	RoomWaves.Reset();
+	EnemySpawnMarkers.Reset();
 	SpawnedEnemies.Reset();
 
 	// 解析敌人 BP 类;软路径失效(资产改名/未同步)时丢弃该条,不阻塞开局。
@@ -64,7 +65,6 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 	// Combat 房间边界 + 全体 EnemySpawn marker(按房间 2D 盒过滤归属)。
 	TArray<FBox2D> CombatBounds;
 	Manager->GetRoomWorldBoundsByPurpose(EGridMapRoomPurpose::Combat, CombatBounds);
-	TArray<FVector> EnemySpawnMarkers;
 	Manager->GetMarkerWorldLocations(EGridMapMarkerType::EnemySpawn, EnemySpawnMarkers);
 
 	for (const FBox2D& Bounds : CombatBounds)
@@ -95,6 +95,51 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 		TEXT("[A2] Wave director armed: CombatRooms=%d EnemyMarkers=%d ResolvedClasses=%d Difficulty=%d"),
 		RoomWaves.Num(), EnemySpawnMarkers.Num(),
 		static_cast<int32>(ResolvedEnemyClasses.Num()), Difficulty);
+}
+
+void UWeaponWaveDirectorComponent::StartDefenseWave(const FVector& Center)
+{
+	if (!GetOwner() || !GetOwner()->HasAuthority())
+	{
+		return;
+	}
+
+	// 防御波复用房间波次的滴流/上限/散布逻辑:一个"已触发"的虚拟房间,刷怪点取离撤离中心
+	// 最近的 EnemySpawn marker(跳过过近点),敌人从周边房间压向撤离区。
+	FRoomWave DefenseWave;
+	DefenseWave.Bounds = FBox2D(FVector2D(Center.X, Center.Y), FVector2D(Center.X, Center.Y));
+
+	const float MinDistanceSquared = FMath::Square(DefenseMinSpawnDistance);
+	TArray<FVector> Candidates;
+	for (const FVector& Marker : EnemySpawnMarkers)
+	{
+		if (FVector::DistSquared2D(Marker, Center) >= MinDistanceSquared)
+		{
+			Candidates.Add(Marker);
+		}
+	}
+	Candidates.Sort([&Center](const FVector& A, const FVector& B)
+	{
+		return FVector::DistSquared2D(A, Center) < FVector::DistSquared2D(B, Center);
+	});
+	for (int32 Index = 0; Index < Candidates.Num() && Index < MaxCachedSpawnPoints; ++Index)
+	{
+		DefenseWave.SpawnPoints.Add(Candidates[Index]);
+	}
+	if (DefenseWave.SpawnPoints.IsEmpty())
+	{
+		// 没有可用 marker:退回撤离中心外一圈(PickSpawnLocation 之后仍会按行配置散布)。
+		DefenseWave.SpawnPoints.Add(Center + FVector(DefenseMinSpawnDistance, 0.0f, 0.0f));
+	}
+
+	TriggerRoom(DefenseWave);
+	if (!DefenseWave.bTriggered)
+	{
+		return;
+	}
+	UE_LOG(LogTemp, Log, TEXT("[A2b] Defense wave started: quota=%d SpawnPoints=%d Difficulty=%d"),
+		DefenseWave.RemainingToSpawn, DefenseWave.SpawnPoints.Num(), Difficulty);
+	RoomWaves.Add(MoveTemp(DefenseWave));
 }
 
 void UWeaponWaveDirectorComponent::ResetWaves(const bool bDestroySpawned)

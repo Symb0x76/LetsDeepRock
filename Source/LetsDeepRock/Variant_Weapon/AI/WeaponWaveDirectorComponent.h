@@ -36,7 +36,8 @@ struct FWeaponEnemyTypeEntry
  *  EnemySpawn marker 周围滴流刷怪(组参数:组大小/组间隔/个体间隔/NPC 上限/散布半径)。
  *  服务器权威;恢复屏障期间暂停;局末 ResetWaves 销毁残留并复位房间触发状态。
  *
- *  A2b(待 #70 合入):难度从 GameState MissionSettings 注入;目标完成防御波。
+ *  A2b:难度由 GameMode 开局时从 GameState MissionSettings 注入;目标完成后在撤离区附近
+ *  按同一行配额刷一波防御怪(就近 EnemySpawn marker,排除过近点)。
  */
 UCLASS(ClassGroup = (Weapon), meta = (BlueprintSpawnableComponent))
 class LETSDEEPROCK_API UWeaponWaveDirectorComponent : public UActorComponent
@@ -57,8 +58,15 @@ public:
 	/** 每个已触发房间缓存最近一次选择的刷怪点数量上限 */
 	static constexpr int32 MaxCachedSpawnPoints = 8;
 
-	/** A2b:难度注入(暂由配置/调用方给定;#70 合入后接 MissionSettings.Difficulty) */
+	/** 防御波刷怪点离撤离中心的最小距离(避免贴脸刷在玩家脚下) */
+	UPROPERTY(EditDefaultsOnly, Category = "Wave", meta = (ClampMin = "0.0"))
+	float DefenseMinSpawnDistance = 1000.0f;
+
+	/** A2b:难度注入(GameMode 开局时传入 MissionSettings.Difficulty) */
 	void SetDifficulty(int32 InDifficulty);
+
+	/** A2b:目标完成后在撤离中心附近触发一次防御波(配额同当前难度行) */
+	void StartDefenseWave(const FVector& Center);
 
 	/** 开局:绑定 Manager,解析敌人类,收集 Combat 房与刷怪点,复位状态 */
 	void OnMatchStarted(AGridMapManager* Manager);
@@ -89,6 +97,9 @@ private:
 	TObjectPtr<AGridMapManager> CachedManager;
 
 	TArray<FRoomWave> RoomWaves;
+
+	/** 开局收集的全部 EnemySpawn marker(防御波就近选点用) */
+	TArray<FVector> EnemySpawnMarkers;
 
 	/** 已刷出且仍存活/未清理的敌人(局末销毁用) */
 	TArray<TWeakObjectPtr<AEnemyCharacter>> SpawnedEnemies;
