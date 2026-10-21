@@ -34,6 +34,8 @@ public:
 	virtual int32 ApplyLineHit(const FVector& Start, const FVector& End, const FSwarmDamageEvent& Event) = 0;
 
 	virtual int32 CountAlive() const = 0;
+	/** 池容量（Swarm.Stats 使用） */
+	virtual int32 GetCapacity() const = 0;
 	virtual void ForEachAlive(TFunctionRef<void(const FSwarmBugView&)> Fn) const = 0;
 	virtual void DespawnAll() = 0;
 };

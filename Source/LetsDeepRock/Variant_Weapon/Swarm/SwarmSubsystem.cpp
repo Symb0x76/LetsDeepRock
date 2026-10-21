@@ -70,6 +70,56 @@ static FAutoConsoleCommandWithWorldAndArgs SwarmSpawnCommand(
 	TEXT("Swarm.Spawn <Row> <Count>：仅服务器，在首个本地玩家前方 800uu 生成虫群（无玩家时在原点）。"),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&SwarmHandleSpawnCommand));
 
+/** 取服务器世界的后端；客户端/无后端时记日志并返回 nullptr */
+static ISwarmBackend* SwarmGetServerBackend(UWorld* World)
+{
+	if (!World)
+	{
+		return nullptr;
+	}
+	if (World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Swarm] server only"));
+		return nullptr;
+	}
+	USwarmSubsystem* Subsystem = World->GetSubsystem<USwarmSubsystem>();
+	ISwarmBackend* Backend = Subsystem ? Subsystem->GetBackend() : nullptr;
+	if (!Backend)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Swarm] no backend in this world"));
+	}
+	return Backend;
+}
+
+static void SwarmHandleStatsCommand(const TArray<FString>& Args, UWorld* World)
+{
+	if (const ISwarmBackend* Backend = SwarmGetServerBackend(World))
+	{
+		UE_LOG(LogTemp, Log, TEXT("[Swarm] backend=%s alive=%d pool=%d"),
+			Backend->GetKind() == ESwarmBackendKind::Pooled ? TEXT("Pooled") : TEXT("Mass"),
+			Backend->CountAlive(), Backend->GetCapacity());
+	}
+}
+
+static void SwarmHandleKillAllCommand(const TArray<FString>& Args, UWorld* World)
+{
+	if (ISwarmBackend* Backend = SwarmGetServerBackend(World))
+	{
+		Backend->DespawnAll();
+		UE_LOG(LogTemp, Log, TEXT("[Swarm] KillAll: alive=%d"), Backend->CountAlive());
+	}
+}
+
+static FAutoConsoleCommandWithWorldAndArgs SwarmStatsCommand(
+	TEXT("Swarm.Stats"),
+	TEXT("Swarm.Stats：仅服务器，输出后端种类、存活数与池容量。"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&SwarmHandleStatsCommand));
+
+static FAutoConsoleCommandWithWorldAndArgs SwarmKillAllCommand(
+	TEXT("Swarm.KillAll"),
+	TEXT("Swarm.KillAll：仅服务器，回收全部存活虫群。"),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateStatic(&SwarmHandleKillAllCommand));
+
 USwarmSubsystem* USwarmSubsystem::Get(const UObject* WorldContext)
 {
 	const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;

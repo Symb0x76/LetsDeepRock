@@ -48,6 +48,7 @@ public:
 	int32 DamageFirstOnLine(const FVector& Start, const FVector& End, const FSwarmDamageEvent& Event);
 
 	int32 NumAlive() const;
+	int32 GetCapacity() const { return Pool.Capacity(); }
 	void ForEachAliveView(TFunctionRef<void(const FSwarmBugView&)> Fn) const;
 	void DespawnAll();
 

@@ -20,6 +20,7 @@ public:
 	virtual int32 ApplyAreaDamage(const FVector& Center, float Radius, const FSwarmDamageEvent& Event) override;
 	virtual int32 ApplyLineHit(const FVector& Start, const FVector& End, const FSwarmDamageEvent& Event) override;
 	virtual int32 CountAlive() const override;
+	virtual int32 GetCapacity() const override;
 	virtual void ForEachAlive(TFunctionRef<void(const FSwarmBugView&)> Fn) const override;
 	virtual void DespawnAll() override;
 

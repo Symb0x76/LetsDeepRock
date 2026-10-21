@@ -19,6 +19,13 @@
 #include "WeaponGameState.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponPlayerState.h"
+#include "ProfilingDebugging/CsvProfiler.h"
+#include "Stats/Stats.h"
+
+// stat Swarm 与 CSV（-csvprofile）共用的池 Tick 计时
+DECLARE_STATS_GROUP(TEXT("Swarm"), STATGROUP_Swarm, STATCAT_Advanced);
+DECLARE_CYCLE_STAT(TEXT("SwarmPoolTick"), STAT_SwarmPoolTick, STATGROUP_Swarm);
+CSV_DEFINE_CATEGORY(Swarm, true);
 
 namespace SwarmPoolConstants
 {
@@ -373,6 +380,8 @@ void ASwarmPoolActor::KillSlot(const int32 Slot)
 void ASwarmPoolActor::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+	SCOPE_CYCLE_COUNTER(STAT_SwarmPoolTick);
+	CSV_SCOPED_TIMING_STAT(Swarm, PoolTick);
 
 	// 1. 恢复屏障：冻结模拟，并把暂停时长从 SimTime 中扣除
 	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))

@@ -62,6 +62,12 @@ int32 FPooledSwarmBackend::CountAlive() const
 	return Pool ? Pool->NumAlive() : 0;
 }
 
+int32 FPooledSwarmBackend::GetCapacity() const
+{
+	const ASwarmPoolActor* Pool = PoolActor.Get();
+	return Pool ? Pool->GetCapacity() : 0;
+}
+
 void FPooledSwarmBackend::ForEachAlive(TFunctionRef<void(const FSwarmBugView&)> Fn) const
 {
 	if (const ASwarmPoolActor* Pool = PoolActor.Get())
