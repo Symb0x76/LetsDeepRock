@@ -105,5 +105,6 @@ private:
 
 	// 仅客户端
 	FVector SmoothTargetLocation = FVector::ZeroVector;
+	FRotator SmoothTargetRotation = FRotator::ZeroRotator;
 	uint8 LastAppliedActivationSerial = 0;
 };

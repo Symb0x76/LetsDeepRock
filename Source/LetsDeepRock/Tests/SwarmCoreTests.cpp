@@ -209,6 +209,8 @@ bool FSwarmSlotPoolTest::RunTest(const FString& Parameters)
 SWARM_TEST(FSwarmBackendKindTest, "LetsDeepRock.Swarm.Subsystem.ResolveKind")
 bool FSwarmBackendKindTest::RunTest(const FString& Parameters)
 {
+	AddExpectedMessage(TEXT("Mass backend unavailable"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 1, false);
+	AddExpectedMessage(TEXT("Unknown Swarm.Backend"), ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains, 2, false);
 	TestEqual(TEXT("0 -> Pooled"), USwarmSubsystem::ResolveBackendKind(0), ESwarmBackendKind::Pooled);
 	TestEqual(TEXT("1 -> Pooled（Mass 未实现）"), USwarmSubsystem::ResolveBackendKind(1), ESwarmBackendKind::Pooled);
 	TestEqual(TEXT("7 -> Pooled"), USwarmSubsystem::ResolveBackendKind(7), ESwarmBackendKind::Pooled);

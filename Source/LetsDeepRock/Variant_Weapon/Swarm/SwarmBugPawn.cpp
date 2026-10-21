@@ -62,9 +62,10 @@ void ASwarmBugPawn::BeginPlay()
 {
 	Super::BeginPlay();
 	SmoothTargetLocation = GetActorLocation();
+	SmoothTargetRotation = GetActorRotation();
 	LastAppliedActivationSerial = ActivationSerial;
-	// 服务器不 Tick：位置由池子直接写入
-	SetActorTickEnabled(!HasAuthority());
+	// 服务器不 Tick：位置由池子直接写入；客户端仅激活时 Tick
+	SetActorTickEnabled(!HasAuthority() && bActive);
 }
 
 void ASwarmBugPawn::Tick(float DeltaSeconds)
@@ -79,6 +80,11 @@ void ASwarmBugPawn::Tick(float DeltaSeconds)
 	{
 		SetActorLocation(FMath::VInterpTo(Current, SmoothTargetLocation, DeltaSeconds, SwarmSmoothInterpSpeed));
 	}
+	const FRotator CurrentRotation = GetActorRotation();
+	if (!CurrentRotation.Equals(SmoothTargetRotation, 0.1f))
+	{
+		SetActorRotation(FMath::RInterpTo(CurrentRotation, SmoothTargetRotation, DeltaSeconds, SwarmSmoothInterpSpeed));
+	}
 }
 
 void ASwarmBugPawn::PostNetReceiveLocationAndRotation()
@@ -90,13 +96,15 @@ void ASwarmBugPawn::PostNetReceiveLocationAndRotation()
 void ASwarmBugPawn::HandleReplicatedLocation()
 {
 	const FVector Latest = FRepMovement::RebaseOntoLocalOrigin(GetReplicatedMovement().Location, this);
+	const FRotator LatestRotation = GetReplicatedMovement().Rotation;
 	if (ActivationSerial != LastAppliedActivationSerial)
 	{
 		// 槽位被回收复用：直接吸附，避免从旧位置横穿地图
 		LastAppliedActivationSerial = ActivationSerial;
-		SetActorLocation(Latest);
+		SetActorLocationAndRotation(Latest, LatestRotation);
 	}
 	SmoothTargetLocation = Latest;
+	SmoothTargetRotation = LatestRotation;
 }
 
 void ASwarmBugPawn::ReceiveSwarmDamage(const FSwarmDamageEvent& Event)
@@ -168,6 +176,8 @@ void ASwarmBugPawn::SetStatusFlags(ESwarmStatusFlags InFlags)
 void ASwarmBugPawn::OnRep_Active()
 {
 	ApplyActiveVisuals();
+	// 客户端：失活的池内虫不 Tick
+	SetActorTickEnabled(bActive);
 }
 
 void ASwarmBugPawn::OnRep_ArchetypeRow()
