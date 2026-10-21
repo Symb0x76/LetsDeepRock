@@ -87,7 +87,7 @@ private:
 
 	void GatherPlayersAndObstacles();
 	void SimulateSlot(int32 Slot, float DeltaSeconds, float SimTime);
-	void ApplyDamageEffectToPawn(APawn* TargetPawn, float Damage, const FGameplayTag& DamageTypeTag);
+	void ApplyDamageEffectToPawn(APawn* TargetPawn, float Damage, const FGameplayTag& DamageTypeTag, const FVector& BugLocation);
 
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;

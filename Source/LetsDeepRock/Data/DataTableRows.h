@@ -526,6 +526,22 @@ struct FSpawnerConfigRow : public FTableRowBase
 	/** 场上 NPC 数量上限 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Spawn", meta = (ClampMin = 1))
 	int32 NPCCap = 20;
+
+	/** 每房虫群配额(只数) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Swarm", meta = (ClampMin = 0))
+	int32 SwarmQuotaPerRoom = 60;
+
+	/** 每次爆发生成的虫群数量 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Swarm", meta = (ClampMin = 1))
+	int32 SwarmBurstSize = 8;
+
+	/** 场上虫群存活数上限 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Swarm", meta = (ClampMin = 1))
+	int32 SwarmCap = 120;
+
+	/** 每房精英配额(只数,走 NPCCap 限制的常规刷怪) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Swarm", meta = (ClampMin = 0))
+	int32 EliteQuotaPerRoom = 2;
 };
 
 /**

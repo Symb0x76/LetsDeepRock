@@ -13,6 +13,7 @@
 #include "Swarm/SwarmSlotPool.h"
 #include "Swarm/SwarmSubsystem.h"
 #include "Swarm/SwarmDamageRouting.h"
+#include "Swarm/SwarmWaveMath.h"
 #include "WeaponCharacter.h"
 #include "EnemyCharacter.h"
 
@@ -231,6 +232,18 @@ bool FSwarmInstigatorFilterTest::RunTest(const FString& Parameters)
 	const FSwarmDamageEvent Event{ 10.f, FGameplayTagContainer(), NAME_None, nullptr };
 	TestFalse(TEXT("非虫群目标返回 false，调用方继续走 GAS"), SwarmTryRouteDamage(GetMutableDefault<AWeaponCharacter>(), Event));
 	TestFalse(TEXT("nullptr 目标返回 false"), SwarmTryRouteDamage(nullptr, Event));
+	return true;
+}
+
+SWARM_TEST(FSwarmBurstMathTest, "LetsDeepRock.Swarm.Wave.BurstMath")
+bool FSwarmBurstMathTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("正常爆发"), SwarmComputeBurst(60, 0, 120, 8), 8);
+	TestEqual(TEXT("配额不足"), SwarmComputeBurst(5, 0, 120, 8), 5);
+	TestEqual(TEXT("接近上限"), SwarmComputeBurst(60, 118, 120, 8), 2);
+	TestEqual(TEXT("正好满"), SwarmComputeBurst(60, 120, 120, 8), 0);
+	TestEqual(TEXT("超上限不为负"), SwarmComputeBurst(60, 130, 120, 8), 0);
+	TestEqual(TEXT("配额为 0"), SwarmComputeBurst(0, 0, 120, 8), 0);
 	return true;
 }
 

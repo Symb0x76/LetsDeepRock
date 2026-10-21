@@ -28,6 +28,10 @@ struct FWeaponEnemyTypeEntry
 	/** 相对刷出权重 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wave", meta = (ClampMin = "0.0"))
 	float Weight = 1.0f;
+
+	/** 虫群条目:由 ISwarmBackend 按行名池化生成,不解析 EnemyClassPath(留空) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wave")
+	bool bSwarm = false;
 };
 
 /**
@@ -89,7 +93,10 @@ private:
 	{
 		FBox2D Bounds = FBox2D(ForceInit);
 		TArray<FVector> SpawnPoints;
+		/** 剩余精英配额(走 SpawnOneEnemy,受 NPCCap 限制) */
 		int32 RemainingToSpawn = 0;
+		/** 剩余虫群配额(按爆发经 ISwarmBackend 生成,只扣实际生成数) */
+		int32 RemainingSwarm = 0;
 		double NextSpawnTime = 0.0;
 		bool bTriggered = false;
 	};
@@ -97,7 +104,10 @@ private:
 	const FSpawnerConfigRow* GetSpawnerRow() const;
 	void TriggerRoom(FRoomWave& Room);
 	void SpawnOneEnemy(FRoomWave& Room);
+	void SpawnSwarmBurst(FRoomWave& Room);
 	int32 PickEnemyEntryIndex() const;
+	/** 按权重在 bSwarm 条目中选一行;无可选返回 NAME_None */
+	FName PickSwarmRow() const;
 	FVector PickSpawnLocation(const FRoomWave& Room) const;
 
 	UPROPERTY()

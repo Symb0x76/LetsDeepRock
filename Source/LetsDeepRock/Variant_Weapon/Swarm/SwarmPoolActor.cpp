@@ -304,9 +304,10 @@ void ASwarmPoolActor::ForEachAliveView(TFunctionRef<void(const FSwarmBugView&)> 
 
 void ASwarmPoolActor::DespawnAll()
 {
-	ActiveSlots.Reset();
-	Pool.ForEachActive([this](const int32 Slot) { ActiveSlots.Add(Slot); });
-	for (const int32 Slot : ActiveSlots)
+	// 用局部数组:Tick 正在遍历成员 ActiveSlots 时也可能触发 DespawnAll。
+	TArray<int32> SlotsToKill;
+	Pool.ForEachActive([&SlotsToKill](const int32 Slot) { SlotsToKill.Add(Slot); });
+	for (const int32 Slot : SlotsToKill)
 	{
 		KillSlot(Slot);
 	}
@@ -568,28 +569,34 @@ void ASwarmPoolActor::SimulateSlot(const int32 Slot, const float DeltaSeconds, c
 				{
 					if (FVector2D::DistSquared(FVector2D(Player->GetActorLocation()), Steering.NewPosition) <= ExplodeRadiusSquared)
 					{
-						ApplyDamageEffectToPawn(Player, State.AttackDamage, TAG_Damage_Type_Explosion);
+						ApplyDamageEffectToPawn(Player, State.AttackDamage, TAG_Damage_Type_Explosion, NewLocation);
 					}
 				}
 				KillSlot(Slot);
 				return;
 			}
-			ApplyDamageEffectToPawn(Target, State.AttackDamage, TAG_Damage_Type_Physical);
+			ApplyDamageEffectToPawn(Target, State.AttackDamage, TAG_Damage_Type_Physical, NewLocation);
 			State.NextAttackTime = SimTime + Tuning.AttackInterval;
 		}
 	}
 }
 
-void ASwarmPoolActor::ApplyDamageEffectToPawn(APawn* TargetPawn, const float Damage, const FGameplayTag& DamageTypeTag)
+void ASwarmPoolActor::ApplyDamageEffectToPawn(APawn* TargetPawn, const float Damage, const FGameplayTag& DamageTypeTag, const FVector& BugLocation)
 {
 	UAbilitySystemComponent* TargetASC = UAbilitySystemGlobals::GetAbilitySystemComponentFromActor(TargetPawn);
 	if (!TargetASC || !LoadedDamageEffect || Damage <= 0.f)
 	{
 		return;
 	}
+	// 本 tick 的玩家快照可能已过期:目标刚死亡则跳过。
+	if (TargetASC->HasMatchingGameplayTag(TAG_State_Dead))
+	{
+		return;
+	}
 
 	FGameplayEffectContextHandle Context = AbilitySystemComponent->MakeEffectContext();
 	Context.AddSourceObject(this);
+	Context.AddOrigin(BugLocation);
 	const FGameplayEffectSpecHandle SpecHandle = AbilitySystemComponent->MakeOutgoingSpec(LoadedDamageEffect, 1.f, Context);
 	if (!SpecHandle.IsValid())
 	{
