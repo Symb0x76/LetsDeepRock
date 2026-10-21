@@ -19,6 +19,7 @@
 #include "Engine/OverlapResult.h"
 #include "Attributes/StatusEffectComponent.h"
 #include "Abilities/WeaponGameplayCues.h"
+#include "Swarm/SwarmDamageRouting.h"
 
 namespace
 {
@@ -401,6 +402,15 @@ bool AWeaponProjectile::ApplyDamageToTarget(APawn* TargetPawn, TOptional<float> 
 		!InitializationState.DamageEffectClass || AppliedDamage <= 0.0f)
 	{
 		return false;
+	}
+
+	// 虫群目标：无 ASC，绕过 GAS 直接转发伤害事件；仍返回 true，使穿透计数把虫算作命中
+	{
+		const FSwarmDamageEvent SwarmEvent{ AppliedDamage, InitializationState.DamageTags, InitializationState.StatusEffectId, InitializationState.InstigatorActor };
+		if (SwarmTryRouteDamage(TargetPawn, SwarmEvent))
+		{
+			return true;
+		}
 	}
 
 	// 通过 IAbilitySystemInterface 获取目标 ASC（统一入口，不 Cast 具体类）

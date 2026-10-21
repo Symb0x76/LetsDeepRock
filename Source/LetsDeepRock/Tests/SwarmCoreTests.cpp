@@ -12,6 +12,9 @@
 #include "Swarm/SwarmSteering.h"
 #include "Swarm/SwarmSlotPool.h"
 #include "Swarm/SwarmSubsystem.h"
+#include "Swarm/SwarmDamageRouting.h"
+#include "WeaponCharacter.h"
+#include "EnemyCharacter.h"
 
 #define SWARM_TEST(ClassName, Path) IMPLEMENT_SIMPLE_AUTOMATION_TEST(ClassName, Path, EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 
@@ -215,6 +218,19 @@ bool FSwarmBackendKindTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("1 -> Pooled（Mass 未实现）"), USwarmSubsystem::ResolveBackendKind(1), ESwarmBackendKind::Pooled);
 	TestEqual(TEXT("7 -> Pooled"), USwarmSubsystem::ResolveBackendKind(7), ESwarmBackendKind::Pooled);
 	TestEqual(TEXT("-1 -> Pooled"), USwarmSubsystem::ResolveBackendKind(-1), ESwarmBackendKind::Pooled);
+	return true;
+}
+
+SWARM_TEST(FSwarmInstigatorFilterTest, "LetsDeepRock.Swarm.Routing.InstigatorFilter")
+bool FSwarmInstigatorFilterTest::RunTest(const FString& Parameters)
+{
+	TestTrue(TEXT("nullptr 来源允许"), SwarmIsDamageInstigatorAllowed(nullptr));
+	TestTrue(TEXT("玩家来源允许"), SwarmIsDamageInstigatorAllowed(GetDefault<AWeaponCharacter>()));
+	TestFalse(TEXT("精英(ANPCBase)来源被过滤"), SwarmIsDamageInstigatorAllowed(GetDefault<AEnemyCharacter>()));
+
+	const FSwarmDamageEvent Event{ 10.f, FGameplayTagContainer(), NAME_None, nullptr };
+	TestFalse(TEXT("非虫群目标返回 false，调用方继续走 GAS"), SwarmTryRouteDamage(GetMutableDefault<AWeaponCharacter>(), Event));
+	TestFalse(TEXT("nullptr 目标返回 false"), SwarmTryRouteDamage(nullptr, Event));
 	return true;
 }
 
