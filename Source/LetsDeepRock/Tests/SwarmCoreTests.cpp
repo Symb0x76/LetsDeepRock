@@ -10,6 +10,7 @@
 #include "Swarm/SwarmTypes.h"
 #include "Swarm/SwarmSpatialHash.h"
 #include "Swarm/SwarmSteering.h"
+#include "Swarm/SwarmSlotPool.h"
 
 #define SWARM_TEST(ClassName, Path) IMPLEMENT_SIMPLE_AUTOMATION_TEST(ClassName, Path, EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 
@@ -171,6 +172,36 @@ bool FSwarmFreeSpawnTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("找到空位"), bFound);
 	TestTrue(TEXT("位于阻挡区外且在搜索半径内"), Point.Size() >= 120.0 && Point.Size() <= 500.0 + 0.01);
 	TestFalse(TEXT("全阻挡返回 false"), SwarmFindFreeSpawnPoint(FVector2D::ZeroVector, 500.f, [](const FVector2D&) { return true; }, Point));
+	return true;
+}
+
+SWARM_TEST(FSwarmSlotPoolTest, "LetsDeepRock.Swarm.Pool.AcquireRelease")
+bool FSwarmSlotPoolTest::RunTest(const FString& Parameters)
+{
+	FSwarmSlotPool Pool(3);
+	TestEqual(TEXT("Capacity"), Pool.Capacity(), 3);
+	const int32 A = Pool.Acquire();
+	const int32 B = Pool.Acquire();
+	const int32 C = Pool.Acquire();
+	TestTrue(TEXT("三个槽位有效"), A != INDEX_NONE && B != INDEX_NONE && C != INDEX_NONE);
+	TestTrue(TEXT("三个槽位互不相同"), A != B && B != C && A != C);
+	TestEqual(TEXT("池满返回 INDEX_NONE"), Pool.Acquire(), (int32)INDEX_NONE);
+	TestEqual(TEXT("NumActive 3"), Pool.NumActive(), 3);
+
+	Pool.Release(B);
+	TestFalse(TEXT("释放后非活跃"), Pool.IsActive(B));
+	TestEqual(TEXT("释放后复用同一槽位"), Pool.Acquire(), B);
+	Pool.Release(B);
+	Pool.Release(B);
+	TestEqual(TEXT("重复释放为空操作"), Pool.NumActive(), 2);
+	Pool.Release(99);
+	Pool.Release(-1);
+	TestEqual(TEXT("越界释放为空操作"), Pool.NumActive(), 2);
+
+	TArray<int32> Visited;
+	Pool.ForEachActive([&Visited](int32 Slot) { Visited.Add(Slot); });
+	TestEqual(TEXT("ForEachActive 数量"), Visited.Num(), 2);
+	TestTrue(TEXT("ForEachActive 恰为活跃槽位"), Visited.Contains(A) && Visited.Contains(C) && !Visited.Contains(B));
 	return true;
 }
 
