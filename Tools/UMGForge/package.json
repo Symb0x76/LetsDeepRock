@@ -1,0 +1,21 @@
+{
+  "name": "umgforge",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/editor",
+    "apps/mcp"
+  ],
+  "scripts": {
+    "dev:editor": "npm run dev --workspace @umgforge/editor",
+    "start:mcp": "npm start --workspace @umgforge/mcp --",
+    "test": "npm test --workspaces --if-present",
+    "build": "npm run build --workspace @umgforge/editor",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

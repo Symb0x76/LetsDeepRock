@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://umgforge.dev/schema/umgforge.schema.v1.json",
+  "title": "UMGForge Document v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "revision", "root"],
+  "properties": {
+    "version": { "const": "1.0" },
+    "revision": { "type": "integer", "minimum": 0 },
+    "root": { "$ref": "#/$defs/node" }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "class", "slot", "props", "children", "interactions"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "class": { "enum": ["CanvasPanel", "HorizontalBox", "VerticalBox", "Overlay", "SizeBox", "Border", "Image", "TextBlock", "Button", "WidgetSwitcher"] },
+        "slot": { "type": ["object", "null"] },
+        "props": { "type": "object" },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+        "interactions": { "type": "array", "items": { "$ref": "#/$defs/interaction" } }
+      }
+    },
+    "interaction": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type", "targetId", "index"], "properties": { "type": { "const": "SetSwitcherIndex" }, "targetId": { "type": "string" }, "index": { "type": "integer", "minimum": 0 } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "targetId", "visibility"], "properties": { "type": { "const": "SetVisibility" }, "targetId": { "type": "string" }, "visibility": { "enum": ["Visible", "Collapsed", "Hidden", "HitTestInvisible", "SelfHitTestInvisible"] } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "event"], "properties": { "type": { "const": "EmitEvent" }, "event": { "type": "string", "minLength": 1 }, "payload": { "type": "object" } } }
+      ]
+    }
+  }
+}

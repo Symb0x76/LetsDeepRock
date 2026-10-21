@@ -1,0 +1,89 @@
+.hierarchy {
+  width: 280px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.hierarchy-header {
+  padding: var(--gap-md);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.hierarchy-tree {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.tree-node-content {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-xs);
+  padding: 6px var(--gap-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms;
+  min-height: 28px;
+}
+
+.tree-node-content:hover {
+  background: var(--gray-3);
+}
+
+.tree-node-content.selected {
+  background: var(--accent-2);
+  color: var(--gray-10);
+}
+
+.tree-node-toggle {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tree-node-icon {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.tree-node-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-node-type {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tree-node-delete {
+  opacity: 0;
+  padding: 2px 6px;
+  font-size: 16px;
+  line-height: 1;
+  transition: opacity 120ms;
+}
+
+.tree-node-content:hover .tree-node-delete {
+  opacity: 0.7;
+}
+
+.tree-node-delete:hover {
+  opacity: 1 !important;
+  color: var(--danger);
+}

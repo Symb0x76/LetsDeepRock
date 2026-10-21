@@ -1,0 +1,43 @@
+.canvas-container {
+  flex: 1;
+  background: var(--gray-1);
+  position: relative;
+  overflow: hidden;
+}
+
+.canvas-viewport {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas-surface {
+  background: var(--gray-2);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  position: relative;
+  overflow: hidden;
+}
+
+.canvas-controls {
+  position: absolute;
+  top: var(--gap-md);
+  right: var(--gap-md);
+  display: flex;
+  gap: var(--gap-xs);
+  align-items: center;
+  z-index: 10;
+  background: var(--surface);
+  padding: var(--gap-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.canvas-scale-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  min-width: 48px;
+  text-align: center;
+}
