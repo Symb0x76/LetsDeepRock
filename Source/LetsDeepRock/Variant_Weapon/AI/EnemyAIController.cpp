@@ -106,7 +106,12 @@ void AEnemyAIController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus St
 
 	if (Stimulus.WasSuccessfullySensed())
 	{
-		PerceivedTarget = Actor;
+		// 只接受玩家操控的 Pawn:虫群小虫与其他精英是中立 Pawn,不应成为追击目标。
+		const APawn* SensedPawn = Cast<APawn>(Actor);
+		if (SensedPawn && SensedPawn->IsPlayerControlled())
+		{
+			PerceivedTarget = Actor;
+		}
 	}
 	else
 	{

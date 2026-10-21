@@ -269,6 +269,8 @@ void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager
 		ISwarmBackend* Backend = Swarm ? Swarm->GetBackend() : nullptr;
 		if (Backend)
 		{
+			// 先清空现存小虫,避免与快照计数叠加。
+			Backend->DespawnAll();
 			int32 Requested = 0;
 			int32 Spawned = 0;
 			for (const FWeaponSwarmRoomCount& Entry : Snapshot.SwarmCounts)
