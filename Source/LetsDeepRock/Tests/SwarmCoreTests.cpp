@@ -11,6 +11,7 @@
 #include "Swarm/SwarmSpatialHash.h"
 #include "Swarm/SwarmSteering.h"
 #include "Swarm/SwarmSlotPool.h"
+#include "Swarm/SwarmSubsystem.h"
 
 #define SWARM_TEST(ClassName, Path) IMPLEMENT_SIMPLE_AUTOMATION_TEST(ClassName, Path, EAutomationTestFlags_ApplicationContextMask | EAutomationTestFlags::EngineFilter)
 
@@ -202,6 +203,16 @@ bool FSwarmSlotPoolTest::RunTest(const FString& Parameters)
 	Pool.ForEachActive([&Visited](int32 Slot) { Visited.Add(Slot); });
 	TestEqual(TEXT("ForEachActive 数量"), Visited.Num(), 2);
 	TestTrue(TEXT("ForEachActive 恰为活跃槽位"), Visited.Contains(A) && Visited.Contains(C) && !Visited.Contains(B));
+	return true;
+}
+
+SWARM_TEST(FSwarmBackendKindTest, "LetsDeepRock.Swarm.Subsystem.ResolveKind")
+bool FSwarmBackendKindTest::RunTest(const FString& Parameters)
+{
+	TestEqual(TEXT("0 -> Pooled"), USwarmSubsystem::ResolveBackendKind(0), ESwarmBackendKind::Pooled);
+	TestEqual(TEXT("1 -> Pooled（Mass 未实现）"), USwarmSubsystem::ResolveBackendKind(1), ESwarmBackendKind::Pooled);
+	TestEqual(TEXT("7 -> Pooled"), USwarmSubsystem::ResolveBackendKind(7), ESwarmBackendKind::Pooled);
+	TestEqual(TEXT("-1 -> Pooled"), USwarmSubsystem::ResolveBackendKind(-1), ESwarmBackendKind::Pooled);
 	return true;
 }
 
