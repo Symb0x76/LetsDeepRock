@@ -247,6 +247,41 @@ bool FSwarmBurstMathTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+SWARM_TEST(FSwarmBucketTest, "LetsDeepRock.Swarm.Snapshot.BucketByRoom")
+bool FSwarmBucketTest::RunTest(const FString& Parameters)
+{
+	const TArray<FBox2D> Rooms = {
+		FBox2D(FVector2D(0, 0), FVector2D(1000, 1000)),
+		FBox2D(FVector2D(2000, 0), FVector2D(3000, 1000)) };
+	auto Bug = [](const double X, const double Y, const TCHAR* Row)
+	{
+		FSwarmBugView View;
+		View.Location = FVector(X, Y, 0.0);
+		View.ArchetypeRow = FName(Row);
+		return View;
+	};
+	TArray<FSwarmBugView> Bugs;
+	for (int32 I = 0; I < 3; ++I) { Bugs.Add(Bug(100 + I, 100, TEXT("BasicGrunt"))); }
+	Bugs.Add(Bug(500, 500, TEXT("Exploder")));
+	for (int32 I = 0; I < 2; ++I) { Bugs.Add(Bug(2500, 500 + I, TEXT("BasicGrunt"))); }
+	Bugs.Add(Bug(1400, 500, TEXT("BasicGrunt"))); // 盒外,离 A 中心更近
+
+	const TArray<FWeaponSwarmRoomCount> Out = SwarmBucketByRoom(Bugs, Rooms);
+	TestEqual(TEXT("Entry count"), Out.Num(), 3);
+	if (Out.Num() == 3)
+	{
+		TestEqual(TEXT("Room0 grunt room"), Out[0].RoomIndex, 0);
+		TestEqual(TEXT("Room0 grunt row"), Out[0].ArchetypeRow, FName(TEXT("BasicGrunt")));
+		TestEqual(TEXT("Room0 grunt count"), Out[0].Count, 4);
+		TestEqual(TEXT("Room0 exploder row"), Out[1].ArchetypeRow, FName(TEXT("Exploder")));
+		TestEqual(TEXT("Room0 exploder count"), Out[1].Count, 1);
+		TestEqual(TEXT("Room1 room"), Out[2].RoomIndex, 1);
+		TestEqual(TEXT("Room1 count"), Out[2].Count, 2);
+	}
+	TestEqual(TEXT("No rooms -> empty"), SwarmBucketByRoom(Bugs, TConstArrayView<FBox2D>()).Num(), 0);
+	return true;
+}
+
 #undef SWARM_TEST
 
 #endif // WITH_DEV_AUTOMATION_TESTS

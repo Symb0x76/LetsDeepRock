@@ -188,6 +188,7 @@ void UWeaponWaveDirectorComponent::CaptureSnapshotState(FWeaponWaveDirectorSnaps
 		FWeaponWaveRoomSnapshot Saved;
 		Saved.bTriggered = Room.bTriggered;
 		Saved.RemainingToSpawn = Room.RemainingToSpawn;
+		Saved.RemainingSwarm = Room.RemainingSwarm;
 		Saved.SecondsToNextSpawn = static_cast<float>(FMath::Max(0.0, Room.NextSpawnTime - Now));
 		return Saved;
 	};
@@ -203,6 +204,23 @@ void UWeaponWaveDirectorComponent::CaptureSnapshotState(FWeaponWaveDirectorSnaps
 		OutSnapshot.bHasDefenseWave = true;
 		OutSnapshot.DefenseCenter = DefenseCenter;
 		OutSnapshot.DefenseWave = ToSnapshot(RoomWaves[CombatRoomCount]);
+	}
+
+	// 存活虫群按房间归并(RoomWaves 顺序:战斗房在前,防御波在 CombatRoomCount)。
+	if (const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this))
+	{
+		if (const ISwarmBackend* Backend = Swarm->GetBackend())
+		{
+			TArray<FSwarmBugView> Bugs;
+			Backend->ForEachAlive([&Bugs](const FSwarmBugView& View) { Bugs.Add(View); });
+			TArray<FBox2D> Rooms;
+			Rooms.Reserve(RoomWaves.Num());
+			for (const FRoomWave& Room : RoomWaves)
+			{
+				Rooms.Add(Room.Bounds);
+			}
+			OutSnapshot.SwarmCounts = SwarmBucketByRoom(Bugs, Rooms);
+		}
 	}
 }
 
@@ -228,6 +246,7 @@ void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager
 	{
 		Room.bTriggered = Saved.bTriggered;
 		Room.RemainingToSpawn = FMath::Max(0, Saved.RemainingToSpawn);
+		Room.RemainingSwarm = FMath::Max(0, Saved.RemainingSwarm);
 		Room.NextSpawnTime = Now + FMath::Max(0.0f, Saved.SecondsToNextSpawn);
 	};
 	for (int32 Index = 0; Index < CombatRoomCount && Snapshot.CombatRooms.IsValidIndex(Index); ++Index)
@@ -240,6 +259,37 @@ void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager
 		if (bHasDefenseWave && RoomWaves.IsValidIndex(CombatRoomCount))
 		{
 			Apply(RoomWaves[CombatRoomCount], Snapshot.DefenseWave);
+		}
+	}
+
+	// 虫群在房间与防御波都重建之后再按计数重新生成(RoomIndex == CombatRoomCount 此时才有效)。
+	if (!Snapshot.SwarmCounts.IsEmpty())
+	{
+		const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this);
+		ISwarmBackend* Backend = Swarm ? Swarm->GetBackend() : nullptr;
+		if (Backend)
+		{
+			int32 Requested = 0;
+			int32 Spawned = 0;
+			for (const FWeaponSwarmRoomCount& Entry : Snapshot.SwarmCounts)
+			{
+				if (Entry.Count <= 0 || !RoomWaves.IsValidIndex(Entry.RoomIndex))
+				{
+					UE_LOG(LogTemp, Log, TEXT("[Swarm] Restore skipped invalid swarm entry: room %d row %s count %d"),
+						Entry.RoomIndex, *Entry.ArchetypeRow.ToString(), Entry.Count);
+					continue;
+				}
+				Requested += Entry.Count;
+				Spawned += Backend->SpawnAt(Entry.ArchetypeRow, PickSpawnLocation(RoomWaves[Entry.RoomIndex]), Entry.Count);
+			}
+			if (Spawned < Requested)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[A2] Swarm restore clamped: requested %d spawned %d"), Requested, Spawned);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Swarm] No swarm backend on restore; dropping %d swarm entries"), Snapshot.SwarmCounts.Num());
 		}
 	}
 
@@ -479,6 +529,12 @@ void UWeaponWaveDirectorComponent::SpawnSwarmBurst(FRoomWave& Room)
 	// 只扣实际生成数(池满时可能少于 Burst)。
 	const int32 Spawned = Backend->SpawnAt(ArchetypeRow, PickSpawnLocation(Room), Burst);
 	Room.RemainingSwarm = FMath::Max(0, Room.RemainingSwarm - Spawned);
+	if (Spawned <= 0)
+	{
+		// 池耗尽:按群间隔顺延,不走短随机间隔空转。
+		Room.NextSpawnTime = World->GetTimeSeconds() + Row->SpawnGroupDelay;
+		return;
+	}
 
 	const float Delay = FMath::FRandRange(Row->MinSpawnDelay, Row->MaxSpawnDelay);
 	Room.NextSpawnTime = World->GetTimeSeconds() + FMath::Max(Delay, 0.05f);
@@ -500,18 +556,21 @@ FName UWeaponWaveDirectorComponent::PickSwarmRow() const
 	}
 
 	float Roll = FMath::FRandRange(0.0f, TotalWeight);
+	FName Last = NAME_None;
 	for (const FWeaponEnemyTypeEntry& Entry : CombatWaveEntries)
 	{
-		if (Entry.bSwarm)
+		if (Entry.bSwarm && Entry.Weight > 0.0f)
 		{
-			Roll -= FMath::Max(Entry.Weight, 0.0f);
+			Last = Entry.EnemyRow;
+			Roll -= Entry.Weight;
 			if (Roll <= 0.0f)
 			{
 				return Entry.EnemyRow;
 			}
 		}
 	}
-	return NAME_None;
+	// FRandRange 可能恰好返回总权重:落到最后一个正权重行。
+	return Last;
 }
 
 int32 UWeaponWaveDirectorComponent::PickEnemyEntryIndex() const
@@ -530,18 +589,22 @@ int32 UWeaponWaveDirectorComponent::PickEnemyEntryIndex() const
 	}
 
 	float Roll = FMath::FRandRange(0.0f, TotalWeight);
+	int32 LastIndex = INDEX_NONE;
 	for (int32 Index = 0; Index < CombatWaveEntries.Num(); ++Index)
 	{
-		if (!CombatWaveEntries[Index].bSwarm && ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
+		if (!CombatWaveEntries[Index].bSwarm && CombatWaveEntries[Index].Weight > 0.0f &&
+			ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
 		{
-			Roll -= FMath::Max(CombatWaveEntries[Index].Weight, 0.0f);
+			LastIndex = Index;
+			Roll -= CombatWaveEntries[Index].Weight;
 			if (Roll <= 0.0f)
 			{
 				return Index;
 			}
 		}
 	}
-	return INDEX_NONE;
+	// FRandRange 可能恰好返回总权重:落到最后一个正权重条目。
+	return LastIndex;
 }
 
 FVector UWeaponWaveDirectorComponent::PickSpawnLocation(const FRoomWave& Room) const

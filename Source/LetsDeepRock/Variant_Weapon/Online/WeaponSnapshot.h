@@ -9,7 +9,7 @@
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 10;
+inline constexpr int32 WeaponSnapshotVersion = 11;
 
 /** v10:一条生效中的状态效果(GE 叠层 + 剩余时长 + 组件侧应用策略)。 */
 USTRUCT()
@@ -39,13 +39,27 @@ struct FWeaponObjectiveSnapshot
 	UPROPERTY(SaveGame) float ExtractionHoldProgress = 0.0f;
 };
 
+/** v11:某房间内某原型的存活虫群数(粗粒度,恢复时在房间刷怪点重新生成)。 */
+USTRUCT()
+struct FWeaponSwarmRoomCount
+{
+	GENERATED_BODY()
+	/** RoomWaves 顺序下标:战斗房在前,防御波在 CombatRoomCount */
+	UPROPERTY(SaveGame) int32 RoomIndex = INDEX_NONE;
+	UPROPERTY(SaveGame) FName ArchetypeRow;
+	UPROPERTY(SaveGame) int32 Count = 0;
+};
+
 /** v10:波次导演中的一个房间(含防御波)。 */
 USTRUCT()
 struct FWeaponWaveRoomSnapshot
 {
 	GENERATED_BODY()
 	UPROPERTY(SaveGame) bool bTriggered = false;
+	/** 精英(GAS 敌人)剩余配额 */
 	UPROPERTY(SaveGame) int32 RemainingToSpawn = 0;
+	/** v11:虫群剩余配额 */
+	UPROPERTY(SaveGame) int32 RemainingSwarm = 0;
 	UPROPERTY(SaveGame) float SecondsToNextSpawn = 0.0f;
 };
 
@@ -60,6 +74,8 @@ struct FWeaponWaveDirectorSnapshot
 	UPROPERTY(SaveGame) bool bHasDefenseWave = false;
 	UPROPERTY(SaveGame) FVector DefenseCenter = FVector::ZeroVector;
 	UPROPERTY(SaveGame) FWeaponWaveRoomSnapshot DefenseWave;
+	/** v11:各房间存活虫群计数 */
+	UPROPERTY(SaveGame) TArray<FWeaponSwarmRoomCount> SwarmCounts;
 };
 
 USTRUCT()
