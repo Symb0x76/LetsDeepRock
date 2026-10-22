@@ -35,6 +35,8 @@ $MinDetectorFps = 25.0
 # 回收后、杀 Client1 前收集的 Client1 样本数（随后立即杀，保证仍在追逐中）
 $PostRecycleSamples = 6
 $PositionCheck = 'Client1 mean pos vs host mean (same second)'
+# 仅当位置/散布实测值越过阈值时置位（阴性对照的唯一成功依据）
+$ThresholdBreached = $false
 
 function Get-NowMs { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 
@@ -324,8 +326,14 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
     }
     if ($offsets.Count -ge 3) {
         $stats = $offsets | Measure-Object -Maximum -Average
-        Add-Result -Check $PositionCheck -Measured ("max {0:N1} / avg {1:N1} uu over {2} samples ({3} pre + {4} post recycle)" -f $stats.Maximum, $stats.Average, $offsets.Count, $prePairs, $postPairs) -Threshold "max <= $MaxMeanOffsetUu uu" -Passed ($stats.Maximum -le $MaxMeanOffsetUu)
         $spreadStats = $spreadDiffs | Measure-Object -Maximum -Average
+        # 阴性对照只认"实测值越过阈值"，不认样本不足之类的覆盖性失败
+        $script:ThresholdBreached = ($stats.Maximum -gt $MaxMeanOffsetUu) -or ($spreadStats.Maximum -gt $MaxSpreadDiffUu)
+        # 回收后的追逐段必须至少有 1 个配对样本，否则追逐覆盖会悄悄消失
+        $chaseCovered = (-not $hasRecycle) -or ($postPairs -ge 1)
+        $measured = "max {0:N1} / avg {1:N1} uu over {2} samples ({3} pre + {4} post recycle)" -f $stats.Maximum, $stats.Average, $offsets.Count, $prePairs, $postPairs
+        if (-not $chaseCovered) { $measured = "no post-recycle pairs: $measured" }
+        Add-Result -Check $PositionCheck -Measured $measured -Threshold "max <= $MaxMeanOffsetUu uu, >= 1 post-recycle pair" -Passed (($stats.Maximum -le $MaxMeanOffsetUu) -and $chaseCovered)
         Add-Result -Check 'Client1 spread vs host spread (same second)' -Measured ("max {0:N1} / avg {1:N1} uu" -f $spreadStats.Maximum, $spreadStats.Average) -Threshold "max <= $MaxSpreadDiffUu uu" -Passed ($spreadStats.Maximum -le $MaxSpreadDiffUu)
     } else {
         Add-Result -Check $PositionCheck -Measured "only $($offsets.Count) paired samples" -Threshold '>= 3 paired samples' -Passed $false
@@ -432,13 +440,12 @@ $results | Format-Table -AutoSize -Wrap | Out-String -Width 240 | Write-Host
 
 if ($ExpectFailure -ne 'None') {
     # 阴性对照：场景必须跑完，且位置断言必须 FAIL，才证明检测器能发现客户端位置错误
-    $positionRow = $results | Where-Object { $_.Check -eq $PositionCheck } | Select-Object -First 1
-    $detected = ($null -eq $fatal) -and ($null -ne $positionRow) -and ($positionRow.Result -eq 'FAIL')
+    $detected = ($null -eq $fatal) -and $script:ThresholdBreached
     if ($detected) {
-        Write-Host "NEGATIVE CONTROL PASSED: fault $ExpectFailure was detected by '$PositionCheck'"
+        Write-Host "NEGATIVE CONTROL PASSED: fault $ExpectFailure breached the position/spread threshold"
         exit 0
     }
-    Write-Host "NEGATIVE CONTROL FAILED: fault $ExpectFailure was NOT detected by '$PositionCheck'"
+    Write-Host "NEGATIVE CONTROL FAILED: fault $ExpectFailure did NOT breach the position/spread threshold (coverage failures do not count)"
     exit 1
 }
 if ($overall -ne 'PASSED') {
