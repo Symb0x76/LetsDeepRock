@@ -92,6 +92,8 @@ struct FSwarmGameplayTestContext
 	int32 CountA = 0;
 	bool bFlagA = false;
 	bool bFlagB = false;
+	bool bFlagC = false;
+	TWeakObjectPtr<AActor> TrackedActor;
 	FString Note;
 
 	void Fail(const FString& Message)
@@ -664,6 +666,8 @@ bool FSwarmGameplayProjectileHitsAtMuzzleHeightTest::RunTest(const FString& Para
 	constexpr float SpawnDistance = 600.f;
 	constexpr float WeaponReadySeconds = 5.f;
 	constexpr float HitWindowSeconds = 1.5f;
+	/** 一击致死时，投射物最后观测位置与虫最后位置的最大 2D 距离（一帧飞行距离 + 碰撞半径的宽松上限） */
+	constexpr double ProjectileKillProximity = 250.0;
 
 	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
 	SwarmGameplayAddArrange(Context, SpawnDistance + 200.f);
@@ -724,16 +728,41 @@ bool FSwarmGameplayProjectileHitsAtMuzzleHeightTest::RunTest(const FString& Para
 		const double MuzzleZ = Projectile->GetActorLocation().Z;
 		Ctx.Test->AddInfo(FString::Printf(TEXT("[Swarm] muzzle Z %.1f, bug column [%.1f, %.1f]"), MuzzleZ, BugBottom, BugTop));
 		Ctx.Test->TestTrue(TEXT("projectile spawned within bug column height"), MuzzleZ >= BugBottom && MuzzleZ <= BugTop);
+
+		// 命中判定数据：激活期间的最低生命、虫/投射物最后位置
+		Ctx.TrackedActor = Projectile;
+		Ctx.ValueC = Ctx.ValueA;
+		Ctx.Positions = {Bug->GetActorLocation(), Projectile->GetActorLocation()};
+		Ctx.bFlagB = false; // 此前用作“武器就绪”，此后表示“一击致死且投射物在侧”
 	});
 	SwarmGameplayAddWorldWait(Context, HitWindowSeconds, [](FSwarmGameplayTestContext& Ctx, float)
 	{
 		const ASwarmBugPawn* Bug = Ctx.Bugs[0].Get();
-		Ctx.bFlagA = !Bug || !Bug->IsBugActive() || Bug->GetHealth() < Ctx.ValueA;
-		return !Ctx.bFlagA;
+		const AActor* Projectile = Ctx.TrackedActor.Get();
+		if (Bug && Bug->IsBugActive())
+		{
+			// 生命被扣但未死：激活期间直接观察到
+			Ctx.ValueC = FMath::Min(Ctx.ValueC, static_cast<double>(Bug->GetHealth()));
+			Ctx.Positions[0] = Bug->GetActorLocation();
+			if (Projectile)
+			{
+				Ctx.Positions[1] = Projectile->GetActorLocation();
+			}
+			Ctx.bFlagA = Ctx.ValueC < Ctx.ValueA;
+			return !Ctx.bFlagA;
+		}
+		// 一击致死：虫失活时，观测到的投射物须在虫最后位置附近（同帧命中）
+		const FVector LastProjectile = Projectile ? Projectile->GetActorLocation() : Ctx.Positions[1];
+		Ctx.ValueB = FMath::Min(SwarmGameplayDist2D(LastProjectile, Ctx.Positions[0]), SwarmGameplayDist2D(Ctx.Positions[1], Ctx.Positions[0]));
+		Ctx.bFlagB = Ctx.ValueB <= ProjectileKillProximity;
+		Ctx.bFlagA = Ctx.bFlagB;
+		Ctx.Note = FString::Printf(TEXT("bug went inactive with projectile %.1f uu from it"), Ctx.ValueB);
+		return false;
 	});
 	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
 	{
-		Ctx.Test->TestTrue(TEXT("bug damaged or killed by projectile within 1.5 s"), Ctx.bFlagA);
+		const FString How = Ctx.bFlagB ? Ctx.Note : FString::Printf(TEXT("min health while active %.1f of %.1f; %s"), Ctx.ValueC, Ctx.ValueA, *Ctx.Note);
+		SwarmGameplayCheck(Ctx, FString::Printf(TEXT("projectile damaged the bug, or killed it on contact, within 1.5 s (%s)"), *How), Ctx.bFlagA);
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;
@@ -1021,11 +1050,14 @@ bool FSwarmGameplayEliteIgnoresSwarmTest::RunTest(const FString& Parameters)
 			Ctx.Note = GetNameSafe(Target);
 		}
 		Ctx.bFlagB |= Target && Target == Ctx.Player.Get();
+		Ctx.bFlagC |= Target != nullptr;
 		return true;
 	});
 	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
 	{
 		Ctx.Test->TestTrue(TEXT("HeavyTank possessed by AEnemyAIController"), Ctx.bFlagA);
+		// 感知必须真的工作过，否则“从不锁定虫群”无意义
+		Ctx.Test->TestTrue(TEXT("HeavyTank perceived a target on at least one frame"), Ctx.bFlagC);
 		Ctx.Test->TestEqual(FString::Printf(TEXT("frames perceiving a swarm pawn (last %s)"), *Ctx.Note), Ctx.CountA, 0);
 		Ctx.Test->AddInfo(FString::Printf(TEXT("[Swarm] elite perceived player during watch: %s"), Ctx.bFlagB ? TEXT("yes") : TEXT("no")));
 	});
