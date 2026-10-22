@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
 #include "Online/WeaponSessionSubsystem.h"
+#include "Swarm/SwarmSlideTracker.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "WeaponSwarmNetHarnessSubsystem.generated.h"
 
@@ -18,6 +19,9 @@ class ASwarmBugPawn;
  *       延时后 DespawnAll 并在 ≥3000uu 外重新生成（RECYCLED）→ 每秒上报存活数与平均位置。
  * Client：LAN 搜索并加入 → 每秒上报可见激活虫数、平均位置、入站 KB/s 与"滑行"计数。
  * 所有输出为 WSH|Run=..|Process=..|Event=..|k=v 标记行，脚本据此断言。
+ * -WeaponSwarmHarnessFault=FreezeBugs（仅客户端）：进入世界 1 s 后冻结本地虫的平滑，供脚本做阴性对照。
+ *
+ * UCLASS 声明不能放进 UHT 不认识的 #if 块，故头文件保持无条件；.cpp 实现在 Shipping 下编译为空桩。
  */
 UCLASS()
 class UWeaponSwarmNetHarnessSubsystem final : public UGameInstanceSubsystem
@@ -37,14 +41,6 @@ private:
 		Client,
 	};
 
-	/** 客户端逐帧滑行跟踪（每个池化虫一份） */
-	struct FBugTrack
-	{
-		FVector LastLocation = FVector::ZeroVector;
-		int32 ConsecutiveFastFrames = 0;
-		bool bWasActive = false;
-	};
-
 	UFUNCTION()
 	void HandleHostComplete(bool bWasSuccessful, FString Message);
 
@@ -57,8 +53,9 @@ private:
 	bool TickHarness(float DeltaSeconds);
 	void DriveSession(UWorld& World);
 	void TickHost(UWorld& World);
-	void TickClient(UWorld& World);
+	void TickClient(UWorld& World, float DeltaSeconds);
 	void MakePlayersInvulnerable(UWorld& World) const;
+	void RescueFallingPlayers(UWorld& World, const APawn& HostPawn);
 	bool SpawnGruntsNear(UWorld& World, const FVector& Origin, float MinDistance, float MaxDistance, int32& OutSpawned, FVector& OutCenter) const;
 	void EmitHostSample(UWorld& World, int64 Second);
 	void EmitClientSample(UWorld& World, int64 Second, double NowSeconds);
@@ -82,6 +79,8 @@ private:
 	// Host 时间线
 	int32 MinPlayersToSpawn = 2;
 	double RecycleDelaySeconds = 15.0;
+	/** 回收前要求的最少玩家数（脚本传 3：等晚加入的 Client2 进入后再回收） */
+	int32 MinPlayersToRecycle = 0;
 	bool bHostReadyEmitted = false;
 	double PlayersReadySeconds = 0.0;
 	bool bSpawned = false;
@@ -94,9 +93,15 @@ private:
 
 	// Client 观测
 	bool bClientInWorldEmitted = false;
-	TMap<TWeakObjectPtr<ASwarmBugPawn>, FBugTrack> BugTracks;
+	double ClientInWorldSeconds = 0.0;
+	bool bFaultFreezeBugs = false;
+	bool bFaultActiveEmitted = false;
+	TMap<TWeakObjectPtr<ASwarmBugPawn>, FSwarmSlideTracker> BugTracks;
 	int32 WindowSlides = 0;
 	int32 TotalSlides = 0;
+	double WindowDtSum = 0.0;
+	double WindowDtMax = 0.0;
+	int32 WindowFrames = 0;
 	int64 LastInTotalBytes = -1;
 	double LastBytesSampleSeconds = 0.0;
 };

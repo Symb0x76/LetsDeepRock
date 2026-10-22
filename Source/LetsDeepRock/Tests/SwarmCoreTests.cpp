@@ -14,6 +14,7 @@
 #include "Swarm/SwarmSubsystem.h"
 #include "Swarm/SwarmDamageRouting.h"
 #include "Swarm/SwarmWaveMath.h"
+#include "Swarm/SwarmSlideTracker.h"
 #include "WeaponCharacter.h"
 #include "EnemyCharacter.h"
 
@@ -279,6 +280,38 @@ bool FSwarmBucketTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("Room1 count"), Out[2].Count, 2);
 	}
 	TestEqual(TEXT("No rooms -> empty"), SwarmBucketByRoom(Bugs, TConstArrayView<FBox2D>()).Num(), 0);
+	return true;
+}
+
+namespace
+{
+	/** 按 (激活, X) 序列喂给滑行跟踪器，返回最终滑行计数（Y 恒为 0） */
+	int32 SwarmRunSlideTrace(std::initializer_list<TPair<bool, float>> Frames)
+	{
+		FSwarmSlideTracker Tracker;
+		for (const TPair<bool, float>& Frame : Frames)
+		{
+			Tracker.Observe(Frame.Key, FVector2D(Frame.Value, 0.0));
+		}
+		return Tracker.GetSlideCount();
+	}
+}
+
+SWARM_TEST(FSwarmSlideTrackerTest, "LetsDeepRock.Swarm.Net.SlideTracker")
+bool FSwarmSlideTrackerTest::RunTest(const FString& Parameters)
+{
+	// 单帧吸附（回收后重定位）不算滑行
+	TestEqual(TEXT("Single snap frame"), SwarmRunSlideTrace({{true, 0.f}, {true, 3000.f}, {true, 3010.f}, {true, 3020.f}}), 0);
+	// 连续 2 帧快速位移不够阈值
+	TestEqual(TEXT("Two fast frames"), SwarmRunSlideTrace({{true, 0.f}, {true, 200.f}, {true, 400.f}, {true, 410.f}}), 0);
+	// 连续 3 帧快速位移计 1 次
+	TestEqual(TEXT("Three fast frames"), SwarmRunSlideTrace({{true, 0.f}, {true, 200.f}, {true, 400.f}, {true, 600.f}}), 1);
+	// 失活期间的跳动、以及激活首帧的吸附都不计
+	TestEqual(TEXT("Inactive then fast"), SwarmRunSlideTrace({{false, 0.f}, {false, 500.f}, {false, 1000.f}, {false, 1500.f}, {true, 4000.f}, {true, 4200.f}, {true, 4400.f}}), 0);
+	// 一段很长的连续快速位移只计 1 次
+	TestEqual(TEXT("Long run counts once"), SwarmRunSlideTrace({{true, 0.f}, {true, 200.f}, {true, 400.f}, {true, 600.f}, {true, 800.f}, {true, 1000.f}, {true, 1200.f}}), 1);
+	// 中间被慢帧打断后重新累计，可再计一次
+	TestEqual(TEXT("Two separate runs"), SwarmRunSlideTrace({{true, 0.f}, {true, 200.f}, {true, 400.f}, {true, 600.f}, {true, 610.f}, {true, 810.f}, {true, 1010.f}, {true, 1210.f}}), 2);
 	return true;
 }
 

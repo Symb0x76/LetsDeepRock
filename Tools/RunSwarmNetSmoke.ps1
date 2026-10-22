@@ -14,6 +14,10 @@ param(
     # 限帧，避免 3 个 -nullrhi 进程空转抢 CPU
     [int]$MaxFps = 60,
 
+    # 阴性对照：给 Client1 注入故障，仅当位置断言 FAIL 时脚本才成功（exit 0）
+    [ValidateSet('None', 'FreezeBugs')]
+    [string]$ExpectFailure = 'None',
+
     [string]$OutputRoot = (Join-Path (Split-Path $PSScriptRoot -Parent) (Join-Path 'Saved\SwarmNetSmoke' (Get-Date -Format 'yyyyMMdd-HHmmss')))
 )
 
@@ -24,7 +28,13 @@ $ErrorActionPreference = 'Stop'
 $MinVisible = 27
 $VisibleWithinMs = 10000
 $MaxMeanOffsetUu = 300.0
+$MaxSpreadDiffUu = 300.0
 $KillObserveMs = 5000
+# 滑行检测需要足够帧率：帧间隔过大时连续 3 帧 >150uu 的判据失真
+$MinDetectorFps = 25.0
+# 回收后、杀 Client1 前收集的 Client1 样本数（随后立即杀，保证仍在追逐中）
+$PostRecycleSamples = 6
+$PositionCheck = 'Client1 mean pos vs host mean (same second)'
 
 function Get-NowMs { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
 
@@ -193,9 +203,12 @@ $fatal = $null
 $hostInfo = $null; $client1 = $null; $client2 = $null
 $spawned = $null; $recycled = $null; $c2Join = $null; $killMs = $null
 
-Write-Host "Swarm net smoke Run=$runId Output=$OutputRoot"
+Write-Host "Swarm net smoke Run=$runId ExpectFailure=$ExpectFailure Output=$OutputRoot"
 try {
-    $hostInfo = Start-SmokeProcess -Label 'Host' -Role 'Host' -RunId $runId -OutputDir $OutputRoot -ExtraArguments @("-WeaponSwarmHarnessRecycleDelay=$RecycleDelaySeconds")
+    $hostInfo = Start-SmokeProcess -Label 'Host' -Role 'Host' -RunId $runId -OutputDir $OutputRoot -ExtraArguments @(
+        "-WeaponSwarmHarnessRecycleDelay=$RecycleDelaySeconds",
+        # 等晚加入的 Client2 进入后再回收，保证杀 Client1 时 Client2 已在场且虫群仍在追逐
+        '-WeaponSwarmHarnessRecyclePlayers=3')
     $processes += $hostInfo
     Wait-SmokeMarker -ProcessInfo $hostInfo -Event 'DriverReady' -TimeoutSeconds $StartupTimeoutSeconds | Out-Null
     Wait-SmokeMarker -ProcessInfo $hostInfo -Event 'HostAdvertised' -TimeoutSeconds $StartupTimeoutSeconds | Out-Null
@@ -203,7 +216,8 @@ try {
     Write-Host 'Host ready (listen + swarm backend + pawn)'
 
     # 1. Client1 加入 → Host 达到 2 名玩家后生成 30 只 BasicGrunt
-    $client1 = Start-SmokeProcess -Label 'Client1' -Role 'Client' -RunId $runId -OutputDir $OutputRoot
+    $client1Args = if ($ExpectFailure -ne 'None') { @("-WeaponSwarmHarnessFault=$ExpectFailure") } else { @() }
+    $client1 = Start-SmokeProcess -Label 'Client1' -Role 'Client' -RunId $runId -OutputDir $OutputRoot -ExtraArguments $client1Args
     $processes += $client1
     Wait-SmokeMarker -ProcessInfo $client1 -Event 'ClientInWorld' -TimeoutSeconds $StartupTimeoutSeconds | Out-Null
     Write-Host 'Client1 in world'
@@ -222,8 +236,14 @@ try {
     # 4. 晚加入：Client2 在 SPAWNED 之后启动
     $client2 = Start-SmokeProcess -Label 'Client2' -Role 'Client' -RunId $runId -OutputDir $OutputRoot
     $processes += $client2
+    $c2Join = Wait-SmokeMarker -ProcessInfo $client2 -Event 'ClientInWorld' -TimeoutSeconds $StartupTimeoutSeconds
+    $c2JoinMs = [long]$c2Join['T']
+    Write-Host 'Client2 in world'
+    Wait-SmokeMarker -ProcessInfo $client2 -Event 'ClientSample' -TimeoutSeconds ($VisibleWithinMs / 1000 + 5) -AllowTimeout -Where {
+        param($m) ([long]$m['T'] -ge $c2JoinMs) -and ([int]$m['Visible'] -ge $MinVisible)
+    } | Out-Null
 
-    # 3. 回收：Host 在 SPAWNED + RecycleDelay 后 DespawnAll 并在 ≥3000uu 外重生
+    # 3. 回收：SPAWNED + RecycleDelay 且 3 名玩家在场后 DespawnAll 并在 ≥3000uu 外重生
     $recycled = Wait-SmokeMarker -ProcessInfo $hostInfo -Event @('RECYCLED', 'RECYCLE_FAILED') -TimeoutSeconds ($RecycleDelaySeconds + 60)
     if ($recycled['Event'] -ne 'RECYCLED') {
         throw "Host could not respawn BasicGrunt >= 3000 uu away (Spawned=$($recycled['Spawned']))"
@@ -231,27 +251,23 @@ try {
     $recycleMs = [long]$recycled['T']
     Write-Host "RECYCLED Spawned=$($recycled['Spawned']) MinDist=$($recycled['MinDist'])"
 
-    $c2Join = Wait-SmokeMarker -ProcessInfo $client2 -Event 'ClientInWorld' -TimeoutSeconds $StartupTimeoutSeconds
-    $c2JoinMs = [long]$c2Join['T']
-    Write-Host 'Client2 in world'
-    Wait-SmokeMarker -ProcessInfo $client2 -Event 'ClientSample' -TimeoutSeconds ($VisibleWithinMs / 1000 + 5) -AllowTimeout -Where {
-        param($m) ([long]$m['T'] -ge $c2JoinMs) -and ([int]$m['Visible'] -ge $MinVisible)
-    } | Out-Null
-    # 回收后至少收集 5 秒的 Client1 滑行样本
+    # 回收后收集 $PostRecycleSamples 个 Client1 样本，随即杀掉（虫群仍在追逐途中）
     Wait-SmokeMarker -ProcessInfo $client1 -Event 'ClientSample' -TimeoutSeconds 30 -Where {
-        param($m) [long]$m['T'] -ge ($recycleMs + 5000)
+        param($m) @($client1.Markers | Where-Object { $_['Event'] -eq 'ClientSample' -and [long]$_['T'] -gt $recycleMs }).Count -ge $PostRecycleSamples
     } | Out-Null
 
-    # 5. 断线：追逐中强杀 Client1，Host 继续运行
-    # 先取时间再杀：taskkill + WaitForExit 期间 Host 可能已经收到断线
+    # 5. 断线：先取时间再杀（taskkill + WaitForExit 期间 Host 可能已经收到断线）
     $killMs = Get-NowMs
     Stop-SmokeProcess -ProcessInfo $client1
     Write-Host 'Client1 killed'
     Wait-SmokeMarker -ProcessInfo $hostInfo -Event 'HostSample' -TimeoutSeconds 30 -Where {
         param($m) [long]$m['T'] -ge ($killMs + $KillObserveMs + 1000)
     } | Out-Null
-    # 信息项：Host 侧移除断线玩家的耗时（等待最多 60 s，不作断言）
-    Wait-SmokeMarker -ProcessInfo $hostInfo -Event 'PlayerCount' -TimeoutSeconds 60 -AllowTimeout -Where {
+    Wait-SmokeMarker -ProcessInfo $client2 -Event 'ClientSample' -TimeoutSeconds 30 -Where {
+        param($m) [long]$m['T'] -ge ($killMs + $KillObserveMs + 1000)
+    } | Out-Null
+    # 信息项：Host 侧移除断线玩家的耗时
+    Wait-SmokeMarker -ProcessInfo $hostInfo -Event 'PlayerCount' -TimeoutSeconds 30 -AllowTimeout -Where {
         param($m) ([long]$m['T'] -ge $killMs) -and ([int]$m['Players'] -lt [int]$m['Previous'])
     } | Out-Null
 } catch {
@@ -272,7 +288,9 @@ if ($null -ne $fatal) {
 
 if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
     $spawnMs = [long]$spawned['T']
-    $recycleMs = if ($null -ne $recycled) { [long]$recycled['T'] } else { [long]::MaxValue }
+    $hasRecycle = ($null -ne $recycled -and $recycled['Event'] -eq 'RECYCLED')
+    $recycleMs = if ($hasRecycle) { [long]$recycled['T'] } else { [long]::MaxValue }
+    $endMs = if ($null -ne $killMs) { [long]$killMs } else { [long]::MaxValue }
     $c1Samples = @(Get-SmokeMarkers -ProcessInfo $client1 -Event 'ClientSample')
     $hostSamples = @(Get-SmokeMarkers -ProcessInfo $hostInfo -Event 'HostSample')
 
@@ -286,37 +304,56 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
         Add-Result -Check "Client1 visible >= $MinVisible after SPAWNED" -Measured "never (max Visible=$maxVisible)" -Threshold "<= $VisibleWithinMs ms" -Passed $false
     }
 
-    # A2: 同一 UTC 秒的 Host/Client1 平均位置偏差（仅计数一致的样本，SPAWNED~RECYCLED 窗口）
+    # A2: 同一 UTC 秒的 Host/Client1 平均位置与散布偏差。窗口 SPAWNED→杀 Client1（含回收后的追逐），
+    #     跳过回收所在秒前后（两侧可能分别处于回收前/后），仅计数一致且 ≥ 27 的样本。
+    $recycleSec = [long][Math]::Floor($recycleMs / 1000.0)
     $hostBySec = @{}
     foreach ($h in $hostSamples) { $hostBySec[$h['Sec']] = $h }
-    $offsets = @()
+    $offsets = @(); $spreadDiffs = @(); $prePairs = 0; $postPairs = 0
     foreach ($c in $c1Samples) {
         $t = [long]$c['T']
-        if ($t -le $spawnMs -or $t -ge $recycleMs) { continue }
+        $sec = [long]$c['Sec']
+        if ($t -le $spawnMs -or $t -ge $endMs) { continue }
+        if ($hasRecycle -and $sec -ge $recycleSec - 1 -and $sec -le $recycleSec + 2) { continue }
         $h = $hostBySec[$c['Sec']]
-        if ($null -eq $h -or [long]$h['T'] -ge $recycleMs) { continue }
+        if ($null -eq $h -or [long]$h['T'] -ge $endMs) { continue }
         if ([int]$h['Alive'] -lt $MinVisible -or [int]$h['Alive'] -ne [int]$c['Visible']) { continue }
         $offsets += (Get-Dist3 -A $h -B $c)
+        $spreadDiffs += [Math]::Abs([double]$h['Spread'] - [double]$c['Spread'])
+        if ($t -lt $recycleMs) { $prePairs++ } else { $postPairs++ }
     }
     if ($offsets.Count -ge 3) {
         $stats = $offsets | Measure-Object -Maximum -Average
-        Add-Result -Check 'Client1 mean pos vs host mean (same second)' -Measured ("max {0:N1} / avg {1:N1} uu over {2} samples" -f $stats.Maximum, $stats.Average, $offsets.Count) -Threshold "max <= $MaxMeanOffsetUu uu" -Passed ($stats.Maximum -le $MaxMeanOffsetUu)
+        Add-Result -Check $PositionCheck -Measured ("max {0:N1} / avg {1:N1} uu over {2} samples ({3} pre + {4} post recycle)" -f $stats.Maximum, $stats.Average, $offsets.Count, $prePairs, $postPairs) -Threshold "max <= $MaxMeanOffsetUu uu" -Passed ($stats.Maximum -le $MaxMeanOffsetUu)
+        $spreadStats = $spreadDiffs | Measure-Object -Maximum -Average
+        Add-Result -Check 'Client1 spread vs host spread (same second)' -Measured ("max {0:N1} / avg {1:N1} uu" -f $spreadStats.Maximum, $spreadStats.Average) -Threshold "max <= $MaxSpreadDiffUu uu" -Passed ($spreadStats.Maximum -le $MaxSpreadDiffUu)
     } else {
-        Add-Result -Check 'Client1 mean pos vs host mean (same second)' -Measured "only $($offsets.Count) paired samples" -Threshold '>= 3 paired samples' -Passed $false
+        Add-Result -Check $PositionCheck -Measured "only $($offsets.Count) paired samples" -Threshold '>= 3 paired samples' -Passed $false
     }
 
-    # A3: RECYCLED 之后 Client1 滑行计数恒为 0
-    if ($null -ne $recycled -and $recycled['Event'] -eq 'RECYCLED') {
-        $afterRecycle = @($c1Samples | Where-Object { [long]$_['T'] -gt $recycleMs })
+    # A3: RECYCLED 之后 Client1 滑行计数恒为 0；前提是虫在视野内且帧率足够让检测器有效
+    if ($hasRecycle) {
+        $afterRecycle = @($c1Samples | Where-Object { [long]$_['T'] -gt $recycleMs -and [long]$_['T'] -lt $endMs })
+        $visibleAfter = @($afterRecycle | Where-Object { [int]$_['Visible'] -ge $MinVisible })
         $slides = ($afterRecycle | ForEach-Object { [int]$_['Slides'] } | Measure-Object -Sum).Sum
         if ($null -eq $slides) { $slides = 0 }
-        $passed = ($afterRecycle.Count -ge 3) -and ($slides -eq 0)
-        Add-Result -Check 'Client1 slides after RECYCLED' -Measured "$slides over $($afterRecycle.Count) samples (MinDist=$($recycled['MinDist']) uu)" -Threshold '0 (>= 3 samples)' -Passed $passed
+        $avgDt = ($visibleAfter | ForEach-Object { [double]$_['AvgDtMs'] } | Measure-Object -Average).Average
+        $maxDt = ($visibleAfter | ForEach-Object { [double]$_['MaxDtMs'] } | Measure-Object -Maximum).Maximum
+        $fps = if ($avgDt -gt 0) { 1000.0 / $avgDt } else { 0.0 }
+        $measured = "{0} over {1} samples ({2} with Visible>={3}); avg {4:N1} fps, max dt {5:N1} ms; MinDist={6} uu" -f $slides, $afterRecycle.Count, $visibleAfter.Count, $MinVisible, $fps, $maxDt, $recycled['MinDist']
+        if ($visibleAfter.Count -lt 3) {
+            Add-Result -Check 'Client1 slides after RECYCLED' -Measured "precondition: $measured" -Threshold ">= 3 samples Visible>=$MinVisible" -Passed $false
+        } elseif ($fps -lt $MinDetectorFps) {
+            Add-Result -Check 'Client1 slides after RECYCLED' -Measured "detector blind (<$MinDetectorFps fps): $measured" -Threshold "0, fps >= $MinDetectorFps" -Passed $false
+        } else {
+            Add-Result -Check 'Client1 slides after RECYCLED' -Measured $measured -Threshold "0, fps >= $MinDetectorFps" -Passed ($slides -eq 0)
+        }
         $beforeSlides = ($c1Samples | Where-Object { [long]$_['T'] -le $recycleMs } | ForEach-Object { [int]$_['Slides'] } | Measure-Object -Sum).Sum
         Add-Result -Check 'Client1 slides before RECYCLED' -Measured "$beforeSlides" -Threshold 'info' -Passed $null
     }
 
     # A4: Client2 加入后 10 s 内可见 ≥ 27
+    $c2Samples = @()
     if ($null -ne $c2Join) {
         $c2JoinMs = [long]$c2Join['T']
         $c2Samples = @(Get-SmokeMarkers -ProcessInfo $client2 -Event 'ClientSample')
@@ -334,18 +371,29 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
         }
     }
 
-    # 信息项：Client1 入站带宽（追逐窗口 = SPAWNED 之后、被杀之前）
+    # 信息项：Client1 入站带宽（SPAWNED 之后、被杀之前）
     $kb = $c1Samples | Where-Object { [long]$_['T'] -gt $spawnMs + 1000 } | ForEach-Object { [double]$_['InKBps'] } | Measure-Object -Average -Maximum
     if ($kb.Count -gt 0) {
         Add-Result -Check 'Client1 inbound KB/s (30 bugs)' -Measured ("avg {0:N1} / max {1:N1} over {2} s" -f $kb.Average, $kb.Maximum, $kb.Count) -Threshold 'info' -Passed $null
     }
 
-    # A5: 强杀 Client1 后 Host 无 Swarm/网络 Error/Ensure，存活数 5 s 内恒 > 0
+    # A5/A6: 强杀 Client1 后 Host 无 Swarm/网络 Error/Ensure、存活数 5 s 内恒 > 0；Client2 持续可见且有入站流量
     if ($null -ne $killMs) {
-        $afterKill = @($hostSamples | Where-Object { [long]$_['T'] -ge $killMs -and [long]$_['T'] -le $killMs + $KillObserveMs + 1000 })
+        $lastBeforeKill = $hostSamples | Where-Object { [long]$_['T'] -le $killMs } | Select-Object -Last 1
+        if ($null -ne $lastBeforeKill) {
+            Add-Result -Check 'Mean bug distance to host pawn at kill' -Measured ("{0:N0} uu (Alive={1})" -f [double]$lastBeforeKill['MeanDistToHost'], $lastBeforeKill['Alive']) -Threshold 'info' -Passed $null
+        }
+
+        $windowEnd = $killMs + $KillObserveMs + 1000
+        $afterKill = @($hostSamples | Where-Object { [long]$_['T'] -ge $killMs -and [long]$_['T'] -le $windowEnd })
         $minAlive = ($afterKill | ForEach-Object { [int]$_['Alive'] } | Measure-Object -Minimum).Minimum
-        $alivePassed = ($afterKill.Count -ge 5) -and ($minAlive -gt 0)
-        Add-Result -Check 'Host alive count after Client1 kill' -Measured "min $minAlive over $($afterKill.Count) samples" -Threshold '> 0 for 5 s' -Passed $alivePassed
+        Add-Result -Check 'Host alive count after Client1 kill' -Measured "min $minAlive over $($afterKill.Count) samples" -Threshold '> 0 for 5 s' -Passed (($afterKill.Count -ge 5) -and ($minAlive -gt 0))
+
+        $c2AfterKill = @($c2Samples | Where-Object { [long]$_['T'] -ge $killMs -and [long]$_['T'] -le $windowEnd })
+        $c2MinVisible = ($c2AfterKill | ForEach-Object { [int]$_['Visible'] } | Measure-Object -Minimum).Minimum
+        $c2MinKb = ($c2AfterKill | ForEach-Object { [double]$_['InKBps'] } | Measure-Object -Minimum).Minimum
+        $c2Passed = ($c2AfterKill.Count -ge 5) -and ($c2MinVisible -ge $MinVisible) -and ($c2MinKb -gt 0)
+        Add-Result -Check 'Client2 after Client1 kill' -Measured ("min Visible {0}, min {1:N2} KB/s over {2} samples" -f $c2MinVisible, $c2MinKb, $c2AfterKill.Count) -Threshold "Visible >= $MinVisible, KB/s > 0 for 5 s" -Passed $c2Passed
 
         $beforeKill = @($hostInfo.Markers | Where-Object { [long]$_['T'] -lt $killMs })
         $startLine = if ($beforeKill.Count -gt 0) { [int]$beforeKill[-1]['LineIndex'] + 1 } else { 0 }
@@ -365,9 +413,14 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
         foreach ($bad in ($badLines | Select-Object -First 10)) { Write-Host "  host: $bad" }
 
         $drop = $hostInfo.Markers | Where-Object { $_['Event'] -eq 'PlayerCount' -and [long]$_['T'] -ge $killMs -and [int]$_['Players'] -lt [int]$_['Previous'] } | Select-Object -First 1
-        $dropText = if ($null -ne $drop) { "$([long]$drop['T'] - $killMs) ms" } else { 'not within 60 s' }
+        $dropText = if ($null -ne $drop) { "$([long]$drop['T'] - $killMs) ms" } else { 'not within 30 s' }
         Add-Result -Check 'Host removed killed Client1' -Measured $dropText -Threshold 'info' -Passed $null
     }
+
+    # 信息项：harness 把无地面的回退出生点玩家放回主机旁的次数（测试图缺 PlayerStart 的已知问题）
+    $rescues = @($hostInfo.Markers | Where-Object { $_['Event'] -eq 'PawnRescued' })
+    $rescueText = if ($rescues.Count -gt 0) { "$($rescues.Count) (first from X=$($rescues[0]['FromX']) Y=$($rescues[0]['FromY']) Z=$($rescues[0]['FromZ']))" } else { '0' }
+    Add-Result -Check 'Players rescued from groundless spawn' -Measured $rescueText -Threshold 'info' -Passed $null
 }
 
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' }).Count
@@ -375,7 +428,19 @@ $overall = if ($failed -eq 0 -and $results.Count -gt 0) { 'PASSED' } else { 'FAI
 $results | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $OutputRoot 'summary.json') -Encoding UTF8
 Write-Host ''
 Write-Host "Swarm net smoke $overall  Run=$runId  Output=$OutputRoot"
-$results | Format-Table -AutoSize -Wrap | Out-String -Width 220 | Write-Host
+$results | Format-Table -AutoSize -Wrap | Out-String -Width 240 | Write-Host
+
+if ($ExpectFailure -ne 'None') {
+    # 阴性对照：场景必须跑完，且位置断言必须 FAIL，才证明检测器能发现客户端位置错误
+    $positionRow = $results | Where-Object { $_.Check -eq $PositionCheck } | Select-Object -First 1
+    $detected = ($null -eq $fatal) -and ($null -ne $positionRow) -and ($positionRow.Result -eq 'FAIL')
+    if ($detected) {
+        Write-Host "NEGATIVE CONTROL PASSED: fault $ExpectFailure was detected by '$PositionCheck'"
+        exit 0
+    }
+    Write-Host "NEGATIVE CONTROL FAILED: fault $ExpectFailure was NOT detected by '$PositionCheck'"
+    exit 1
+}
 if ($overall -ne 'PASSED') {
     exit 1
 }

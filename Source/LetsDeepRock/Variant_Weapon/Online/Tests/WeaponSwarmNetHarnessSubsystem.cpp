@@ -9,6 +9,8 @@
 #include "Engine/NetDriver.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/GameModeBase.h"
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/Pawn.h"
@@ -20,6 +22,8 @@
 #include "Swarm/SwarmBugPawn.h"
 #include "Swarm/SwarmSubsystem.h"
 #include "WeaponPlayerState.h"
+
+#if !UE_BUILD_SHIPPING
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeaponSwarmHarness, Log, All);
 
@@ -43,9 +47,8 @@ namespace WeaponSwarmNetHarness
 	/** 回收后实际虫位置到主机 Pawn 的最小距离要求 */
 	constexpr float RecycleRequiredDistance = 3000.f;
 	constexpr float InvulnerableHealth = 1000000.f;
-	/** 单帧位移超过该值视为"快速帧"；连续 SlideFrameThreshold 帧即计一次滑行 */
-	constexpr float SlideFrameDistance = 150.f;
-	constexpr int32 SlideFrameThreshold = 3;
+	/** 阴性对照：进入世界后多久开始冻结本地虫 */
+	constexpr double FaultFreezeDelaySeconds = 1.0;
 	const TCHAR* DefaultMap = TEXT("/Game/GridMap/Maps/L_GridMapStage4Test");
 }
 
@@ -82,18 +85,36 @@ namespace
 		return World.LineTraceSingleByObjectType(Hit, Point + FVector(0.0, 0.0, 200.0),
 			Point - FVector(0.0, 0.0, 1000.0), FCollisionObjectQueryParams(ECC_WorldStatic));
 	}
+
+	/** 一组点的质心与 2D RMS 散布（到质心距离的均方根） */
+	struct FSwarmHarnessCloud
+	{
+		TArray<FVector> Points;
+
+		FVector Mean() const
+		{
+			FVector Sum = FVector::ZeroVector;
+			for (const FVector& Point : Points) { Sum += Point; }
+			return Points.Num() > 0 ? Sum / Points.Num() : FVector::ZeroVector;
+		}
+
+		double Spread() const
+		{
+			if (Points.Num() == 0) { return 0.0; }
+			const FVector Center = Mean();
+			double SumSq = 0.0;
+			for (const FVector& Point : Points) { SumSq += FVector::DistSquared2D(Point, Center); }
+			return FMath::Sqrt(SumSq / Points.Num());
+		}
+	};
 }
 
 bool UWeaponSwarmNetHarnessSubsystem::ShouldCreateSubsystem(UObject* Outer) const
 {
-#if UE_BUILD_SHIPPING
-	return false;
-#else
 	FString RequestedRole;
 	return Super::ShouldCreateSubsystem(Outer) &&
 		FParse::Value(FCommandLine::Get(), TEXT("WeaponSwarmHarnessRole="), RequestedRole) &&
 		!RequestedRole.IsEmpty();
-#endif
 }
 
 void UWeaponSwarmNetHarnessSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -121,6 +142,10 @@ void UWeaponSwarmNetHarnessSubsystem::Initialize(FSubsystemCollectionBase& Colle
 		: FName(WeaponSwarmNetHarness::DefaultMap);
 	FParse::Value(FCommandLine::Get(), TEXT("WeaponSwarmHarnessMinPlayers="), MinPlayersToSpawn);
 	FParse::Value(FCommandLine::Get(), TEXT("WeaponSwarmHarnessRecycleDelay="), RecycleDelaySeconds);
+	FParse::Value(FCommandLine::Get(), TEXT("WeaponSwarmHarnessRecyclePlayers="), MinPlayersToRecycle);
+	FString Fault;
+	FParse::Value(FCommandLine::Get(), TEXT("WeaponSwarmHarnessFault="), Fault);
+	bFaultFreezeBugs = Fault.Equals(TEXT("FreezeBugs"), ESearchCase::IgnoreCase);
 
 	if (RequestedRole.Equals(TEXT("Host"), ESearchCase::IgnoreCase))
 	{
@@ -149,8 +174,8 @@ void UWeaponSwarmNetHarnessSubsystem::Initialize(FSubsystemCollectionBase& Colle
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		FTickerDelegate::CreateUObject(this, &UWeaponSwarmNetHarnessSubsystem::TickHarness),
 		WeaponSwarmNetHarness::TickIntervalSeconds);
-	EmitMarker(TEXT("DriverReady"), FString::Printf(TEXT("Role=%s|Server=%s|Map=%s"),
-		*RequestedRole, *ServerName, *HostMapName.ToString()));
+	EmitMarker(TEXT("DriverReady"), FString::Printf(TEXT("Role=%s|Server=%s|Map=%s|Fault=%s"),
+		*RequestedRole, *ServerName, *HostMapName.ToString(), bFaultFreezeBugs ? TEXT("FreezeBugs") : TEXT("None")));
 }
 
 void UWeaponSwarmNetHarnessSubsystem::Deinitialize()
@@ -171,7 +196,6 @@ void UWeaponSwarmNetHarnessSubsystem::Deinitialize()
 
 bool UWeaponSwarmNetHarnessSubsystem::TickHarness(const float DeltaSeconds)
 {
-	(void)DeltaSeconds;
 	UWorld* World = GetWorld();
 	if (!World || !World->IsGameWorld())
 	{
@@ -184,7 +208,7 @@ bool UWeaponSwarmNetHarnessSubsystem::TickHarness(const float DeltaSeconds)
 	}
 	else if (ProcessRole == EProcessRole::Client)
 	{
-		TickClient(*World);
+		TickClient(*World, DeltaSeconds);
 	}
 	return true;
 }
@@ -234,6 +258,7 @@ void UWeaponSwarmNetHarnessSubsystem::TickHost(UWorld& World)
 	}
 
 	MakePlayersInvulnerable(World);
+	RescueFallingPlayers(World, *HostPawn);
 
 	if (!bHostReadyEmitted)
 	{
@@ -290,7 +315,7 @@ void UWeaponSwarmNetHarnessSubsystem::TickHost(UWorld& World)
 					Spawned, Backend->CountAlive(), Center.X, Center.Y));
 		}
 	}
-	else if (!bRecycled && Now - SpawnedSeconds >= RecycleDelaySeconds)
+	else if (!bRecycled && Now - SpawnedSeconds >= RecycleDelaySeconds && PlayersWithPawn >= MinPlayersToRecycle)
 	{
 		bRecycled = true;
 		Backend->DespawnAll();
@@ -383,23 +408,67 @@ void UWeaponSwarmNetHarnessSubsystem::MakePlayersInvulnerable(UWorld& World) con
 	}
 }
 
+void UWeaponSwarmNetHarnessSubsystem::RescueFallingPlayers(UWorld& World, const APawn& HostPawn)
+{
+	// 测试图缺少第 3 个 PlayerStart 时，GameMode 的按 Slot 回退点 (-250,250,0) 下方没有地面，
+	// 晚加入的玩家会无限下坠并把虫群剔出相关性。harness 把这类 Pawn 放回主机旁，并打标记供脚本报告。
+	const AGameStateBase* GameState = World.GetGameState();
+	if (!GameState)
+	{
+		return;
+	}
+	int32 Index = 0;
+	for (const APlayerState* PlayerState : GameState->PlayerArray)
+	{
+		APawn* Pawn = PlayerState ? PlayerState->GetPawn() : nullptr;
+		if (!Pawn || Pawn == &HostPawn)
+		{
+			continue;
+		}
+		++Index;
+		const FVector From = Pawn->GetActorLocation();
+		if (SwarmHarnessHasGround(World, From))
+		{
+			continue;
+		}
+		for (int32 Attempt = 0; Attempt < 8; ++Attempt)
+		{
+			const float Angle = 2.f * UE_PI * (Index + Attempt) / 8.f;
+			const FVector Spot = HostPawn.GetActorLocation() + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * 200.f;
+			if (!SwarmHarnessHasGround(World, Spot))
+			{
+				continue;
+			}
+			if (ACharacter* Character = Cast<ACharacter>(Pawn))
+			{
+				Character->GetCharacterMovement()->StopMovementImmediately();
+			}
+			Pawn->TeleportTo(Spot, Pawn->GetActorRotation());
+			EmitMarker(TEXT("PawnRescued"), FString::Printf(TEXT("Player=%s|FromX=%.0f|FromY=%.0f|FromZ=%.0f|ToX=%.0f|ToY=%.0f"),
+				*SanitizeMarkerValue(PlayerState->GetPlayerName()), From.X, From.Y, From.Z, Spot.X, Spot.Y));
+			break;
+		}
+	}
+}
+
 void UWeaponSwarmNetHarnessSubsystem::EmitHostSample(UWorld& World, const int64 Second)
 {
 	ISwarmBackend* Backend = USwarmSubsystem::Get(&World)->GetBackend();
-	FVector Sum = FVector::ZeroVector;
-	int32 Alive = 0;
-	Backend->ForEachAlive([&Sum, &Alive](const FSwarmBugView& View)
-	{
-		Sum += View.Location;
-		++Alive;
-	});
-	const FVector Mean = Alive > 0 ? Sum / Alive : FVector::ZeroVector;
+	FSwarmHarnessCloud Cloud;
+	Backend->ForEachAlive([&Cloud](const FSwarmBugView& View) { Cloud.Points.Add(View.Location); });
+	const FVector Mean = Cloud.Mean();
+	const APawn* HostPawn = SwarmHarnessLocalPawn(*GetGameInstance(), World);
+	const FVector HostLocation = HostPawn ? HostPawn->GetActorLocation() : FVector::ZeroVector;
+	double DistSum = 0.0;
+	for (const FVector& Point : Cloud.Points) { DistSum += FVector::Dist2D(Point, HostLocation); }
+	const double MeanDistToHost = Cloud.Points.Num() > 0 ? DistSum / Cloud.Points.Num() : 0.0;
 	EmitMarker(TEXT("HostSample"), FString::Printf(
-		TEXT("Sec=%lld|Alive=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|Players=%d"),
-		Second, Alive, Mean.X, Mean.Y, Mean.Z, LastPlayerCount));
+		TEXT("Sec=%lld|Alive=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|Spread=%.1f|HostX=%.1f|HostY=%.1f|MeanDistToHost=%.1f|Players=%d"),
+		Second, Cloud.Points.Num(), Mean.X, Mean.Y, Mean.Z, Cloud.Spread(), HostLocation.X, HostLocation.Y,
+		MeanDistToHost, LastPlayerCount));
 }
 
-void UWeaponSwarmNetHarnessSubsystem::TickClient(UWorld& World)
+void UWeaponSwarmNetHarnessSubsystem::TickClient(UWorld& World, const float DeltaSeconds)
 {
 	if (World.GetNetMode() != NM_Client)
 	{
@@ -413,39 +482,37 @@ void UWeaponSwarmNetHarnessSubsystem::TickClient(UWorld& World)
 			return;
 		}
 		bClientInWorldEmitted = true;
+		ClientInWorldSeconds = FPlatformTime::Seconds();
 		EmitMarker(TEXT("ClientInWorld"), FString::Printf(TEXT("NetMode=%s|Map=%s"),
 			SwarmHarnessLexNetMode(World.GetNetMode()), *World.GetOutermost()->GetName()));
 	}
 
-	// 逐帧滑行检测：激活中的虫连续 N 帧单帧位移 > 阈值即计一次（每段连续只计一次）。
-	// 刚激活的首帧不计位移（ActivationSerial 变化时客户端吸附属预期行为）。
+	// 阴性对照：每帧关掉本地虫的 Tick（OnRep_Active 会重新打开），位置不再向复制目标平滑
+	const bool bFreeze = bFaultFreezeBugs &&
+		FPlatformTime::Seconds() - ClientInWorldSeconds >= WeaponSwarmNetHarness::FaultFreezeDelaySeconds;
+	if (bFreeze && !bFaultActiveEmitted)
+	{
+		bFaultActiveEmitted = true;
+		EmitMarker(TEXT("FaultActive"), TEXT("Fault=FreezeBugs"));
+	}
+
+	WindowDtSum += DeltaSeconds;
+	WindowDtMax = FMath::Max(WindowDtMax, static_cast<double>(DeltaSeconds));
+	++WindowFrames;
+
+	// 逐帧滑行检测（规则见 FSwarmSlideTracker）
 	for (TActorIterator<ASwarmBugPawn> It(&World); It; ++It)
 	{
 		ASwarmBugPawn* Bug = *It;
-		FBugTrack& Track = BugTracks.FindOrAdd(Bug);
-		const bool bActive = Bug->IsBugActive();
-		const FVector Location = Bug->GetActorLocation();
-		if (bActive && Track.bWasActive)
+		if (bFreeze)
 		{
-			if (FVector::Dist2D(Location, Track.LastLocation) > WeaponSwarmNetHarness::SlideFrameDistance)
-			{
-				if (++Track.ConsecutiveFastFrames == WeaponSwarmNetHarness::SlideFrameThreshold)
-				{
-					++WindowSlides;
-					++TotalSlides;
-				}
-			}
-			else
-			{
-				Track.ConsecutiveFastFrames = 0;
-			}
+			Bug->SetActorTickEnabled(false);
 		}
-		else
+		if (BugTracks.FindOrAdd(Bug).Observe(Bug->IsBugActive(), FVector2D(Bug->GetActorLocation())))
 		{
-			Track.ConsecutiveFastFrames = 0;
+			++WindowSlides;
+			++TotalSlides;
 		}
-		Track.bWasActive = bActive;
-		Track.LastLocation = Location;
 	}
 
 	const int64 Second = FDateTime::UtcNow().ToUnixTimestamp();
@@ -458,17 +525,16 @@ void UWeaponSwarmNetHarnessSubsystem::TickClient(UWorld& World)
 
 void UWeaponSwarmNetHarnessSubsystem::EmitClientSample(UWorld& World, const int64 Second, const double NowSeconds)
 {
-	FVector Sum = FVector::ZeroVector;
-	int32 Visible = 0;
+	FSwarmHarnessCloud Cloud;
 	for (TActorIterator<ASwarmBugPawn> It(&World); It; ++It)
 	{
 		if (It->IsBugActive())
 		{
-			Sum += It->GetActorLocation();
-			++Visible;
+			Cloud.Points.Add(It->GetActorLocation());
 		}
 	}
-	const FVector Mean = Visible > 0 ? Sum / Visible : FVector::ZeroVector;
+	const FVector Mean = Cloud.Mean();
+	const int32 Visible = Cloud.Points.Num();
 
 	// 入站带宽：ServerConnection 累计入站字节差分（不依赖 StatPeriod）
 	double InKBps = 0.0;
@@ -485,10 +551,17 @@ void UWeaponSwarmNetHarnessSubsystem::EmitClientSample(UWorld& World, const int6
 		LastBytesSampleSeconds = NowSeconds;
 	}
 
+	const APawn* LocalPawn = SwarmHarnessLocalPawn(*GetGameInstance(), World);
+	const FVector LocalLocation = LocalPawn ? LocalPawn->GetActorLocation() : FVector::ZeroVector;
 	EmitMarker(TEXT("ClientSample"), FString::Printf(
-		TEXT("Sec=%lld|Visible=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|InKBps=%.2f|Slides=%d|SlidesTotal=%d"),
-		Second, Visible, Mean.X, Mean.Y, Mean.Z, InKBps, WindowSlides, TotalSlides));
+		TEXT("Sec=%lld|Visible=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|Spread=%.1f|InKBps=%.2f|Slides=%d|SlidesTotal=%d|AvgDtMs=%.2f|MaxDtMs=%.2f|Frames=%d|LocalX=%.1f|LocalY=%.1f|LocalZ=%.1f"),
+		Second, Visible, Mean.X, Mean.Y, Mean.Z, Cloud.Spread(), InKBps, WindowSlides, TotalSlides,
+		WindowFrames > 0 ? WindowDtSum * 1000.0 / WindowFrames : 0.0, WindowDtMax * 1000.0, WindowFrames,
+		LocalLocation.X, LocalLocation.Y, LocalLocation.Z));
 	WindowSlides = 0;
+	WindowDtSum = 0.0;
+	WindowDtMax = 0.0;
+	WindowFrames = 0;
 }
 
 void UWeaponSwarmNetHarnessSubsystem::HandleHostComplete(const bool bWasSuccessful, const FString Message)
@@ -551,3 +624,15 @@ FString UWeaponSwarmNetHarnessSubsystem::SanitizeMarkerValue(FString Value)
 	Value.ReplaceInline(TEXT("\n"), TEXT(" "));
 	return Value;
 }
+
+#else // UE_BUILD_SHIPPING
+
+// Shipping：harness 不编译，仅保留 UHT 生成代码需要的虚函数与 UFUNCTION 空桩
+bool UWeaponSwarmNetHarnessSubsystem::ShouldCreateSubsystem(UObject* Outer) const { return false; }
+void UWeaponSwarmNetHarnessSubsystem::Initialize(FSubsystemCollectionBase& Collection) { Super::Initialize(Collection); }
+void UWeaponSwarmNetHarnessSubsystem::Deinitialize() { Super::Deinitialize(); }
+void UWeaponSwarmNetHarnessSubsystem::HandleHostComplete(bool, FString) {}
+void UWeaponSwarmNetHarnessSubsystem::HandleFindComplete(bool, const TArray<FWeaponLanSessionResult>&) {}
+void UWeaponSwarmNetHarnessSubsystem::HandleJoinComplete(bool, FString) {}
+
+#endif // !UE_BUILD_SHIPPING
