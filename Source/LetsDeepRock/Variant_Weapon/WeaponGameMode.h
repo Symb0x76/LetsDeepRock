@@ -162,6 +162,8 @@ protected:
 private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;
 	int32 FindSmallestUnreservedPlayerSlot() const;
+	/** 无可用 PlayerStart 时按 Slot 计算出生点：以地图 PlayerSpawn 标记（或任一 PlayerStart）为锚，向下找地面。 */
+	FVector ComputeFallbackSpawnLocation(AController* NewPlayer, int32 PlayerSlot);
 	int32 FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId);
 	void MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, int32 OriginalSlot);
 	void MarkPlayerPending(const FUniqueNetIdRepl& PlayerId);
