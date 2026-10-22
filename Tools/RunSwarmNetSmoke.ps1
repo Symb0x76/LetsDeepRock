@@ -425,10 +425,10 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
         Add-Result -Check 'Host removed killed Client1' -Measured $dropText -Threshold 'info' -Passed $null
     }
 
-    # 信息项：harness 把无地面的回退出生点玩家放回主机旁的次数（测试图缺 PlayerStart 的已知问题）
-    $rescues = @($hostInfo.Markers | Where-Object { $_['Event'] -eq 'PawnRescued' })
-    $rescueText = if ($rescues.Count -gt 0) { "$($rescues.Count) (first from X=$($rescues[0]['FromX']) Y=$($rescues[0]['FromY']) Z=$($rescues[0]['FromZ']))" } else { '0' }
-    Add-Result -Check 'Players rescued from groundless spawn' -Measured $rescueText -Threshold 'info' -Passed $null
+    # 回归项：任何客户端玩家脚下没有地面即失败（Slot 回退出生点曾悬空，玩家掉出地图）
+    $groundless = @($hostInfo.Markers | Where-Object { $_['Event'] -eq 'PawnNoGround' })
+    $groundText = if ($groundless.Count -gt 0) { "$($groundless.Count) (first at X=$($groundless[0]['X']) Y=$($groundless[0]['Y']) Z=$($groundless[0]['Z']))" } else { '0' }
+    Add-Result -Check 'All players spawn on ground' -Measured $groundText -Threshold '0 groundless players' -Passed ($groundless.Count -eq 0)
 }
 
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' }).Count

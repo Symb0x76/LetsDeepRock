@@ -55,7 +55,8 @@ private:
 	void TickHost(UWorld& World);
 	void TickClient(UWorld& World, float DeltaSeconds);
 	void MakePlayersInvulnerable(UWorld& World) const;
-	void RescueFallingPlayers(UWorld& World, const APawn& HostPawn);
+	void ReportGroundlessPlayers(UWorld& World, const APawn& HostPawn);
+	TSet<TWeakObjectPtr<const APawn>> ReportedGroundlessPawns;
 	bool SpawnGruntsNear(UWorld& World, const FVector& Origin, float MinDistance, float MaxDistance, int32& OutSpawned, FVector& OutCenter) const;
 	void EmitHostSample(UWorld& World, int64 Second);
 	void EmitClientSample(UWorld& World, int64 Second, double NowSeconds);

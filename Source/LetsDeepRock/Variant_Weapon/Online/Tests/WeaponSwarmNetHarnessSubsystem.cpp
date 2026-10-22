@@ -258,7 +258,7 @@ void UWeaponSwarmNetHarnessSubsystem::TickHost(UWorld& World)
 	}
 
 	MakePlayersInvulnerable(World);
-	RescueFallingPlayers(World, *HostPawn);
+	ReportGroundlessPlayers(World, *HostPawn);
 
 	if (!bHostReadyEmitted)
 	{
@@ -408,46 +408,30 @@ void UWeaponSwarmNetHarnessSubsystem::MakePlayersInvulnerable(UWorld& World) con
 	}
 }
 
-void UWeaponSwarmNetHarnessSubsystem::RescueFallingPlayers(UWorld& World, const APawn& HostPawn)
+void UWeaponSwarmNetHarnessSubsystem::ReportGroundlessPlayers(UWorld& World, const APawn& HostPawn)
 {
-	// 测试图缺少第 3 个 PlayerStart 时，GameMode 的按 Slot 回退点 (-250,250,0) 下方没有地面，
-	// 晚加入的玩家会无限下坠并把虫群剔出相关性。harness 把这类 Pawn 放回主机旁，并打标记供脚本报告。
+	// 回归检查：每个非主机玩家脚下都应有地面（曾经 Slot 2 的回退出生点悬空，玩家无限下坠）。
+	// 只报告不修正，由脚本断言；每名玩家只报一次。
 	const AGameStateBase* GameState = World.GetGameState();
 	if (!GameState)
 	{
 		return;
 	}
-	int32 Index = 0;
 	for (const APlayerState* PlayerState : GameState->PlayerArray)
 	{
-		APawn* Pawn = PlayerState ? PlayerState->GetPawn() : nullptr;
-		if (!Pawn || Pawn == &HostPawn)
+		const APawn* Pawn = PlayerState ? PlayerState->GetPawn() : nullptr;
+		if (!Pawn || Pawn == &HostPawn || ReportedGroundlessPawns.Contains(Pawn))
 		{
 			continue;
 		}
-		++Index;
-		const FVector From = Pawn->GetActorLocation();
-		if (SwarmHarnessHasGround(World, From))
+		const FVector Location = Pawn->GetActorLocation();
+		if (SwarmHarnessHasGround(World, Location))
 		{
 			continue;
 		}
-		for (int32 Attempt = 0; Attempt < 8; ++Attempt)
-		{
-			const float Angle = 2.f * UE_PI * (Index + Attempt) / 8.f;
-			const FVector Spot = HostPawn.GetActorLocation() + FVector(FMath::Cos(Angle), FMath::Sin(Angle), 0.f) * 200.f;
-			if (!SwarmHarnessHasGround(World, Spot))
-			{
-				continue;
-			}
-			if (ACharacter* Character = Cast<ACharacter>(Pawn))
-			{
-				Character->GetCharacterMovement()->StopMovementImmediately();
-			}
-			Pawn->TeleportTo(Spot, Pawn->GetActorRotation());
-			EmitMarker(TEXT("PawnRescued"), FString::Printf(TEXT("Player=%s|FromX=%.0f|FromY=%.0f|FromZ=%.0f|ToX=%.0f|ToY=%.0f"),
-				*SanitizeMarkerValue(PlayerState->GetPlayerName()), From.X, From.Y, From.Z, Spot.X, Spot.Y));
-			break;
-		}
+		ReportedGroundlessPawns.Add(Pawn);
+		EmitMarker(TEXT("PawnNoGround"), FString::Printf(TEXT("Player=%s|X=%.0f|Y=%.0f|Z=%.0f"),
+			*SanitizeMarkerValue(PlayerState->GetPlayerName()), Location.X, Location.Y, Location.Z));
 	}
 }
 
