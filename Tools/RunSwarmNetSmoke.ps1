@@ -429,6 +429,19 @@ if ($null -ne $spawned -and $spawned['Event'] -eq 'SPAWNED') {
     $groundless = @($hostInfo.Markers | Where-Object { $_['Event'] -eq 'PawnNoGround' })
     $groundText = if ($groundless.Count -gt 0) { "$($groundless.Count) (first at X=$($groundless[0]['X']) Y=$($groundless[0]['Y']) Z=$($groundless[0]['Z']))" } else { '0' }
     Add-Result -Check 'All players spawn on ground' -Measured $groundText -Threshold '0 groundless players' -Passed ($groundless.Count -eq 0)
+
+    # 回归项：客户端激活的虫应显示 HD2 模型而非回退锥体（仅当本机有 HD2 资产时断言）
+    $meshSamples = @(@($client1.Markers) + @($client2.Markers) | Where-Object { $_['Event'] -eq 'ClientSample' -and $null -ne $_['FallbackMeshes'] -and [int]$_['Visible'] -gt 0 })
+    if ($meshSamples.Count -eq 0) {
+        Add-Result -Check 'Client bug meshes (no cone fallback)' -Measured 'no samples' -Threshold '0 fallback' -Passed $false
+    }
+    elseif (@($meshSamples | Where-Object { $_['HasHD2'] -eq '1' }).Count -eq 0) {
+        Add-Result -Check 'Client bug meshes (no cone fallback)' -Measured 'HD2 assets absent locally; skipped' -Threshold 'info' -Passed $null
+    }
+    else {
+        $maxFallback = ($meshSamples | ForEach-Object { [int]$_['FallbackMeshes'] } | Measure-Object -Maximum).Maximum
+        Add-Result -Check 'Client bug meshes (no cone fallback)' -Measured "max $maxFallback fallback over $($meshSamples.Count) samples" -Threshold '0 fallback' -Passed ($maxFallback -eq 0)
+    }
 }
 
 $failed = @($results | Where-Object { $_.Result -eq 'FAIL' }).Count

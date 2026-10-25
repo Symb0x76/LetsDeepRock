@@ -15,7 +15,10 @@
 #include "GameFramework/GameStateBase.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Misc/CommandLine.h"
+#include "Misc/PackageName.h"
 #include "Misc/DateTime.h"
 #include "Misc/Parse.h"
 #include "Swarm/SwarmBackend.h"
@@ -510,13 +513,22 @@ void UWeaponSwarmNetHarnessSubsystem::TickClient(UWorld& World, const float Delt
 void UWeaponSwarmNetHarnessSubsystem::EmitClientSample(UWorld& World, const int64 Second, const double NowSeconds)
 {
 	FSwarmHarnessCloud Cloud;
+	// 回归项：本地有 HD2 模型资产时，激活的虫不应显示回退锥体
+	int32 FallbackMeshes = 0;
 	for (TActorIterator<ASwarmBugPawn> It(&World); It; ++It)
 	{
 		if (It->IsBugActive())
 		{
 			Cloud.Points.Add(It->GetActorLocation());
+			const UStaticMeshComponent* MeshComponent = It->FindComponentByClass<UStaticMeshComponent>();
+			const UStaticMesh* BugMesh = MeshComponent ? MeshComponent->GetStaticMesh() : nullptr;
+			if (!BugMesh || !BugMesh->GetPathName().StartsWith(TEXT("/Game/HD2/")))
+			{
+				++FallbackMeshes;
+			}
 		}
 	}
+	const bool bHasHD2Meshes = FPackageName::DoesPackageExist(TEXT("/Game/HD2/Bugs/Static/SM_HD2_Scavenger"));
 	const FVector Mean = Cloud.Mean();
 	const int32 Visible = Cloud.Points.Num();
 
@@ -538,10 +550,10 @@ void UWeaponSwarmNetHarnessSubsystem::EmitClientSample(UWorld& World, const int6
 	const APawn* LocalPawn = SwarmHarnessLocalPawn(*GetGameInstance(), World);
 	const FVector LocalLocation = LocalPawn ? LocalPawn->GetActorLocation() : FVector::ZeroVector;
 	EmitMarker(TEXT("ClientSample"), FString::Printf(
-		TEXT("Sec=%lld|Visible=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|Spread=%.1f|InKBps=%.2f|Slides=%d|SlidesTotal=%d|AvgDtMs=%.2f|MaxDtMs=%.2f|Frames=%d|LocalX=%.1f|LocalY=%.1f|LocalZ=%.1f"),
+		TEXT("Sec=%lld|Visible=%d|MeanX=%.1f|MeanY=%.1f|MeanZ=%.1f|Spread=%.1f|InKBps=%.2f|Slides=%d|SlidesTotal=%d|AvgDtMs=%.2f|MaxDtMs=%.2f|Frames=%d|LocalX=%.1f|LocalY=%.1f|LocalZ=%.1f|FallbackMeshes=%d|HasHD2=%d"),
 		Second, Visible, Mean.X, Mean.Y, Mean.Z, Cloud.Spread(), InKBps, WindowSlides, TotalSlides,
 		WindowFrames > 0 ? WindowDtSum * 1000.0 / WindowFrames : 0.0, WindowDtMax * 1000.0, WindowFrames,
-		LocalLocation.X, LocalLocation.Y, LocalLocation.Z));
+		LocalLocation.X, LocalLocation.Y, LocalLocation.Z, FallbackMeshes, bHasHD2Meshes ? 1 : 0));
 	WindowSlides = 0;
 	WindowDtSum = 0.0;
 	WindowDtMax = 0.0;
