@@ -28,7 +28,8 @@ public class LetsDeepRock : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"OnlineSubsystem",
-			"OnlineSubsystemUtils"
+			"OnlineSubsystemUtils",
+			"ProceduralMeshComponent" // 开放地形 Spike(一次性原型)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
