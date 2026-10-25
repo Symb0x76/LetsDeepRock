@@ -60,6 +60,8 @@ void AWeaponGameMode::InitGame(
 		ParsedMissionSettings.Seed = UGameplayStatics::GetIntOption(Options, TEXT("Seed"), 0);
 		ParsedMissionSettings.Difficulty = FMath::Clamp(
 			UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), 1), 1, 3);
+		bArrivedFromLobby = UGameplayStatics::HasOption(Options, TEXT("FromLobby"));
+		ExpectedLobbyPlayers = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("LobbyPlayers"), 1), 1, 4);
 	}
 	Super::InitGame(MapName, Options, ErrorMessage);
 }
@@ -967,7 +969,9 @@ void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 	}
 	
 	WeaponPlayerState->SetPlayerSlotIndex(AvailableSlot);
-	WeaponPlayerState->SetPlayerReady(false);
+	// 大厅已确认 ready 后才 ServerTravel；重连世界的 PlayerState 是新建的，ready 不会带过来。
+	// 任务图内不再要求二次 ready，否则没人能开局（无刷怪、战斗 HUD 不显示）。
+	WeaponPlayerState->SetPlayerReady(bArrivedFromLobby);
 	MarkPlayerReady(PlayerId, AvailableSlot);
 	
 	RefreshMatchPhase();
@@ -983,6 +987,10 @@ void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 	{
 		WeaponPlayerState->SetPlayerReady(true);
 		TryStartWeaponMatch();
+	}
+	else if (bArrivedFromLobby)
+	{
+		TryStartLobbyArrivedMatch();
 	}
 
 	// AGameModeBase calls HandleStartingNewPlayer immediately after this virtual hook returns.
@@ -1275,6 +1283,28 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 	return true;
 }
 
+void AWeaponGameMode::TryStartLobbyArrivedMatch()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting)
+	{
+		return;
+	}
+
+	// 大厅成员全部到齐立即开局；有人加载慢时等宽限期，过期后已到的人先开局（掉队者按中途加入处理）。
+	if (WeaponGameState->GetConnectedPlayerCount() >= ExpectedLobbyPlayers)
+	{
+		GetWorldTimerManager().ClearTimer(LobbyArrivalTimer);
+		TryStartWeaponMatch();
+	}
+	else if (!GetWorldTimerManager().IsTimerActive(LobbyArrivalTimer))
+	{
+		GetWorldTimerManager().SetTimer(LobbyArrivalTimer,
+			FTimerDelegate::CreateWeakLambda(this, [this]() { TryStartWeaponMatch(); }),
+			LobbyArrivalGraceSeconds, false);
+	}
+}
+
 bool AWeaponGameMode::TryStartLobbyTravel()
 {
 	UWorld* World = GetWorld();
@@ -1289,9 +1319,10 @@ bool AWeaponGameMode::TryStartLobbyTravel()
 	bLobbyTravelRequested = true;
 	// A0：任务设置随 travel options 带入 GridMap（房主在大厅任务终端设置）。
 	const FWeaponMissionSettings& Mission = WeaponGameState->GetMissionSettings();
+	// FromLobby/LobbyPlayers：任务图据此自动 ready，并在大厅成员到齐后开局。
 	const FString TravelURL = FString::Printf(
-		TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen?Seed=%d?Difficulty=%d"),
-		Mission.Seed, Mission.Difficulty);
+		TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen?Seed=%d?Difficulty=%d?FromLobby?LobbyPlayers=%d"),
+		Mission.Seed, Mission.Difficulty, WeaponGameState->GetConnectedPlayerCount());
 	if (World->ServerTravel(TravelURL))
 	{
 		return true;
