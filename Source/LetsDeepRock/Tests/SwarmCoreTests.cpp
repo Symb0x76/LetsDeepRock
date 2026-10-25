@@ -34,7 +34,9 @@ bool FSwarmTuningLookupTest::RunTest(const FString& Parameters)
 	TestNull(TEXT("None"), SwarmFindArchetypeTuning(NAME_None));
 	if (Exploder) { TestEqual(TEXT("Exploder ExplodeRadius"), Exploder->ExplodeRadius, 250.f); }
 	if (Grunt) { TestEqual(TEXT("BasicGrunt AttackInterval"), Grunt->AttackInterval, 1.f); }
-	if (Runner) { TestEqual(TEXT("FastRunner CollisionRadius"), Runner->CollisionRadius, 22.f); }
+	// BasicGrunt 占地与玩家胶囊相同(ACharacter 默认半径 34)
+	if (Grunt) { TestEqual(TEXT("BasicGrunt CollisionRadius"), Grunt->CollisionRadius, 34.f); }
+	if (Runner) { TestEqual(TEXT("FastRunner CollisionRadius"), Runner->CollisionRadius, 52.f); }
 	return true;
 }
 

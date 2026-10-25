@@ -178,7 +178,16 @@ int32 ASwarmPoolActor::SpawnBugs(const FName Row, const FVector& Location, const
 	}
 	const FEnemyConfigRow& Config = ResolveEnemyConfig(Row);
 	const float SimTime = GetSimTime();
-	const double Z = Location.Z;
+	// 调用方给的 Z 可能是地面标记点，也可能是玩家胶囊中心；向下找地面，让碰撞柱底贴地。
+	double GroundZ = Location.Z;
+	FHitResult GroundHit;
+	FCollisionObjectQueryParams GroundQuery(ECC_WorldStatic);
+	if (GetWorld()->LineTraceSingleByObjectType(GroundHit, Location + FVector(0.0, 0.0, 50.0),
+		Location - FVector(0.0, 0.0, 1000.0), GroundQuery))
+	{
+		GroundZ = GroundHit.ImpactPoint.Z;
+	}
+	const double Z = GroundZ + SwarmConstants::CollisionHalfHeight;
 	auto IsBlocked = [this, Z](const FVector2D& Point) { return IsTileBlocked(Point, Z); };
 
 	int32 Spawned = 0;

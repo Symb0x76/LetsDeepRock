@@ -2,7 +2,9 @@
 
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
+#include "GridMap/GridMapManager.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/IConsoleManager.h"
 #include "Swarm/PooledSwarmBackend.h"
@@ -161,6 +163,12 @@ void USwarmSubsystem::OnWorldBeginPlay(UWorld& InWorld)
 	Super::OnWorldBeginPlay(InWorld);
 
 	if (InWorld.GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
+	// 只有放置了 GridMapManager 的玩法关卡才需要虫群；主菜单/大厅不建池。
+	if (!TActorIterator<AGridMapManager>(&InWorld))
 	{
 		return;
 	}

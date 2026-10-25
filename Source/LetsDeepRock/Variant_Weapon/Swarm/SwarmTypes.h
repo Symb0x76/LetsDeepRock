@@ -18,6 +18,8 @@ namespace SwarmConstants
 	inline constexpr float TargetSearchRadius = 4000.f;
 	inline constexpr float RetargetInterval = 0.5f;
 	inline constexpr float SeparationRadius = 90.f;
+	/** 碰撞柱半高：柱体立于地面、高 200，覆盖枪口弹道高度，避免子弹从矮小虫体上方飞过 */
+	inline constexpr float CollisionHalfHeight = 100.f;
 	inline constexpr float BurnDuration = 3.f;
 	inline constexpr float BurnDps = 5.f;
 	inline constexpr float FrozenDuration = 2.5f;

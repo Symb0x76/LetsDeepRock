@@ -10,6 +10,7 @@
 
 class UCapsuleComponent;
 class UMaterialInstanceDynamic;
+class UStaticMesh;
 class UStaticMeshComponent;
 
 /**
@@ -85,6 +86,16 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> TintMaterial;
+
+	/** 按 DT_EnemyConfig 行名选择的模型；未配置或资产缺失的行使用锥体 */
+	UPROPERTY(EditDefaultsOnly, Category = "Swarm")
+	TMap<FName, TSoftObjectPtr<UStaticMesh>> ArchetypeMeshes;
+
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UStaticMesh>> LoadedArchetypeMeshes;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UStaticMesh> ConeMeshAsset;
 
 	UPROPERTY(ReplicatedUsing = OnRep_Active)
 	bool bActive = false;

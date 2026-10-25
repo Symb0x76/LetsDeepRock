@@ -7,9 +7,12 @@
 const FSwarmArchetypeTuning* SwarmFindArchetypeTuning(const FName ArchetypeRow)
 {
 	// 字段顺序：MeshScale, CollisionRadius, AttackRange, AttackInterval, ExplodeRadius
-	static const FSwarmArchetypeTuning SwarmBasicGrunt{0.45f, 28.f, 60.f, 1.0f, 0.f};
-	static const FSwarmArchetypeTuning SwarmFastRunner{0.35f, 22.f, 50.f, 0.8f, 0.f};
-	static const FSwarmArchetypeTuning SwarmExploder{0.60f, 36.f, 40.f, 0.0f, 250.f};
+	// 体型：BasicGrunt(Scavenger) 体长 = 玩家胶囊直径 68uu；其余按原始 GLB 体长等比例
+	// (Scavenger 2.351m / Hunter 3.598m / Warrior 4.414m)。静态网格已归一化为 100uu 长，
+	// MeshScale = 目标体长 / 100，CollisionRadius = 目标体长 / 2。与 BP_Enemy_* 保持一致。
+	static const FSwarmArchetypeTuning SwarmBasicGrunt{0.680f, 34.0f, 60.f, 1.0f, 0.f};
+	static const FSwarmArchetypeTuning SwarmFastRunner{1.041f, 52.0f, 50.f, 0.8f, 0.f};
+	static const FSwarmArchetypeTuning SwarmExploder{1.277f, 63.8f, 40.f, 0.0f, 250.f};
 
 	if (ArchetypeRow == TEXT("BasicGrunt")) { return &SwarmBasicGrunt; }
 	if (ArchetypeRow == TEXT("FastRunner")) { return &SwarmFastRunner; }
