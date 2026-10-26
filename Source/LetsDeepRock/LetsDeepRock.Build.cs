@@ -63,6 +63,7 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/GridMap",
 			"LetsDeepRock/Variant_Weapon/Swarm",
+			"LetsDeepRock/Variant_Weapon/Reinforcement",
 			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/AI",
 			"LetsDeepRock/Variant_Weapon/AI/Tasks",
