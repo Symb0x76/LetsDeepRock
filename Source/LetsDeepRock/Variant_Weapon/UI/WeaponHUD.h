@@ -26,6 +26,9 @@ public:
 	/** 接收本地 PlayerController 转发的权威伤害事件。 */
 	void AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event);
 
+	/** 屏幕下方居中显示一条短提示（玩法 UI，新提示覆盖旧提示）。 */
+	void ShowGameplayHint(const FString& Text, float DurationSeconds = 2.0f);
+
 protected:
 
 	//~ AHUD
@@ -46,6 +49,9 @@ protected:
 	/** 画面顶部中央的任务/撤离状态行(A1 玩法 UI,不受 Debug 开关影响)。 */
 	void DrawObjectiveStatus();
 
+	/** 绘制 ShowGameplayHint 设置的提示，到期自动消失。 */
+	void DrawGameplayHint();
+
 private:
 	struct FActiveDamageNumber
 	{
@@ -55,5 +61,7 @@ private:
 
 	TArray<FActiveDamageNumber> ActiveDamageNumbers;
 	FWeaponDamageDebugEvent LastDamageEvent;
+	FString GameplayHintText;
+	float GameplayHintEndTime = 0.0f;
 	bool bHasLastDamageEvent = false;
 };

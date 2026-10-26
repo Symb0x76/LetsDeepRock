@@ -13,6 +13,7 @@
 #include "WeaponGameplayTags.h"
 #include "GridMap/GridDamageHelper.h"
 #include "WeaponCharacter.h"
+#include "Swarm/SwarmDamageRouting.h"
 
 UGA_Melee::UGA_Melee()
 {
@@ -194,6 +195,15 @@ void UGA_Melee::ApplyDamageToTarget(AActor* SourceActor, AActor* TargetActor, co
 	if (!TargetActor || !WeaponData || !WeaponData->DamageEffectClass)
 	{
 		return;
+	}
+
+	// 虫群目标：无 ASC，绕过 GAS 直接转发伤害事件
+	{
+		const FSwarmDamageEvent SwarmEvent{ WeaponData->MeleeDamage, FGameplayTagContainer(), NAME_None, SourceActor };
+		if (SwarmTryRouteDamage(TargetActor, SwarmEvent))
+		{
+			return;
+		}
 	}
 
 	// 获取目标 ASC

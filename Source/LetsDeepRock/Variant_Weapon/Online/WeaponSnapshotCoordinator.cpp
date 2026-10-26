@@ -17,6 +17,7 @@
 #include "GridMap/GridMapManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "Serialization/MemoryReader.h"
+#include "Swarm/SwarmTypes.h"
 #include "WeaponCharacter.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
@@ -749,6 +750,20 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 	{
 		OutError = TEXT("Snapshot mission, objective or wave director state is invalid");
 		return false;
+	}
+	{
+		const FWeaponWaveDirectorSnapshot& Director = Snapshot.WaveDirector;
+		const int32 RoomLimit = Director.CombatRooms.Num() + (Director.bHasDefenseWave ? 1 : 0);
+		for (int32 Index = 0; Index < Director.SwarmCounts.Num(); ++Index)
+		{
+			const FWeaponSwarmRoomCount& Entry = Director.SwarmCounts[Index];
+			if (Entry.Count <= 0 || !SwarmFindArchetypeTuning(Entry.ArchetypeRow) ||
+				Entry.RoomIndex < 0 || Entry.RoomIndex >= RoomLimit)
+			{
+				OutError = FString::Printf(TEXT("Snapshot swarm count entry %d is invalid"), Index);
+				return false;
+			}
+		}
 	}
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{

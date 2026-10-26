@@ -39,6 +39,7 @@
 #include "InputCoreTypes.h"
 #include "UObject/ConstructorHelpers.h"
 #include "NavigationInvokerComponent.h"
+#include "UI/WeaponHUD.h"
 
 AWeaponCharacter::AWeaponCharacter()
 {
@@ -50,12 +51,12 @@ AWeaponCharacter::AWeaponCharacter()
 	// 创建相机弹簧臂（俯视角）
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("Spring Arm"));
 	SpringArm->SetupAttachment(RootComponent);
-	SpringArm->SetRelativeRotation(FRotator(-50.0f, 0.0f, 0.0f));
+	SpringArm->SetRelativeRotation(FRotator(-80.0f, 0.0f, 0.0f));
 	SpringArm->TargetArmLength = 2200.0f;
 	SpringArm->bDoCollisionTest = false;
 	SpringArm->bInheritYaw = false;
 	SpringArm->bEnableCameraLag = true;
-	SpringArm->CameraLagSpeed = 0.5f;
+	SpringArm->CameraLagSpeed = 0.9f;
 
 	// 创建相机
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
@@ -84,6 +85,14 @@ UAbilitySystemComponent* AWeaponCharacter::GetAbilitySystemComponent() const
 {
 	// ASC 的真正拥有者是 PlayerState；这里返回缓存指针（可能在初始化前为空）
 	return AbilitySystemComponent;
+}
+
+void AWeaponCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	// 构造函数之后 BP 默认值才生效，所以在这里读取实际配置的臂长。
+	BaseTargetArmLength = SpringArm->TargetArmLength;
 }
 
 void AWeaponCharacter::PossessedBy(AController* NewController)
@@ -1136,6 +1145,10 @@ void AWeaponCharacter::SelectTool()
 void AWeaponCharacter::SelectEquipmentSlot(uint8 SlotIndex)
 {
 	if (IsDead() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this)) return;
+	if (SlotIndex == 2 && !bHasSkillItem)
+	{
+		ShowNoGrenadeHint();
+	}
 	if (!HasAuthority())
 	{
 		ServerSelectEquipmentSlot(SlotIndex);
@@ -1363,12 +1376,32 @@ void AWeaponCharacter::ThrowGrenadeCompleted(const FInputActionValue& Value)
 void AWeaponCharacter::QuickThrowGrenadePressed()
 {
 	// 3 号槽 + 左键的投掷进行中时不再叠一次快速投掷;无手雷职业直接忽略(服务器仍会再校验)。
+	if (!IsDead() && !bHasSkillItem)
+	{
+		ShowNoGrenadeHint();
+	}
 	if (IsDead() || !bHasSkillItem || ActiveFireInputSlot == 2 || bQuickGrenadeHeld)
 	{
 		return;
 	}
 	bQuickGrenadeHeld = true;
 	ThrowGrenadeStarted(FInputActionValue());
+}
+
+void AWeaponCharacter::ShowNoGrenadeHint() const
+{
+	// 手雷仅 Ranger 职业拥有（DT_ProfessionConfig.SkillItemId）；其它职业按键时给本地提示而不是静默忽略。
+	if (!IsLocallyControlled())
+	{
+		return;
+	}
+	if (const APlayerController* PC = Cast<APlayerController>(GetController()))
+	{
+		if (AWeaponHUD* HUD = PC->GetHUD<AWeaponHUD>())
+		{
+			HUD->ShowGameplayHint(TEXT("当前职业没有手雷"));
+		}
+	}
 }
 
 void AWeaponCharacter::QuickThrowGrenadeReleased()

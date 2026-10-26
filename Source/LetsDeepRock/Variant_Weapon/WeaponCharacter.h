@@ -116,6 +116,9 @@ public:
 	using IGameplayCueInterface::HandleGameplayCue;
 	virtual void HandleGameplayCue(AActor* Self, FGameplayTag GameplayCueTag, EGameplayCueEvent::Type EventType, const FGameplayCueParameters& Parameters) override;
 
+	/** 记录 SpringArm 配置长度（含 BP 覆盖）作为后坐恢复基准 */
+	virtual void BeginPlay() override;
+
 	//~ 阶段 1 GAS 挂载点
 	/** 服务端：Pawn 被 Possess 时初始化 ASC ActorInfo */
 	virtual void PossessedBy(AController* NewController) override;
@@ -260,6 +263,8 @@ protected:
 	/** G 键快速投掷:按下开始预览,松开投掷;与"3 号槽 + 左键"并存,不切换当前装备槽 */
 	void QuickThrowGrenadePressed();
 	void QuickThrowGrenadeReleased();
+	/** 无手雷职业按 G / 选 3 号槽时的本地 HUD 提示 */
+	void ShowNoGrenadeHint() const;
 
 	// === 手雷预览（仅本地控制 Pawn 执行） ===
 
@@ -355,8 +360,8 @@ protected:
 
 	// === 相机后坐力反馈 ===
 
-	/** SpringArm 基准距离（构造时初始化，后坐恢复目标） */
-	float BaseTargetArmLength = 2200.0f;
+	/** SpringArm 基准距离（BeginPlay 从 SpringArm->TargetArmLength 读取，后坐恢复目标） */
+	float BaseTargetArmLength = 0.0f;
 
 	/** 当前累积的后坐偏移量（拉近镜头的 UU 数） */
 	float CurrentRecoilOffset = 0.0f;

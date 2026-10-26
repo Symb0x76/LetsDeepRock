@@ -15,6 +15,8 @@
 #include "Engine/OverlapResult.h"
 #include "TimerManager.h"
 #include "Abilities/WeaponGameplayCues.h"
+#include "Swarm/SwarmDamageRouting.h"
+#include "Swarm/SwarmDamageable.h"
 
 AGrenadeProjectile::AGrenadeProjectile()
 {
@@ -223,6 +225,15 @@ void AGrenadeProjectile::ApplyDamageToTarget(AActor* TargetActor)
 		return;
 	}
 
+	// 虫群目标：无 ASC，绕过 GAS 直接转发伤害事件（手雷无距离衰减，伤害即 DamageValue）
+	{
+		const FSwarmDamageEvent SwarmEvent{ InitializationState.DamageValue, InitializationState.DamageTags, InitializationState.StatusEffectId, InitializationState.InstigatorActor };
+		if (SwarmTryRouteDamage(TargetActor, SwarmEvent))
+		{
+			return;
+		}
+	}
+
 	IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(TargetActor);
 	if (!TargetASCInterface)
 	{
@@ -364,9 +375,9 @@ void AGrenadeProjectile::ExplodeOnce()
 				continue;
 			}
 
-			// 检查目标是否实现了 IAbilitySystemInterface（有 ASC 才能吃伤害）
+			// 检查目标是否实现了 IAbilitySystemInterface（有 ASC 才能吃伤害）；虫群无 ASC，经 ISwarmDamageable 放行
 			IAbilitySystemInterface* TargetASCInterface = Cast<IAbilitySystemInterface>(HitActor);
-			if (!TargetASCInterface)
+			if (!TargetASCInterface && !Cast<ISwarmDamageable>(HitActor))
 			{
 				continue;
 			}
@@ -375,6 +386,12 @@ void AGrenadeProjectile::ExplodeOnce()
 
 			// 施加伤害 GE（走统一伤害链路 → DamageExecCalculation）
 			ApplyDamageToTarget(HitActor);
+
+			// 虫群无 ASC，附加效果 GE 不适用
+			if (!TargetASCInterface)
+			{
+				continue;
+			}
 
 			// 施加额外效果 GE（如击退、眩晕等）
 			for (const TSubclassOf<UGameplayEffect>& EffectClass : AdditionalTargetEffects)

@@ -203,7 +203,7 @@ void UDamageExecCalculation::Execute_Implementation(
 			: (DamageFalloffEnd <= 0.0f
 				? TEXT("Disabled:FalloffEndNotPositive")
 				: TEXT("Disabled:FalloffEndNotGreaterThanStart")));
-	UE_LOG(LogTemp, Log, TEXT("[FalloffTrace] ExecCalculation BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f Source=%s Target=%s SourceLocation=%s TargetLocation=%s HasHitResult=%s HitDistanceCm=%.3f FalloffMultiplier=%.6f DamageBeforeFalloff=%.3f DamageAfterFalloff=%.3f Reason=%s"),
+	UE_LOG(LogTemp, Verbose, TEXT("[FalloffTrace] ExecCalculation BaseDamage=%.3f FalloffStart=%.3f FalloffEnd=%.3f Source=%s Target=%s SourceLocation=%s TargetLocation=%s HasHitResult=%s HitDistanceCm=%.3f FalloffMultiplier=%.6f DamageBeforeFalloff=%.3f DamageAfterFalloff=%.3f Reason=%s"),
 		BaseDamage,
 		DamageFalloffStart,
 		DamageFalloffEnd,

@@ -13,6 +13,9 @@
 #include "GridMap/GridMapManager.h"
 #include "Variant_Weapon/WeaponGameState.h"
 #include "Online/WeaponSnapshot.h"
+#include "Swarm/SwarmBackend.h"
+#include "Swarm/SwarmSubsystem.h"
+#include "Swarm/SwarmWaveMath.h"
 
 UWeaponWaveDirectorComponent::UWeaponWaveDirectorComponent()
 {
@@ -25,9 +28,13 @@ UWeaponWaveDirectorComponent::UWeaponWaveDirectorComponent()
 
 	CombatWaveEntries =
 	{
-		{ TEXT("BasicGrunt"), FSoftClassPath(TEXT("/Game/Variant_Weapon/Enemies/BP_Enemy_BasicGrunt.BP_Enemy_BasicGrunt_C")), 0.60f },
-		{ TEXT("FastRunner"), FSoftClassPath(TEXT("/Game/Variant_Weapon/Enemies/BP_Enemy_FastRunner.BP_Enemy_FastRunner_C")), 0.25f },
-		{ TEXT("Exploder"), FSoftClassPath(TEXT("/Game/Variant_Weapon/Enemies/BP_Enemy_Exploder.BP_Enemy_Exploder_C")), 0.15f },
+		// 虫群档:由 ISwarmBackend 池化生成,不走 BP 类。
+		{ TEXT("BasicGrunt"), FSoftClassPath(), 0.60f, true },
+		{ TEXT("FastRunner"), FSoftClassPath(), 0.25f, true },
+		{ TEXT("Exploder"), FSoftClassPath(), 0.15f, true },
+		// 精英档:常规 BP 敌人,各档权重只在本档内比较。
+		{ TEXT("HeavyTank"), FSoftClassPath(TEXT("/Game/Variant_Weapon/Enemies/BP_Enemy_HeavyTank.BP_Enemy_HeavyTank_C")), 0.5f, false },
+		{ TEXT("Spitter"), FSoftClassPath(TEXT("/Game/Variant_Weapon/Enemies/BP_Enemy_Spitter.BP_Enemy_Spitter_C")), 0.5f, false },
 	};
 }
 
@@ -50,6 +57,12 @@ void UWeaponWaveDirectorComponent::OnMatchStarted(AGridMapManager* Manager)
 	ResolvedEnemyClasses.Reset();
 	for (const FWeaponEnemyTypeEntry& Entry : CombatWaveEntries)
 	{
+		if (Entry.bSwarm)
+		{
+			// 虫群条目不解析类;保持与 CombatWaveEntries 同下标。
+			ResolvedEnemyClasses.Add(nullptr);
+			continue;
+		}
 		TSubclassOf<AEnemyCharacter> Resolved =
 			Entry.EnemyClassPath.TryLoadClass<AEnemyCharacter>();
 		if (!Resolved)
@@ -153,8 +166,8 @@ void UWeaponWaveDirectorComponent::StartDefenseWave(const FVector& Center)
 	{
 		return;
 	}
-	UE_LOG(LogTemp, Log, TEXT("[A2b] Defense wave started: quota=%d SpawnPoints=%d Difficulty=%d"),
-		DefenseWave.RemainingToSpawn, DefenseWave.SpawnPoints.Num(), Difficulty);
+	UE_LOG(LogTemp, Log, TEXT("[A2b] Defense wave started: swarm=%d elites=%d SpawnPoints=%d Difficulty=%d"),
+		DefenseWave.RemainingSwarm, DefenseWave.RemainingToSpawn, DefenseWave.SpawnPoints.Num(), Difficulty);
 	RoomWaves.Add(MoveTemp(DefenseWave));
 	bHasDefenseWave = true;
 	DefenseCenter = Center;
@@ -175,6 +188,7 @@ void UWeaponWaveDirectorComponent::CaptureSnapshotState(FWeaponWaveDirectorSnaps
 		FWeaponWaveRoomSnapshot Saved;
 		Saved.bTriggered = Room.bTriggered;
 		Saved.RemainingToSpawn = Room.RemainingToSpawn;
+		Saved.RemainingSwarm = Room.RemainingSwarm;
 		Saved.SecondsToNextSpawn = static_cast<float>(FMath::Max(0.0, Room.NextSpawnTime - Now));
 		return Saved;
 	};
@@ -190,6 +204,23 @@ void UWeaponWaveDirectorComponent::CaptureSnapshotState(FWeaponWaveDirectorSnaps
 		OutSnapshot.bHasDefenseWave = true;
 		OutSnapshot.DefenseCenter = DefenseCenter;
 		OutSnapshot.DefenseWave = ToSnapshot(RoomWaves[CombatRoomCount]);
+	}
+
+	// 存活虫群按房间归并(RoomWaves 顺序:战斗房在前,防御波在 CombatRoomCount)。
+	if (const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this))
+	{
+		if (const ISwarmBackend* Backend = Swarm->GetBackend())
+		{
+			TArray<FSwarmBugView> Bugs;
+			Backend->ForEachAlive([&Bugs](const FSwarmBugView& View) { Bugs.Add(View); });
+			TArray<FBox2D> Rooms;
+			Rooms.Reserve(RoomWaves.Num());
+			for (const FRoomWave& Room : RoomWaves)
+			{
+				Rooms.Add(Room.Bounds);
+			}
+			OutSnapshot.SwarmCounts = SwarmBucketByRoom(Bugs, Rooms);
+		}
 	}
 }
 
@@ -215,6 +246,7 @@ void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager
 	{
 		Room.bTriggered = Saved.bTriggered;
 		Room.RemainingToSpawn = FMath::Max(0, Saved.RemainingToSpawn);
+		Room.RemainingSwarm = FMath::Max(0, Saved.RemainingSwarm);
 		Room.NextSpawnTime = Now + FMath::Max(0.0f, Saved.SecondsToNextSpawn);
 	};
 	for (int32 Index = 0; Index < CombatRoomCount && Snapshot.CombatRooms.IsValidIndex(Index); ++Index)
@@ -230,6 +262,39 @@ void UWeaponWaveDirectorComponent::RestoreSnapshotState(AGridMapManager* Manager
 		}
 	}
 
+	// 虫群在房间与防御波都重建之后再按计数重新生成(RoomIndex == CombatRoomCount 此时才有效)。
+	if (!Snapshot.SwarmCounts.IsEmpty())
+	{
+		const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this);
+		ISwarmBackend* Backend = Swarm ? Swarm->GetBackend() : nullptr;
+		if (Backend)
+		{
+			// 先清空现存小虫,避免与快照计数叠加。
+			Backend->DespawnAll();
+			int32 Requested = 0;
+			int32 Spawned = 0;
+			for (const FWeaponSwarmRoomCount& Entry : Snapshot.SwarmCounts)
+			{
+				if (Entry.Count <= 0 || !RoomWaves.IsValidIndex(Entry.RoomIndex))
+				{
+					UE_LOG(LogTemp, Log, TEXT("[Swarm] Restore skipped invalid swarm entry: room %d row %s count %d"),
+						Entry.RoomIndex, *Entry.ArchetypeRow.ToString(), Entry.Count);
+					continue;
+				}
+				Requested += Entry.Count;
+				Spawned += Backend->SpawnAt(Entry.ArchetypeRow, PickSpawnLocation(RoomWaves[Entry.RoomIndex]), Entry.Count);
+			}
+			if (Spawned < Requested)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("[A2] Swarm restore clamped: requested %d spawned %d"), Requested, Spawned);
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("[Swarm] No swarm backend on restore; dropping %d swarm entries"), Snapshot.SwarmCounts.Num());
+		}
+	}
+
 	// 快照恢复出的敌人不是本组件刷出的;接管它们,使 NPC 上限与局末清理照常生效。
 	for (TActorIterator<AEnemyCharacter> It(World); It; ++It)
 	{
@@ -241,6 +306,13 @@ void UWeaponWaveDirectorComponent::ResetWaves(const bool bDestroySpawned)
 {
 	if (bDestroySpawned)
 	{
+		if (const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this))
+		{
+			if (ISwarmBackend* Backend = Swarm->GetBackend())
+			{
+				Backend->DespawnAll();
+			}
+		}
 		for (const TWeakObjectPtr<AEnemyCharacter>& Enemy : SpawnedEnemies)
 		{
 			if (Enemy.IsValid())
@@ -254,6 +326,7 @@ void UWeaponWaveDirectorComponent::ResetWaves(const bool bDestroySpawned)
 	{
 		Room.bTriggered = false;
 		Room.RemainingToSpawn = 0;
+		Room.RemainingSwarm = 0;
 		Room.NextSpawnTime = 0.0;
 	}
 }
@@ -275,7 +348,7 @@ void UWeaponWaveDirectorComponent::TickComponent(
 	// 未触发的房间:任一玩家 Pawn 进入 2D 边界即触发(只遍历 PlayerController,追击的敌人不触发别的房)。
 	for (FRoomWave& Room : RoomWaves)
 	{
-		if (!Room.bTriggered && Room.RemainingToSpawn <= 0)
+		if (!Room.bTriggered && Room.RemainingToSpawn <= 0 && Room.RemainingSwarm <= 0)
 		{
 			for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 			{
@@ -290,9 +363,24 @@ void UWeaponWaveDirectorComponent::TickComponent(
 			}
 		}
 
-		if (Room.bTriggered && Room.RemainingToSpawn > 0 && Now >= Room.NextSpawnTime)
+		if (Room.bTriggered && (Room.RemainingSwarm > 0 || Room.RemainingToSpawn > 0) && Now >= Room.NextSpawnTime)
 		{
-			SpawnOneEnemy(Room);
+			// 虫群爆发与精英各自排程,取较早者作为下次到期时间(哨兵 Max 表示该分支未排程)。
+			constexpr double Unscheduled = TNumericLimits<double>::Max();
+			double NextDue = Unscheduled;
+			if (Room.RemainingSwarm > 0)
+			{
+				Room.NextSpawnTime = Unscheduled;
+				SpawnSwarmBurst(Room);
+				NextDue = FMath::Min(NextDue, Room.NextSpawnTime);
+			}
+			if (Room.RemainingToSpawn > 0)
+			{
+				Room.NextSpawnTime = Unscheduled;
+				SpawnOneEnemy(Room);
+				NextDue = FMath::Min(NextDue, Room.NextSpawnTime);
+			}
+			Room.NextSpawnTime = NextDue < Unscheduled ? NextDue : Now + 0.25;
 		}
 	}
 }
@@ -314,6 +402,10 @@ const FSpawnerConfigRow* UWeaponWaveDirectorComponent::GetSpawnerRow() const
 		const int32 GroupSizes[3] = { 3, 5, 8 };
 		const int32 NPCCaps[3] = { 10, 16, 24 };
 		const float GroupDelays[3] = { 6.0f, 5.0f, 4.0f };
+		const int32 SwarmQuotas[3] = { 40, 60, 90 };
+		const int32 SwarmBursts[3] = { 6, 8, 10 };
+		const int32 SwarmCaps[3] = { 80, 120, 150 };
+		const int32 EliteQuotas[3] = { 1, 2, 3 };
 		TArray<FSpawnerConfigRow> Rows;
 		Rows.SetNum(3);
 		for (int32 Index = 0; Index < 3; ++Index)
@@ -321,6 +413,10 @@ const FSpawnerConfigRow* UWeaponWaveDirectorComponent::GetSpawnerRow() const
 			Rows[Index].SpawnGroupSize = GroupSizes[Index];
 			Rows[Index].NPCCap = NPCCaps[Index];
 			Rows[Index].SpawnGroupDelay = GroupDelays[Index];
+			Rows[Index].SwarmQuotaPerRoom = SwarmQuotas[Index];
+			Rows[Index].SwarmBurstSize = SwarmBursts[Index];
+			Rows[Index].SwarmCap = SwarmCaps[Index];
+			Rows[Index].EliteQuotaPerRoom = EliteQuotas[Index];
 		}
 		return Rows;
 	}();
@@ -335,9 +431,11 @@ void UWeaponWaveDirectorComponent::TriggerRoom(FRoomWave& Room)
 		return;
 	}
 	Room.bTriggered = true;
-	Room.RemainingToSpawn = FMath::Max(1, Row->SpawnGroupSize);
+	// 虫群走 RemainingSwarm 爆发;精英复用 RemainingToSpawn(SpawnOneEnemy,受 NPCCap 限制)。
+	Room.RemainingSwarm = FMath::Max(0, Row->SwarmQuotaPerRoom);
+	Room.RemainingToSpawn = FMath::Max(0, Row->EliteQuotaPerRoom);
 	Room.NextSpawnTime = 0.0;
-	UE_LOG(LogTemp, Log, TEXT("[A2] Combat room triggered: quota=%d"), Room.RemainingToSpawn);
+	UE_LOG(LogTemp, Log, TEXT("[A2] Combat room triggered: swarm=%d elites=%d"), Room.RemainingSwarm, Room.RemainingToSpawn);
 }
 
 void UWeaponWaveDirectorComponent::SpawnOneEnemy(FRoomWave& Room)
@@ -396,13 +494,93 @@ void UWeaponWaveDirectorComponent::SpawnOneEnemy(FRoomWave& Room)
 	Room.NextSpawnTime = World->GetTimeSeconds() + FMath::Max(Delay, 0.05f);
 }
 
+void UWeaponWaveDirectorComponent::SpawnSwarmBurst(FRoomWave& Room)
+{
+	UWorld* World = GetWorld();
+	const FSpawnerConfigRow* Row = GetSpawnerRow();
+	if (!World || !Row)
+	{
+		return;
+	}
+
+	const USwarmSubsystem* Swarm = USwarmSubsystem::Get(this);
+	ISwarmBackend* Backend = Swarm ? Swarm->GetBackend() : nullptr;
+	if (!Backend)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Swarm] No swarm backend; skipping swarm quota for this room"));
+		Room.RemainingSwarm = 0;
+		return;
+	}
+
+	const int32 Burst = SwarmComputeBurst(Room.RemainingSwarm, Backend->CountAlive(), Row->SwarmCap, Row->SwarmBurstSize);
+	if (Burst <= 0)
+	{
+		// 存活数已达上限:顺延,不吞配额。
+		Room.NextSpawnTime = World->GetTimeSeconds() + Row->SpawnGroupDelay;
+		return;
+	}
+
+	const FName ArchetypeRow = PickSwarmRow();
+	if (ArchetypeRow.IsNone())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[Swarm] No swarm entries in CombatWaveEntries; skipping swarm quota"));
+		Room.RemainingSwarm = 0;
+		return;
+	}
+
+	// 只扣实际生成数(池满时可能少于 Burst)。
+	const int32 Spawned = Backend->SpawnAt(ArchetypeRow, PickSpawnLocation(Room), Burst);
+	Room.RemainingSwarm = FMath::Max(0, Room.RemainingSwarm - Spawned);
+	if (Spawned <= 0)
+	{
+		// 池耗尽:按群间隔顺延,不走短随机间隔空转。
+		Room.NextSpawnTime = World->GetTimeSeconds() + Row->SpawnGroupDelay;
+		return;
+	}
+
+	const float Delay = FMath::FRandRange(Row->MinSpawnDelay, Row->MaxSpawnDelay);
+	Room.NextSpawnTime = World->GetTimeSeconds() + FMath::Max(Delay, 0.05f);
+}
+
+FName UWeaponWaveDirectorComponent::PickSwarmRow() const
+{
+	float TotalWeight = 0.0f;
+	for (const FWeaponEnemyTypeEntry& Entry : CombatWaveEntries)
+	{
+		if (Entry.bSwarm)
+		{
+			TotalWeight += FMath::Max(Entry.Weight, 0.0f);
+		}
+	}
+	if (TotalWeight <= 0.0f)
+	{
+		return NAME_None;
+	}
+
+	float Roll = FMath::FRandRange(0.0f, TotalWeight);
+	FName Last = NAME_None;
+	for (const FWeaponEnemyTypeEntry& Entry : CombatWaveEntries)
+	{
+		if (Entry.bSwarm && Entry.Weight > 0.0f)
+		{
+			Last = Entry.EnemyRow;
+			Roll -= Entry.Weight;
+			if (Roll <= 0.0f)
+			{
+				return Entry.EnemyRow;
+			}
+		}
+	}
+	// FRandRange 可能恰好返回总权重:落到最后一个正权重行。
+	return Last;
+}
 
 int32 UWeaponWaveDirectorComponent::PickEnemyEntryIndex() const
 {
 	float TotalWeight = 0.0f;
 	for (int32 Index = 0; Index < CombatWaveEntries.Num(); ++Index)
 	{
-		if (ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
+		if (!CombatWaveEntries[Index].bSwarm && ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
 		{
 			TotalWeight += FMath::Max(CombatWaveEntries[Index].Weight, 0.0f);
 		}
@@ -413,18 +591,22 @@ int32 UWeaponWaveDirectorComponent::PickEnemyEntryIndex() const
 	}
 
 	float Roll = FMath::FRandRange(0.0f, TotalWeight);
+	int32 LastIndex = INDEX_NONE;
 	for (int32 Index = 0; Index < CombatWaveEntries.Num(); ++Index)
 	{
-		if (ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
+		if (!CombatWaveEntries[Index].bSwarm && CombatWaveEntries[Index].Weight > 0.0f &&
+			ResolvedEnemyClasses.IsValidIndex(Index) && ResolvedEnemyClasses[Index])
 		{
-			Roll -= FMath::Max(CombatWaveEntries[Index].Weight, 0.0f);
+			LastIndex = Index;
+			Roll -= CombatWaveEntries[Index].Weight;
 			if (Roll <= 0.0f)
 			{
 				return Index;
 			}
 		}
 	}
-	return INDEX_NONE;
+	// FRandRange 可能恰好返回总权重:落到最后一个正权重条目。
+	return LastIndex;
 }
 
 FVector UWeaponWaveDirectorComponent::PickSpawnLocation(const FRoomWave& Room) const

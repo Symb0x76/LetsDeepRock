@@ -26,6 +26,9 @@
 #include "AI/WeaponWaveDirectorComponent.h"
 #include "Kismet/GameplayStatics.h"
 #include "UI/WeaponHUD.h"
+#include "Components/CapsuleComponent.h"
+#include "GameFramework/Character.h"
+#include "GameFramework/PlayerStart.h"
 
 namespace
 {
@@ -57,6 +60,8 @@ void AWeaponGameMode::InitGame(
 		ParsedMissionSettings.Seed = UGameplayStatics::GetIntOption(Options, TEXT("Seed"), 0);
 		ParsedMissionSettings.Difficulty = FMath::Clamp(
 			UGameplayStatics::GetIntOption(Options, TEXT("Difficulty"), 1), 1, 3);
+		bArrivedFromLobby = UGameplayStatics::HasOption(Options, TEXT("FromLobby"));
+		ExpectedLobbyPlayers = FMath::Clamp(UGameplayStatics::GetIntOption(Options, TEXT("LobbyPlayers"), 1), 1, 4);
 	}
 	Super::InitGame(MapName, Options, ErrorMessage);
 }
@@ -964,7 +969,9 @@ void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 	}
 	
 	WeaponPlayerState->SetPlayerSlotIndex(AvailableSlot);
-	WeaponPlayerState->SetPlayerReady(false);
+	// 大厅已确认 ready 后才 ServerTravel；重连世界的 PlayerState 是新建的，ready 不会带过来。
+	// 任务图内不再要求二次 ready，否则没人能开局（无刷怪、战斗 HUD 不显示）。
+	WeaponPlayerState->SetPlayerReady(bArrivedFromLobby);
 	MarkPlayerReady(PlayerId, AvailableSlot);
 	
 	RefreshMatchPhase();
@@ -980,6 +987,10 @@ void AWeaponGameMode::OnPostLogin(AController* NewPlayer)
 	{
 		WeaponPlayerState->SetPlayerReady(true);
 		TryStartWeaponMatch();
+	}
+	else if (bArrivedFromLobby)
+	{
+		TryStartLobbyArrivedMatch();
 	}
 
 	// AGameModeBase calls HandleStartingNewPlayer immediately after this virtual hook returns.
@@ -1002,25 +1013,7 @@ void AWeaponGameMode::RestartPlayer(AController* NewPlayer)
 	{
 		const AWeaponPlayerState* WeaponPlayerState = NewPlayer->GetPlayerState<AWeaponPlayerState>();
 		const int32 PlayerSlot = WeaponPlayerState ? WeaponPlayerState->GetPlayerSlotIndex() : INDEX_NONE;
-		FVector2D Direction(-1.0f, -1.0f);
-		switch (PlayerSlot)
-		{
-		case 1:
-			Direction = FVector2D(1.0f, -1.0f);
-			break;
-		case 2:
-			Direction = FVector2D(-1.0f, 1.0f);
-			break;
-		case 3:
-			Direction = FVector2D(1.0f, 1.0f);
-			break;
-		default:
-			break;
-		}
-		const FVector SpawnLocation(
-			Direction.X * WeaponFallbackSpawnSpacing,
-			Direction.Y * WeaponFallbackSpawnSpacing,
-			0.0f);
+		const FVector SpawnLocation = ComputeFallbackSpawnLocation(NewPlayer, PlayerSlot);
 		const FTransform SpawnTransform(FRotator::ZeroRotator, SpawnLocation);
 
 		UE_LOG(
@@ -1049,6 +1042,76 @@ void AWeaponGameMode::RestartPlayer(AController* NewPlayer)
 			}
 		}
 	}
+}
+
+FVector AWeaponGameMode::ComputeFallbackSpawnLocation(AController* NewPlayer, const int32 PlayerSlot)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return FVector::ZeroVector;
+	}
+
+	// 锚点：GridMap 的 PlayerSpawn 标记（随种子生成、保证在可走地面上）；没有则用任一 PlayerStart；都没有才用原点。
+	// 旧实现固定以世界原点为中心，原点附近不一定有地板（L_GridMapStage4Test 的 Slot 2 会掉出地图）。
+	FVector Anchor = FVector::ZeroVector;
+	bool bHasAnchor = false;
+	for (TActorIterator<AGridMapManager> It(World); It && !bHasAnchor; ++It)
+	{
+		TArray<FVector> SpawnMarkers;
+		if (It->GetMarkerWorldLocations(EGridMapMarkerType::PlayerSpawn, SpawnMarkers) && !SpawnMarkers.IsEmpty())
+		{
+			Anchor = SpawnMarkers[0];
+			bHasAnchor = true;
+		}
+	}
+	for (TActorIterator<APlayerStart> It(World); It && !bHasAnchor; ++It)
+	{
+		Anchor = It->GetActorLocation();
+		bHasAnchor = true;
+	}
+
+	FVector2D Direction(-1.0f, -1.0f);
+	switch (PlayerSlot)
+	{
+	case 1:
+		Direction = FVector2D(1.0f, -1.0f);
+		break;
+	case 2:
+		Direction = FVector2D(-1.0f, 1.0f);
+		break;
+	case 3:
+		Direction = FVector2D(1.0f, 1.0f);
+		break;
+	default:
+		break;
+	}
+
+	float HalfHeight = 88.0f;
+	if (const UClass* PawnClass = GetDefaultPawnClassForController(NewPlayer))
+	{
+		if (const ACharacter* CharacterCDO = Cast<ACharacter>(PawnClass->GetDefaultObject()))
+		{
+			HalfHeight = CharacterCDO->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+		}
+	}
+
+	// 先试 Slot 偏移点，再退回锚点本身；向下找 WorldStatic 地面，胶囊底部贴地。
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(WeaponFallbackSpawn), false);
+	const FVector Candidates[] = {
+		Anchor + FVector(Direction.X * WeaponFallbackSpawnSpacing, Direction.Y * WeaponFallbackSpawnSpacing, 0.0f),
+		Anchor,
+	};
+	for (const FVector& Candidate : Candidates)
+	{
+		FHitResult GroundHit;
+		if (World->LineTraceSingleByObjectType(GroundHit, Candidate + FVector(0.0f, 0.0f, 200.0f),
+			Candidate - FVector(0.0f, 0.0f, 2000.0f), FCollisionObjectQueryParams(ECC_WorldStatic), QueryParams))
+		{
+			return GroundHit.ImpactPoint + FVector(0.0f, 0.0f, HalfHeight + 5.0f);
+		}
+	}
+	return Anchor + FVector(0.0f, 0.0f, HalfHeight + 5.0f);
 }
 
 APawn* AWeaponGameMode::SpawnDefaultPawnAtTransform_Implementation(
@@ -1220,6 +1283,28 @@ bool AWeaponGameMode::TryStartWeaponMatch()
 	return true;
 }
 
+void AWeaponGameMode::TryStartLobbyArrivedMatch()
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::Waiting)
+	{
+		return;
+	}
+
+	// 大厅成员全部到齐立即开局；有人加载慢时等宽限期，过期后已到的人先开局（掉队者按中途加入处理）。
+	if (WeaponGameState->GetConnectedPlayerCount() >= ExpectedLobbyPlayers)
+	{
+		GetWorldTimerManager().ClearTimer(LobbyArrivalTimer);
+		TryStartWeaponMatch();
+	}
+	else if (!GetWorldTimerManager().IsTimerActive(LobbyArrivalTimer))
+	{
+		GetWorldTimerManager().SetTimer(LobbyArrivalTimer,
+			FTimerDelegate::CreateWeakLambda(this, [this]() { TryStartWeaponMatch(); }),
+			LobbyArrivalGraceSeconds, false);
+	}
+}
+
 bool AWeaponGameMode::TryStartLobbyTravel()
 {
 	UWorld* World = GetWorld();
@@ -1234,9 +1319,10 @@ bool AWeaponGameMode::TryStartLobbyTravel()
 	bLobbyTravelRequested = true;
 	// A0：任务设置随 travel options 带入 GridMap（房主在大厅任务终端设置）。
 	const FWeaponMissionSettings& Mission = WeaponGameState->GetMissionSettings();
+	// FromLobby/LobbyPlayers：任务图据此自动 ready，并在大厅成员到齐后开局。
 	const FString TravelURL = FString::Printf(
-		TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen?Seed=%d?Difficulty=%d"),
-		Mission.Seed, Mission.Difficulty);
+		TEXT("/Game/GridMap/Maps/L_GridMapStage4Test?listen?Seed=%d?Difficulty=%d?FromLobby?LobbyPlayers=%d"),
+		Mission.Seed, Mission.Difficulty, WeaponGameState->GetConnectedPlayerCount());
 	if (World->ServerTravel(TravelURL))
 	{
 		return true;

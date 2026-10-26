@@ -28,7 +28,8 @@ public class LetsDeepRock : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"OnlineSubsystem",
-			"OnlineSubsystemUtils"
+			"OnlineSubsystemUtils",
+			"ProceduralMeshComponent" // 开放地形 Spike(一次性原型)
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
@@ -61,6 +62,7 @@ public class LetsDeepRock : ModuleRules
 			"LetsDeepRock/Variant_Weapon/Weapons",
 			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/GridMap",
+			"LetsDeepRock/Variant_Weapon/Swarm",
 			"LetsDeepRock/Variant_Weapon/UI",
 			"LetsDeepRock/Variant_Weapon/AI",
 			"LetsDeepRock/Variant_Weapon/AI/Tasks",

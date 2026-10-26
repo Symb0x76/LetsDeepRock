@@ -162,6 +162,8 @@ protected:
 private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;
 	int32 FindSmallestUnreservedPlayerSlot() const;
+	/** 无可用 PlayerStart 时按 Slot 计算出生点：以地图 PlayerSpawn 标记（或任一 PlayerStart）为锚，向下找地面。 */
+	FVector ComputeFallbackSpawnLocation(AController* NewPlayer, int32 PlayerSlot);
 	int32 FindOrReservePlayerSlot(const FUniqueNetIdRepl& PlayerId);
 	void MarkPlayerReady(const FUniqueNetIdRepl& PlayerId, int32 OriginalSlot);
 	void MarkPlayerPending(const FUniqueNetIdRepl& PlayerId);
@@ -194,6 +196,14 @@ private:
 
 	/** A0：travel options 解析出的任务参数，InitGameState 注入 GameState。 */
 	FWeaponMissionSettings ParsedMissionSettings;
+
+	/** 由大厅 ServerTravel 进入（?FromLobby）：大厅已确认全员 ready，任务图内自动 ready 并开局。 */
+	bool bArrivedFromLobby = false;
+	/** 大厅出发时的人数（?LobbyPlayers）；全员到齐立即开局，否则等待宽限期后开局。 */
+	int32 ExpectedLobbyPlayers = 1;
+	FTimerHandle LobbyArrivalTimer;
+	static constexpr float LobbyArrivalGraceSeconds = 15.0f;
+	void TryStartLobbyArrivedMatch();
 
 	/** 玩家加入、退出或 ready 改变时重新验证当前阶段。 */
 	void RefreshMatchPhase();

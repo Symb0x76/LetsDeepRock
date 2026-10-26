@@ -145,12 +145,17 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	FWeaponWaveRoomSnapshot& TriggeredRoom = Snapshot.WaveDirector.CombatRooms.AddDefaulted_GetRef();
 	TriggeredRoom.bTriggered = true;
 	TriggeredRoom.RemainingToSpawn = 4;
+	TriggeredRoom.RemainingSwarm = 7;
 	TriggeredRoom.SecondsToNextSpawn = 0.5f;
 	Snapshot.WaveDirector.CombatRooms.AddDefaulted();
 	Snapshot.WaveDirector.bHasDefenseWave = true;
 	Snapshot.WaveDirector.DefenseCenter = FVector(850.0, 950.0, 10.0);
 	Snapshot.WaveDirector.DefenseWave.bTriggered = true;
 	Snapshot.WaveDirector.DefenseWave.RemainingToSpawn = 2;
+	FWeaponSwarmRoomCount& SwarmCount = Snapshot.WaveDirector.SwarmCounts.AddDefaulted_GetRef();
+	SwarmCount.RoomIndex = 0;
+	SwarmCount.ArchetypeRow = TEXT("BasicGrunt");
+	SwarmCount.Count = 5;
 
 	FGridMapRecoveryState& GridMap = Snapshot.GridMap;
 	GridMap.GenerationVersion = 1;
@@ -395,6 +400,12 @@ bool FWeaponMigrationPayloadBufferAutomationTest::RunTest(const FString& Paramet
 	}
 	TestTrue(TEXT("Defense wave flag"), RoundTripped.WaveDirector.bHasDefenseWave);
 	TestEqual(TEXT("Defense wave remaining quota"), RoundTripped.WaveDirector.DefenseWave.RemainingToSpawn, 2);
+	TestEqual(TEXT("Swarm count entries"), RoundTripped.WaveDirector.SwarmCounts.Num(), 1);
+	if (RoundTripped.WaveDirector.SwarmCounts.Num() == 1)
+	{
+		TestEqual(TEXT("Swarm count"), RoundTripped.WaveDirector.SwarmCounts[0].Count, 5);
+		TestEqual(TEXT("Swarm room remaining"), RoundTripped.WaveDirector.CombatRooms[0].RemainingSwarm, 7);
+	}
 
 	UWeaponMatchSaveGame* NewerSaveGame = DuplicateObject<UWeaponMatchSaveGame>(
 		SaveGame, GetTransientPackage());

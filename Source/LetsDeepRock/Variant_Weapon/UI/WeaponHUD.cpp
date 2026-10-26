@@ -56,6 +56,32 @@ void AWeaponHUD::DrawHUD()
 	}
 	DrawChargeFireBar(bDebugUIEnabled);
 	DrawObjectiveStatus();
+	DrawGameplayHint();
+}
+
+void AWeaponHUD::ShowGameplayHint(const FString& Text, const float DurationSeconds)
+{
+	if (!GetWorld())
+	{
+		return;
+	}
+	GameplayHintText = Text;
+	GameplayHintEndTime = GetWorld()->GetTimeSeconds() + DurationSeconds;
+}
+
+void AWeaponHUD::DrawGameplayHint()
+{
+	if (GameplayHintText.IsEmpty() || !GetWorld() || GetWorld()->GetTimeSeconds() >= GameplayHintEndTime)
+	{
+		return;
+	}
+	UFont* Font = GEngine ? GEngine->GetMediumFont() : nullptr;
+	if (!Font)
+	{
+		return;
+	}
+	WeaponHUDPrivate::DrawLine(Canvas, Font, GameplayHintText, Canvas->SizeX * 0.5f, Canvas->SizeY * 0.75f,
+		FLinearColor(1.0f, 0.85f, 0.3f), true);
 }
 
 void AWeaponHUD::AddWeaponDamageDebugEvent(const FWeaponDamageDebugEvent& Event)
