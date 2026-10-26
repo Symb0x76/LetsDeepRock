@@ -394,6 +394,7 @@ void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
 void AWeaponCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+	TickRevive(DeltaTime);
 	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
 	{
 		HideGrenadePreview();
@@ -557,6 +558,7 @@ void AWeaponCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 	DOREPLIFETIME(AWeaponCharacter, AimDirection);
 	DOREPLIFETIME(AWeaponCharacter, CurrentEquipmentSlot);
+	DOREPLIFETIME_CONDITION(AWeaponCharacter, ReviveProgress, COND_OwnerOnly);
 }
 
 void AWeaponCharacter::RequestBuildTileAtWorldLocation(const FVector& WorldLocation, EGridTileType BuildType)
@@ -673,6 +675,93 @@ void AWeaponCharacter::ExitDowned()
 	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
 }
 
+AWeaponPlayerState* AWeaponCharacter::FindReviveTargetState() const
+{
+	const UWorld* World = GetWorld();
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	if (!GameState)
+	{
+		return nullptr;
+	}
+	const AWeaponGameMode* GM = World->GetAuthGameMode<AWeaponGameMode>();
+	const float Radius = GM ? GM->ReviveRadius : WeaponReinforcementDefaults::ReviveRadius;
+	const APlayerState* OwnState = GetPlayerState();
+
+	AWeaponPlayerState* Best = nullptr;
+	float BestDistance = Radius;
+	for (APlayerState* Candidate : GameState->PlayerArray)
+	{
+		AWeaponPlayerState* WeaponState = Cast<AWeaponPlayerState>(Candidate);
+		if (!WeaponState || WeaponState == OwnState ||
+			WeaponState->GetLifeState() != EWeaponPlayerLifeState::Downed)
+		{
+			continue;
+		}
+		const APawn* DownedPawn = WeaponState->GetPawn();
+		if (!DownedPawn)
+		{
+			continue;
+		}
+		const float Distance = FVector::Dist2D(GetActorLocation(), DownedPawn->GetActorLocation());
+		if (Distance <= BestDistance)
+		{
+			BestDistance = Distance;
+			Best = WeaponState;
+		}
+	}
+	return Best;
+}
+
+AController* AWeaponCharacter::FindReviveTarget() const
+{
+	const AWeaponPlayerState* TargetState = FindReviveTargetState();
+	return TargetState ? TargetState->GetOwningController() : nullptr;
+}
+
+void AWeaponCharacter::ReviveHeldPressed()
+{
+	if (IsOutOfAction() || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
+	bReviveHeld = true;
+	ServerSetReviveHeld(true);
+}
+
+void AWeaponCharacter::ReviveHeldReleased()
+{
+	// 松手始终上报(即使期间自己倒下),避免服务端残留按住状态
+	bReviveHeld = false;
+	ServerSetReviveHeld(false);
+}
+
+void AWeaponCharacter::ServerSetReviveHeld_Implementation(const bool bHeld)
+{
+	bReviveHeld = bHeld;
+}
+
+void AWeaponCharacter::TickRevive(const float DeltaTime)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	AWeaponGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr;
+	if (!GM)
+	{
+		return;
+	}
+
+	AController* Target = FindReviveTarget();
+	const bool bCanRevive = bReviveHeld && !IsOutOfAction() && !AWeaponGameState::IsGameplayRecoveryBlockedFor(this);
+	const bool bCompleted = ReviveTracker.Advance(Target, bCanRevive, DeltaTime, GM->ReviveSeconds);
+	ReviveProgress = ReviveTracker.GetProgress(GM->ReviveSeconds);
+	if (bCompleted && Target)
+	{
+		GM->RevivePlayer(Target);
+	}
+}
+
 void AWeaponCharacter::EnterDeath()
 {
 	if (!AbilitySystemComponent)
@@ -780,6 +869,8 @@ void AWeaponCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	PlayerInputComponent->BindKey(EKeys::G, IE_Released, this, &AWeaponCharacter::QuickThrowGrenadeReleased);
 	PlayerInputComponent->BindKey(EKeys::R, IE_Pressed, this, &AWeaponCharacter::ReloadWeapon);
 	PlayerInputComponent->BindKey(EKeys::B, IE_Pressed, this, &AWeaponCharacter::CycleFireMode);
+	PlayerInputComponent->BindKey(EKeys::E, IE_Pressed, this, &AWeaponCharacter::ReviveHeldPressed);
+	PlayerInputComponent->BindKey(EKeys::E, IE_Released, this, &AWeaponCharacter::ReviveHeldReleased);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AWeaponCharacter::RawFirePressed);
 	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AWeaponCharacter::RawFireReleased);
 }

@@ -500,4 +500,77 @@ bool FReinforceGameplayLeaverClearsBleedOutTest::RunTest(const FString& Paramete
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// 救援:RevivePlayer 恢复 30% 血量、清盾、退出倒地并清流血计时;对 Up 玩家无效
+// (按住 E 的双人流程无法在单进程 -game 内跑,由 FWeaponReviveTracker 纯逻辑测试覆盖)
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayRevivePlayerRestoresTest, "LetsDeepRock.Reinforcement.Gameplay.RevivePlayerRestores")
+bool FReinforceGameplayRevivePlayerRestoresTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 2.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+
+		// 倒地期间护盾会回复:救起时必须归零;MaxHealth 压回 100。
+		UAbilitySystemComponent* ASC = Ctx.PlayerState->GetAbilitySystemComponent();
+		ASC->SetNumericAttributeBase(UWeaponHealthSet::GetMaxHealthAttribute(), 100.f);
+		ASC->SetNumericAttributeBase(UWeaponHealthSet::GetMaxShieldAttribute(), 50.f);
+		ASC->SetNumericAttributeBase(UWeaponHealthSet::GetShieldAttribute(), 25.f);
+
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		GameMode->RevivePlayer(Controller);
+
+		Ctx.Test->TestEqual(TEXT("life state is Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+		Ctx.Test->TestEqual(TEXT("health is 30 percent"), ASC->GetNumericAttribute(UWeaponHealthSet::GetHealthAttribute()), 30.f, 0.01f);
+		Ctx.Test->TestEqual(TEXT("shield is zero"), ASC->GetNumericAttribute(UWeaponHealthSet::GetShieldAttribute()), 0.f, 0.01f);
+		Ctx.Test->TestFalse(TEXT("State.Downed cleared"), ASC->HasMatchingGameplayTag(TAG_State_Downed));
+		Ctx.Test->TestEqual(TEXT("downed timestamp cleared"), Ctx.PlayerState->GetDownedServerTime(), 0.f);
+		Ctx.Test->TestEqual(TEXT("bleed-out timer cleared"), GameMode->GetBleedOutTimerCountForTest(), 0);
+		const AWeaponCharacter* Pawn = Cast<AWeaponCharacter>(Controller->GetPawn());
+		Ctx.Test->TestNotNull(TEXT("revived player keeps its pawn"), Pawn);
+		if (Pawn)
+		{
+			Ctx.Test->TestEqual(TEXT("walking again"), Pawn->GetCharacterMovement()->MovementMode.GetValue(), static_cast<uint8>(MOVE_Walking));
+		}
+	});
+	// 流血计时已清:超过 BleedOutSeconds 仍应存活。
+	ReinforceAddWait(Context, 2.5f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.Test->TestEqual(TEXT("still Up after the old bleed-out would have expired"),
+			Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReviveIgnoresUpPlayerTest, "LetsDeepRock.Reinforcement.Gameplay.ReviveIgnoresUpPlayer")
+bool FReinforceGameplayReviveIgnoresUpPlayerTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		UAbilitySystemComponent* ASC = Ctx.PlayerState->GetAbilitySystemComponent();
+		ASC->SetNumericAttributeBase(UWeaponHealthSet::GetMaxHealthAttribute(), 100.f);
+		ASC->SetNumericAttributeBase(UWeaponHealthSet::GetHealthAttribute(), 80.f);
+		GameMode->RevivePlayer(Ctx.World->GetFirstPlayerController());
+		Ctx.Test->TestEqual(TEXT("health unchanged"), ASC->GetNumericAttribute(UWeaponHealthSet::GetHealthAttribute()), 80.f, 0.01f);
+		Ctx.Test->TestEqual(TEXT("still Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

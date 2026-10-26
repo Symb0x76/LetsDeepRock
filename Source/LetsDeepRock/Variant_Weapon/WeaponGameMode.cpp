@@ -1362,6 +1362,32 @@ void AWeaponGameMode::ExpireBleedOut(AController* DownedController)
 	PlayerDied(DownedController);
 }
 
+void AWeaponGameMode::RevivePlayer(AController* DownedController)
+{
+	if (!HasAuthority() || !DownedController || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
+	AWeaponPlayerState* PS = DownedController->GetPlayerState<AWeaponPlayerState>();
+	if (!PS || PS->GetLifeState() != EWeaponPlayerLifeState::Downed)
+	{
+		return;
+	}
+
+	ClearBleedOut(DownedController);
+	if (AWeaponCharacter* Character = Cast<AWeaponCharacter>(DownedController->GetPawn()))
+	{
+		Character->ExitDowned();
+	}
+	if (UWeaponHealthSet* HealthSet = PS->GetHealthSet())
+	{
+		HealthSet->SetHealth(HealthSet->GetMaxHealth() * RevivedHealthFraction);
+		HealthSet->SetShield(0.0f);
+	}
+	PS->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s revived"), *GetNameSafe(DownedController));
+}
+
 void AWeaponGameMode::ClearBleedOut(AController* PlayerController)
 {
 	if (!PlayerController)

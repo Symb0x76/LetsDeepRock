@@ -99,6 +99,12 @@ public:
 	/** 快照恢复(Task 7 使用):把玩家置为倒地,按剩余秒数重新排流血计时(屏障内计时暂停)。 */
 	void RestoreDownedPlayer(AController* PlayerController, float RemainingSeconds);
 
+	/**
+	 *  救起倒地玩家(服务端):仅对倒地且屏障未关的玩家生效。清流血计时与 DownedServerTime、ExitDowned,
+	 *  Health = MaxHealth * RevivedHealthFraction、Shield 归零(倒地期间护盾仍在回复),LifeState = Up。
+	 */
+	void RevivePlayer(AController* DownedController);
+
 	/** 清掉某玩家的复活与流血计时(Logout 调用;也供测试直接调用)。 */
 	void ClearPlayerLifeTimers(AController* PlayerController);
 
