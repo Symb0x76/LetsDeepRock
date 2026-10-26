@@ -108,6 +108,23 @@ public:
 	/** 清掉某玩家的复活与流血计时(Logout 调用;也供测试直接调用)。 */
 	void ClearPlayerLifeTimers(AController* PlayerController);
 
+	/**
+	 *  Logout 调用:局内(屏障未关)离线的倒地/死亡玩家按身份(PlayerState UniqueId,与恢复名册同键)记为 Dead
+	 *  (倒地者也记 Dead);Up 玩家清除旧记录。重连时由 ApplyDepartedLifeState 还原,防止掉线重进绕开增援池。
+	 */
+	void RecordDepartedLifeState(AController* ExitingController);
+
+	/**
+	 *  RestartPlayer 在重连快照分支之后调用:若该身份有离线记录,消费记录并让新 Pawn 立即死亡,
+	 *  池>0 排自动增援,池空则不排并检查任务失败。返回是否应用了记录。
+	 */
+	bool ApplyDepartedLifeState(AController* NewPlayer);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** 测试用:离线生存状态记录数量 */
+	int32 GetDepartedLifeStateCountForTest() const { return DepartedLifeStates.Num(); }
+#endif
+
 #if WITH_DEV_AUTOMATION_TESTS
 	/** 测试用:当前挂起的流血计时数量 */
 	int32 GetBleedOutTimerCountForTest() const { return BleedOutTimers.Num(); }
@@ -228,6 +245,9 @@ protected:
 
 	/** 倒地流血计时:每个 Controller 一个;屏障内与 RespawnTimers 同样暂停/重新锚定。Logout / 复活 / 结算时清除。 */
 	TMap<TObjectPtr<AController>, FTimerHandle> BleedOutTimers;
+
+	/** 局内离线者的生存状态(仅记 Dead;键与恢复名册一致)。BeginWeaponMatch / ReturnToWaitingForPlayers 清空。 */
+	TMap<FUniqueNetIdRepl, EWeaponPlayerLifeState> DepartedLifeStates;
 
 	/** 设置(或重置)流血计时,并写入复制给 HUD 的 DownedServerTime */
 	void ArmBleedOutTimer(AController* DownedController, float Seconds);

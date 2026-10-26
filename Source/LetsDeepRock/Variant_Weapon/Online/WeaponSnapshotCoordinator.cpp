@@ -234,7 +234,14 @@ void UWeaponSnapshotCoordinator::ApplyPlayerLifeState(
 	}
 
 	// 显式写回生存状态:PlayerState 默认的 Up 不能泄漏到死亡/倒地玩家,并补齐服务端 GAS Tag。
-	switch (Player.LifeState)
+	// 倒地规则只在 InGame 有效:Ending 快照里的倒地者(流血计时已被结算清掉)按死亡恢复,
+	// 并沿用其待复活计时,而不是被还原成 0.1 s 流血的倒地状态。
+	EWeaponPlayerLifeState EffectiveLifeState = Player.LifeState;
+	if (EffectiveLifeState == EWeaponPlayerLifeState::Downed && Phase != EWeaponMatchPhase::InGame)
+	{
+		EffectiveLifeState = EWeaponPlayerLifeState::Dead;
+	}
+	switch (EffectiveLifeState)
 	{
 	case EWeaponPlayerLifeState::Downed:
 		if (Character && Controller)

@@ -1060,6 +1060,9 @@ void AWeaponGameMode::RestartPlayer(AController* NewPlayer)
 				}
 			}
 		}
+
+		// 普通掉线重连(无迁移屏障/快照):按 Logout 时的记录还原死亡状态,不让重进变成免费复活。
+		ApplyDepartedLifeState(NewPlayer);
 	}
 }
 
@@ -1174,6 +1177,9 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 			ExitingPlayerId = PlayerState->GetUniqueId();
 		}
 	}
+
+	// 先记录生存状态(清计时器不改 LifeState,但要在 PlayerState 被移除前读取身份)
+	RecordDepartedLifeState(ExitingController);
 
 	// 首先清理 Timer，防止Super::Logout 后，Controller/PlayerState 已被移除或销毁，不适合作为 Timer Map 的查找键
 	if (ExitingController)
@@ -1422,11 +1428,79 @@ void AWeaponGameMode::ClearPlayerLifeTimers(AController* PlayerController)
 	ClearBleedOut(PlayerController);
 }
 
+void AWeaponGameMode::RecordDepartedLifeState(AController* ExitingController)
+{
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	const AWeaponPlayerState* PS = ExitingController ? ExitingController->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!HasAuthority() || !PS || !PS->GetUniqueId().IsValid())
+	{
+		return;
+	}
+
+	const FUniqueNetIdRepl PlayerId = PS->GetUniqueId();
+	// 只在局内且屏障未关时记录(迁移有自己的快照路径);其余情况清掉旧记录。
+	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame ||
+		WeaponGameState->IsGameplayRecoveryBlocked() || PS->GetLifeState() == EWeaponPlayerLifeState::Up)
+	{
+		DepartedLifeStates.Remove(PlayerId);
+		return;
+	}
+
+	// 倒地者离线按死亡记(流血计时随 Logout 清掉,不能借掉线免死)。
+	DepartedLifeStates.Add(PlayerId, EWeaponPlayerLifeState::Dead);
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s left while out of action, recorded as Dead"),
+		*GetNameSafe(ExitingController));
+}
+
+bool AWeaponGameMode::ApplyDepartedLifeState(AController* NewPlayer)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	AWeaponPlayerState* PS = NewPlayer ? NewPlayer->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!HasAuthority() || !PS || !WeaponGameState || !PS->GetUniqueId().IsValid() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame ||
+		WeaponGameState->IsGameplayRecoveryBlocked())
+	{
+		return false;
+	}
+
+	EWeaponPlayerLifeState Recorded = EWeaponPlayerLifeState::Up;
+	if (!DepartedLifeStates.RemoveAndCopyValue(PS->GetUniqueId(), Recorded) ||
+		Recorded != EWeaponPlayerLifeState::Dead)
+	{
+		return false;
+	}
+
+	// RestartPlayer 已给了活 Pawn:让它死亡,并按与局内死亡相同的规则排增援 / 检查失败。
+	if (AWeaponCharacter* Character = Cast<AWeaponCharacter>(NewPlayer->GetPawn()))
+	{
+		Character->EnterDeath();
+	}
+	PS->SetLifeStateAuthority(EWeaponPlayerLifeState::Dead);
+	if (WeaponGameState->GetReinforcementPool() > 0)
+	{
+		ArmRespawnTimer(NewPlayer, AutoReinforceDelay);
+	}
+	else
+	{
+		PS->SetRespawnServerTime(0.0f);
+	}
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s rejoined, restored as Dead"), *GetNameSafe(NewPlayer));
+	CheckMissionFailure();
+	return true;
+}
+
 bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 	if (!HasAuthority() || !PlayerController || !WeaponGameState ||
 		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return false;
+	}
+
+	// 已存活且有 Pawn 的玩家不能被增援(否则白扣一条命):Up 且 Pawn 有效 → 拒绝。
+	if (WeaponGetLifeState(PlayerController->GetPlayerState<APlayerState>()) == EWeaponPlayerLifeState::Up &&
+		PlayerController->GetPawn())
 	{
 		return false;
 	}
@@ -1618,6 +1692,9 @@ void AWeaponGameMode::BeginWeaponMatch()
 		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 		return;
 	}
+
+	// 上一局的离线生存记录不带入新局(须在下面的 RespawnPlayer→RestartPlayer 之前清掉)。
+	DepartedLifeStates.Empty();
 
 	// 增援:池按难度初始化,任务结果清空,全员回到 Up。
 	WeaponGameState->SetReinforcementPoolAuthority(WeaponReinforcementPoolForDifficulty(
@@ -1846,6 +1923,7 @@ void AWeaponGameMode::ReturnToWaitingForPlayers()
 		return;
 	}
 
+	DepartedLifeStates.Empty();
 	ResetAllPlayerReadyStates();
 	CleanupObjectiveActors();
 	if (WaveDirector)

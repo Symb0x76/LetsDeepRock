@@ -15,6 +15,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayEffect.h"
 #include "GridMap/GridMapObjectiveActors.h"
+#include "Net/OnlineEngineInterface.h"
 #include "Online/WeaponSnapshot.h"
 #include "Online/WeaponSnapshotCoordinator.h"
 #include "Reinforcement/WeaponReinforcementRules.h"
@@ -498,6 +499,170 @@ bool FReinforceGameplayLeaverClearsBleedOutTest::RunTest(const FString& Paramete
 	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
 	{
 		Ctx.Test->TestEqual(TEXT("no expiry fired after the clear"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+/** 确保本地玩家有稳定身份(-game 下 UniqueId 可能无效),Logout 记录按它为键 */
+static void ReinforceEnsurePlayerId(FSwarmGameplayTestContext& Ctx)
+{
+	if (!Ctx.PlayerState->GetUniqueId().IsValid())
+	{
+		if (UOnlineEngineInterface* OnlineEngine = UOnlineEngineInterface::Get())
+		{
+			Ctx.PlayerState->SetUniqueId(FUniqueNetIdRepl(OnlineEngine->CreateUniquePlayerIdWrapper(TEXT("ReinforceRejoinTest"))));
+		}
+	}
+}
+
+/**
+ * 模拟"掉线重进":真实 Logout 本地玩家在 -game 下不安全,所以 Record 直接调,
+ * 再按重进时的状态还原 PlayerState(新建 PlayerState 默认 Up、满血、无 Dead 标签、旧 Pawn 已销毁),
+ * 最后走真实的 RestartPlayer(它会调用 ApplyDepartedLifeState)。
+ */
+static void ReinforceSimulateRejoin(FSwarmGameplayTestContext& Ctx, AWeaponGameMode* GameMode, AController* Controller)
+{
+	GameMode->ClearPlayerLifeTimers(Controller);
+	if (APawn* OldPawn = Controller->GetPawn())
+	{
+		OldPawn->Destroy();
+	}
+	UAbilitySystemComponent* ASC = Ctx.PlayerState->GetAbilitySystemComponent();
+	ASC->RemoveLooseGameplayTag(TAG_State_Dead);
+	ASC->SetNumericAttributeBase(UWeaponHealthSet::GetHealthAttribute(), 100.f);
+	Ctx.PlayerState->SetRespawnServerTime(0.f);
+	Ctx.PlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+	GameMode->RestartPlayer(Controller);
+}
+
+// ---------------------------------------------------------------------------
+// I1:局内死亡(池 1)后掉线重进 → 仍是 Dead,重新排自动增援,池不变
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayRejoinKeepsDeadTest, "LetsDeepRock.Reinforcement.Gameplay.RejoinKeepsDead")
+bool FReinforceGameplayRejoinKeepsDeadTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		ReinforceEnsurePlayerId(Ctx);
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(1);
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+
+		GameMode->RecordDepartedLifeState(Controller);
+		Ctx.Test->TestEqual(TEXT("departure recorded"), GameMode->GetDepartedLifeStateCountForTest(), 1);
+
+		ReinforceSimulateRejoin(Ctx, GameMode, Controller);
+
+		Ctx.Test->TestEqual(TEXT("rejoin restores Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestTrue(TEXT("State.Dead tag present"),
+			Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Dead));
+		Ctx.Test->TestTrue(TEXT("auto-reinforce re-armed"), Ctx.PlayerState->GetRespawnServerTime() > 0.f);
+		Ctx.Test->TestEqual(TEXT("pool untouched"), GameState->GetReinforcementPool(), 1);
+		Ctx.Test->TestEqual(TEXT("record consumed"), GameMode->GetDepartedLifeStateCountForTest(), 0);
+		Ctx.Test->TestEqual(TEXT("mission continues"), GameState->GetMatchPhase(), EWeaponMatchPhase::InGame);
+		GameMode->ClearPlayerLifeTimers(Controller);
+	});
+	ReinforceAddWait(Context, 0.2f);
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// I1:死亡后池耗尽,再掉线重进 → 不排增援;solo 无人存活 → 任务失败
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayRejoinEmptyPoolFailsTest, "LetsDeepRock.Reinforcement.Gameplay.RejoinEmptyPoolFails")
+bool FReinforceGameplayRejoinEmptyPoolFailsTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		ReinforceEnsurePlayerId(Ctx);
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(1);
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+
+		// 死后池被其他人的增援耗尽;随后该玩家掉线重进
+		GameState->SetReinforcementPoolAuthority(0);
+		GameMode->RecordDepartedLifeState(Controller);
+		ReinforceSimulateRejoin(Ctx, GameMode, Controller);
+
+		Ctx.Test->TestEqual(TEXT("rejoin restores Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("pool still empty"), GameState->GetReinforcementPool(), 0);
+		Ctx.Test->TestEqual(TEXT("phase is Ending"), GameState->GetMatchPhase(), EWeaponMatchPhase::Ending);
+		Ctx.Test->TestEqual(TEXT("outcome is Failed"), GameState->GetMissionOutcome(), EWeaponMissionOutcome::Failed);
+	});
+	ReinforceAddWait(Context, ReinforceGameplayTestConstants::EndingPlusRespawnSeconds);
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// M5:TryReinforcePlayer 不得对已存活且有 Pawn 的玩家扣池
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReinforceIgnoresUpPlayerTest, "LetsDeepRock.Reinforcement.Gameplay.ReinforceIgnoresUpPlayer")
+bool FReinforceGameplayReinforceIgnoresUpPlayerTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		GameState->SetReinforcementPoolAuthority(3);
+		const APawn* PawnBefore = Controller->GetPawn();
+
+		Ctx.Test->TestFalse(TEXT("Up player with a pawn is not reinforced"), GameMode->TryReinforcePlayer(Controller));
+		Ctx.Test->TestEqual(TEXT("pool untouched"), GameState->GetReinforcementPool(), 3);
+		Ctx.Test->TestTrue(TEXT("pawn not replaced"), Controller->GetPawn() == PawnBefore);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// M2:Ending 阶段快照里的倒地者按死亡恢复并保留待复活计时(不再 0.1 s 流血)
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplaySnapshotEndingDownedRestoresDeadTest, "LetsDeepRock.Reinforcement.Gameplay.SnapshotEndingDownedRestoresDead")
+bool FReinforceGameplaySnapshotEndingDownedRestoresDeadTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+
+		FWeaponPlayerSnapshot Snapshot;
+		Snapshot.LifeState = EWeaponPlayerLifeState::Downed;
+		Snapshot.bRespawnPending = true;
+		Snapshot.RespawnRemainingSeconds = 20.f;
+		UWeaponSnapshotCoordinator::ApplyPlayerLifeState(GameMode, Controller, Ctx.PlayerState.Get(), Ctx.Player.Get(),
+			Snapshot, EWeaponMatchPhase::Ending);
+
+		Ctx.Test->TestEqual(TEXT("restored as Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("no bleed-out timer"), GameMode->GetBleedOutTimerCountForTest(), 0);
+		Ctx.Test->TestEqual(TEXT("pending respawn restored"),
+			Ctx.PlayerState->GetRespawnServerTime() - ReinforceServerNow(Ctx), 20.f, 0.3f);
+		GameMode->ClearPlayerLifeTimers(Controller);
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;

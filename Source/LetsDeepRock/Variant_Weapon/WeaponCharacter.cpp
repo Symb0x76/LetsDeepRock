@@ -364,7 +364,7 @@ void AWeaponCharacter::SetGameplayRecoveryBlocked(const bool bBlocked)
 			Movement->DisableMovement();
 			Movement->StopMovementImmediately();
 		}
-		else if (!IsDead())
+		else if (!IsOutOfAction())
 		{
 			if (bSavedMovementModeForRecovery)
 			{
