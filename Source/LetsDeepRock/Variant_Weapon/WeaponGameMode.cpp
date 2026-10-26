@@ -1187,6 +1187,9 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 	{
 		UE_LOG(LogLetsDeepRock, Warning, TEXT("Failed to refresh migration roles after logout: %s"), *MigrationError);
 	}
+
+	// 离线者此时已从 PlayerArray 移除(连接数/存活数都不再计入);池空时剩余存活者掉线 = 全员倒下。
+	CheckMissionFailure();
 }
 
 void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
@@ -1419,9 +1422,19 @@ void AWeaponGameMode::BeginWeaponMatch()
 	WeaponGameState->SetMissionOutcomeAuthority(EWeaponMissionOutcome::None);
 	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
-		if (AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState))
+		AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
+		if (WeaponPlayerState && WeaponPlayerState->GetLifeState() != EWeaponPlayerLifeState::Up)
 		{
-			WeaponPlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+			// 兜底:结算期复活计时未走完就开局时,直接复活(RespawnPlayer 负责置 Up),不能让尸体变 Up。
+			if (AController* StragglerController = WeaponPlayerState->GetOwningController())
+			{
+				if (FTimerHandle* StragglerTimer = RespawnTimers.Find(StragglerController))
+				{
+					GetWorldTimerManager().ClearTimer(*StragglerTimer);
+					RespawnTimers.Remove(StragglerController);
+				}
+				RespawnPlayer(StragglerController);
+			}
 		}
 	}
 
@@ -1582,6 +1595,18 @@ void AWeaponGameMode::EndWeaponMatch(const EWeaponMissionOutcome Outcome)
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
 	WeaponGameState->SetMissionOutcomeAuthority(Outcome);
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Ending, EndingDuration);
+
+	// 局内死亡且未排复活(池空)的玩家:离开 InGame 后恢复"死亡 → RespawnDelay → 免费复活"的旧行为,
+	// 否则他们会带着尸体进入下一局。放在结算开始而非回到 Waiting,保证下一局开始前已复活。
+	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		AController* PlayerController = PlayerState ? PlayerState->GetOwningController() : nullptr;
+		if (PlayerController && WeaponGetLifeState(PlayerState) != EWeaponPlayerLifeState::Up &&
+			!RespawnTimers.Contains(PlayerController))
+		{
+			ArmRespawnTimer(PlayerController, RespawnDelay);
+		}
+	}
 
 	if (EndingDuration <= 0.0f)
 	{

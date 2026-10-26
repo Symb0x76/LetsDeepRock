@@ -15,6 +15,7 @@
 #include "GameplayEffect.h"
 #include "Reinforcement/WeaponReinforcementRules.h"
 #include "UObject/Package.h"
+#include "WeaponGameplayTags.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
 #include "WeaponPlayerState.h"
@@ -29,6 +30,8 @@ namespace ReinforceGameplayTestConstants
 	inline constexpr float ShortReinforceDelay = 0.5f;
 	/** 一击必杀的伤害量(Health 基础值被压到 1) */
 	inline constexpr float LethalDamage = 10.f;
+	/** 结算 5 s(EndingDuration)+ 重生延迟 3 s(RespawnDelay)+ 余量 */
+	inline constexpr float EndingPlusRespawnSeconds = 9.5f;
 }
 
 /** 按世界时间等待;每帧先把 Player 刷新为控制器当前 Pawn(增援会销毁旧 Pawn),PerFrame 返回 false 提前结束 */
@@ -243,7 +246,20 @@ bool FReinforceGameplayEmptyPoolWipeFailsTest::RunTest(const FString& Parameters
 		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
 		Ctx.Test->TestEqual(TEXT("phase is Ending"), GameState->GetMatchPhase(), EWeaponMatchPhase::Ending);
 		Ctx.Test->TestEqual(TEXT("outcome is Failed"), GameState->GetMissionOutcome(), EWeaponMissionOutcome::Failed);
-		Ctx.Test->TestEqual(TEXT("no respawn is scheduled"), Ctx.PlayerState->GetRespawnServerTime(), 0.f);
+		// 池空不排增援;失败结算开始时才按 RespawnDelay 排免费复活(时间戳 > 0)
+		Ctx.Test->TestTrue(TEXT("free respawn scheduled only once the match ended"), Ctx.PlayerState->GetRespawnServerTime() > 0.f);
+	});
+	// 结算(EndingDuration 5 s)中应以 RespawnDelay(3 s)免费复活死者,留足余量
+	ReinforceAddWait(Context, ReinforceGameplayTestConstants::EndingPlusRespawnSeconds);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		const APlayerController* Controller = Ctx.World->GetFirstPlayerController();
+		const AWeaponCharacter* NewPawn = Controller ? Cast<AWeaponCharacter>(Controller->GetPawn()) : nullptr;
+		Ctx.Test->TestNotNull(TEXT("dead player got a pawn back after the match ended"), NewPawn);
+		Ctx.Test->TestEqual(TEXT("life state is Up after the match ended"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+		Ctx.Test->TestFalse(TEXT("State.Dead tag cleared"),
+			Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Dead));
+		Ctx.Test->TestEqual(TEXT("back to Waiting"), Ctx.World->GetGameState<AWeaponGameState>()->GetMatchPhase(), EWeaponMatchPhase::Waiting);
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;
