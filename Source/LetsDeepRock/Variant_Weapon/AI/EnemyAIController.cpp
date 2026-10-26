@@ -7,6 +7,7 @@
 #include "Perception/AIPerceptionComponent.h"
 #include "Perception/AISenseConfig_Sight.h"
 #include "Perception/AISense_Sight.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponGameState.h"
 
 AEnemyAIController::AEnemyAIController()
@@ -108,7 +109,9 @@ void AEnemyAIController::OnTargetPerceptionUpdated(AActor* Actor, FAIStimulus St
 	{
 		// 只接受玩家操控的 Pawn:虫群小虫与其他精英是中立 Pawn,不应成为追击目标。
 		const APawn* SensedPawn = Cast<APawn>(Actor);
-		if (SensedPawn && SensedPawn->IsPlayerControlled())
+		// 已阵亡的玩家 Pawn 仍留在场内:忽略(倒地玩家仍可被锁定)。
+		if (SensedPawn && SensedPawn->IsPlayerControlled() &&
+			WeaponGetLifeState(SensedPawn->GetPlayerState()) != EWeaponPlayerLifeState::Dead)
 		{
 			PerceivedTarget = Actor;
 		}

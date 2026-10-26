@@ -9,6 +9,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Net/UnrealNetwork.h"
 #include "Variant_Weapon/WeaponGameMode.h"
+#include "Variant_Weapon/Reinforcement/WeaponReinforcementRules.h"
 #include "Variant_Weapon/WeaponGameState.h"
 
 namespace
@@ -34,15 +35,25 @@ namespace
 		return AWeaponGameState::IsGameplayRecoveryBlockedFor(World);
 	}
 
-	/** 半径内的存活玩家 Pawn 数(只遍历 PlayerController:AI 敌人不算玩家) */
+	/** 控制器当前持有 Pawn 且玩家处于 Up(倒地/阵亡的 Pawn 仍在场内,不能算数) */
+	const APawn* GridMapGetUpPlayerPawn(const AController* Controller)
+	{
+		const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+		if (!Pawn || WeaponGetLifeState(Controller->PlayerState) != EWeaponPlayerLifeState::Up)
+		{
+			return nullptr;
+		}
+		return Pawn;
+	}
+
+	/** 半径内的 Up 玩家 Pawn 数(只遍历 PlayerController:AI 敌人不算玩家) */
 	int32 CountPlayersInRadius(const UWorld* World, const FVector& Center, const float Radius)
 	{
 		int32 Count = 0;
 		const float RadiusSquared = Radius * Radius;
 		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
-			const AController* Controller = It->Get();
-			const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
+			const APawn* Pawn = GridMapGetUpPlayerPawn(It->Get());
 			if (Pawn && !Pawn->IsPendingKillPending() &&
 				FVector::DistSquared2D(Pawn->GetActorLocation(), Center) <= RadiusSquared)
 			{
@@ -57,8 +68,7 @@ namespace
 		int32 Count = 0;
 		for (FConstPlayerControllerIterator It = World->GetPlayerControllerIterator(); It; ++It)
 		{
-			const AController* Controller = It->Get();
-			if (Controller && Controller->GetPawn())
+			if (GridMapGetUpPlayerPawn(It->Get()))
 			{
 				++Count;
 			}

@@ -8,7 +8,10 @@
 #include "AbilitySystemComponent.h"
 #include "WeaponGameplayTags.h"
 #include "Attributes/WeaponHealthSet.h"
-#include "Kismet/GameplayStatics.h"
+#include "Engine/World.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 
 UBTService_UpdatePerception::UBTService_UpdatePerception()
 {
@@ -37,10 +40,31 @@ void UBTService_UpdatePerception::TickNode(UBehaviorTreeComponent& OwnerComp, ui
 	AEnemyAIController* EnemyAIC = Cast<AEnemyAIController>(AIController);
 	AActor* Target = EnemyAIC ? EnemyAIC->GetPerceivedTarget() : nullptr;
 
-	// 如果感知没有目标，直接获取玩家（敌人生成即追击，不需要等待感知）
+	// 已阵亡的玩家 Pawn 仍留在场内:不再作为目标(倒地玩家仍可被锁定)
+	if (Target && WeaponGetLifeState(Cast<APawn>(Target) ? Cast<APawn>(Target)->GetPlayerState() : nullptr) ==
+		EWeaponPlayerLifeState::Dead)
+	{
+		Target = nullptr;
+	}
+
+	// 如果感知没有目标，取最近的非阵亡玩家（敌人生成即追击，不需要等待感知）
 	if (!Target || !IsValid(Target))
 	{
-		Target = UGameplayStatics::GetPlayerPawn(Pawn->GetWorld(), 0);
+		float BestDistSquared = TNumericLimits<float>::Max();
+		for (FConstPlayerControllerIterator It = Pawn->GetWorld()->GetPlayerControllerIterator(); It; ++It)
+		{
+			APawn* PlayerPawn = It->IsValid() ? It->Get()->GetPawn() : nullptr;
+			if (!PlayerPawn || WeaponGetLifeState(PlayerPawn->GetPlayerState()) == EWeaponPlayerLifeState::Dead)
+			{
+				continue;
+			}
+			const float DistSquared = FVector::DistSquared(Pawn->GetActorLocation(), PlayerPawn->GetActorLocation());
+			if (DistSquared < BestDistSquared)
+			{
+				BestDistSquared = DistSquared;
+				Target = PlayerPawn;
+			}
+		}
 	}
 
 	if (Target && IsValid(Target))

@@ -14,6 +14,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayEffect.h"
+#include "GridMap/GridMapObjectiveActors.h"
 #include "Reinforcement/WeaponReinforcementRules.h"
 #include "UObject/Package.h"
 #include "WeaponCharacter.h"
@@ -568,6 +569,50 @@ bool FReinforceGameplayReviveIgnoresUpPlayerTest::RunTest(const FString& Paramet
 		GameMode->RevivePlayer(Ctx.World->GetFirstPlayerController());
 		Ctx.Test->TestEqual(TEXT("health unchanged"), ASC->GetNumericAttribute(UWeaponHealthSet::GetHealthAttribute()), 80.f, 0.01f);
 		Ctx.Test->TestEqual(TEXT("still Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 已阵亡玩家的 Pawn 仍在场内,但不能再为目标点充能
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayDeadPlayerDoesNotChargeObjectiveTest, "LetsDeepRock.Reinforcement.Gameplay.DeadPlayerDoesNotChargeObjective")
+bool FReinforceGameplayDeadPlayerDoesNotChargeObjectiveTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(1);
+
+		AGridMapObjectiveActor* Objective = Ctx.World->SpawnActor<AGridMapObjectiveActor>(
+			Ctx.Player->GetActorLocation(), FRotator::ZeroRotator);
+		if (!Objective)
+		{
+			Ctx.Fail(TEXT("[Reinforce] could not spawn the objective actor"));
+			return;
+		}
+		Ctx.TrackedActor = Objective;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+	});
+	ReinforceAddWait(Context, 1.0f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AGridMapObjectiveActor* Objective = Cast<AGridMapObjectiveActor>(Ctx.TrackedActor.Get());
+		if (!Objective)
+		{
+			Ctx.Fail(TEXT("[Reinforce] objective actor lost"));
+			return;
+		}
+		Ctx.Test->TestEqual(TEXT("dead player does not charge the objective"), Objective->GetChargeProgress(), 0.f);
+		Objective->Destroy();
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;

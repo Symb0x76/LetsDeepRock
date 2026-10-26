@@ -11,6 +11,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerController.h"
 #include "GridMap/GridMapManager.h"
+#include "Variant_Weapon/Reinforcement/WeaponReinforcementRules.h"
 #include "Variant_Weapon/WeaponGameState.h"
 #include "Online/WeaponSnapshot.h"
 #include "Swarm/SwarmBackend.h"
@@ -354,7 +355,9 @@ void UWeaponWaveDirectorComponent::TickComponent(
 			{
 				const AController* Controller = It->Get();
 				const APawn* Pawn = Controller ? Controller->GetPawn() : nullptr;
-				if (Pawn && Room.Bounds.IsInside(FVector2D(
+				// 只有 Up 的玩家触发房间(倒地/阵亡的 Pawn 仍在场内)
+				if (Pawn && WeaponGetLifeState(Controller->PlayerState) == EWeaponPlayerLifeState::Up &&
+					Room.Bounds.IsInside(FVector2D(
 						Pawn->GetActorLocation().X, Pawn->GetActorLocation().Y)))
 				{
 					TriggerRoom(Room);

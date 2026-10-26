@@ -427,7 +427,8 @@ void AWeaponHUD::DrawChargeFireBar(bool bDebugUIEnabled)
 void AWeaponHUD::DrawObjectiveStatus()
 {
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	if (!WeaponGameState || WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	const EWeaponMatchPhase Phase = WeaponGameState ? WeaponGameState->GetMatchPhase() : EWeaponMatchPhase::Waiting;
+	if (Phase != EWeaponMatchPhase::InGame && Phase != EWeaponMatchPhase::Ending)
 	{
 		return;
 	}
@@ -435,6 +436,21 @@ void AWeaponHUD::DrawObjectiveStatus()
 	UFont* Font = GEngine ? GEngine->GetTinyFont() : nullptr;
 	if (!Font)
 	{
+		return;
+	}
+
+	// 结算阶段:按任务结果显示一行
+	if (Phase == EWeaponMatchPhase::Ending)
+	{
+		const EWeaponMissionOutcome Outcome = WeaponGameState->GetMissionOutcome();
+		if (Outcome == EWeaponMissionOutcome::Extracted)
+		{
+			WeaponHUDPrivate::DrawLine(Canvas, Font, TEXT("撤离成功"), Canvas->SizeX * 0.5f, 24.0f, FLinearColor::Green, true);
+		}
+		else if (Outcome == EWeaponMissionOutcome::Failed)
+		{
+			WeaponHUDPrivate::DrawLine(Canvas, Font, TEXT("任务失败 · 增援耗尽"), Canvas->SizeX * 0.5f, 24.0f, FLinearColor::Red, true);
+		}
 		return;
 	}
 
@@ -459,4 +475,6 @@ void AWeaponHUD::DrawObjectiveStatus()
 		Color = FLinearColor::Green;
 	}
 	WeaponHUDPrivate::DrawLine(Canvas, Font, Text, CenterX, 24.0f, Color, true);
+	WeaponHUDPrivate::DrawLine(Canvas, Font,
+		FString::Printf(TEXT("增援 %d"), WeaponGameState->GetReinforcementPool()), CenterX, 48.0f, FLinearColor::White, true);
 }
