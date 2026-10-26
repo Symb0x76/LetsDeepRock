@@ -700,6 +700,8 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
 	MatchSnapshot.MissionSeed = GameState->GetMissionSettings().Seed;
 	MatchSnapshot.MissionDifficulty = GameState->GetMissionSettings().Difficulty;
+	MatchSnapshot.ReinforcementPool = GameState->GetReinforcementPool();
+	MatchSnapshot.MatchOutcome = GameState->GetMissionOutcome();
 	if (const AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>())
 	{
 		GameMode->CaptureObjectiveSnapshot(MatchSnapshot.Objective);
@@ -765,8 +767,20 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 			}
 		}
 	}
+	if (Snapshot.ReinforcementPool < 0 || Snapshot.ReinforcementPool > 99 ||
+		Snapshot.MatchOutcome > EWeaponMissionOutcome::Failed)
+	{
+		OutError = TEXT("Snapshot reinforcement pool or mission outcome is invalid");
+		return false;
+	}
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
+		if (Player.LifeState > EWeaponPlayerLifeState::Dead ||
+			!FMath::IsFinite(Player.DownedRemainingSeconds) || Player.DownedRemainingSeconds < 0.0f)
+		{
+			OutError = TEXT("Snapshot player life state or downed timer is invalid");
+			return false;
+		}
 		if (Player.bRespawnPending &&
 			(!FMath::IsFinite(Player.RespawnRemainingSeconds) || Player.RespawnRemainingSeconds < 0.0f))
 		{
@@ -1092,7 +1106,12 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 			Target.ASC->InitAbilityActorInfo(Target.PlayerState, nullptr);
 			RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
 			// v10:InGame 中无 Pawn = 死亡等待复活。恢复世界没有原 Timer,在此重建(屏障内暂停)。
-			if (Snapshot.MatchPhase == EWeaponMatchPhase::InGame && Target.PlayerController)
+			// v12:池空而死的玩家(bRespawnPending=false)保持死亡,不再重排复活;倒地却无 Pawn 的异常数据按兜底复活处理。
+			const bool bWasDead = Player.LifeState == EWeaponPlayerLifeState::Dead;
+			Target.PlayerState->SetLifeStateAuthority(
+				bWasDead ? EWeaponPlayerLifeState::Dead : EWeaponPlayerLifeState::Up);
+			if (Snapshot.MatchPhase == EWeaponMatchPhase::InGame && Target.PlayerController &&
+				(!bWasDead || Player.bRespawnPending))
 			{
 				Context.GameMode->RestorePendingRespawn(
 					Target.PlayerController,
@@ -1145,6 +1164,30 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 			Target.Character->SetActorTickEnabled(true);
 			Target.Character->SetActorEnableCollision(true);
 			Target.Character->ForceNetUpdate();
+		}
+
+		// v12:显式写回生存状态(默认 Up 不能泄漏到死亡/倒地玩家),并补齐服务端 GAS Tag。
+		switch (Player.LifeState)
+		{
+		case EWeaponPlayerLifeState::Downed:
+			// EnterDowned + State.Downed + 流血 Timer(屏障内暂停,Release 时重新锚定)
+			Context.GameMode->RestoreDownedPlayer(Target.PlayerController, Player.DownedRemainingSeconds);
+			break;
+		case EWeaponPlayerLifeState::Dead:
+			// EnterDeath 写 State.Dead + LifeState=Dead,并隐藏/禁碰撞/卸武器;池空死亡(未排复活)保持死亡。
+			Target.Character->EnterDeath();
+			if (Player.bRespawnPending)
+			{
+				Context.GameMode->RestorePendingRespawn(Target.PlayerController, Player.RespawnRemainingSeconds);
+			}
+			break;
+		default:
+			if (Target.ASC && Target.ASC->HasMatchingGameplayTag(TAG_State_Downed))
+			{
+				Target.Character->ExitDowned();
+			}
+			Target.PlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+			break;
 		}
 	}
 
@@ -1219,6 +1262,10 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 
 	Context.GameMode->ApplyRecoveredMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 
+	// v12:增援池与任务结局(屏障内写回;任务失败判定在屏障释放后由 GameMode 重检)。
+	Context.GameState->RestoreReinforcementPoolForRecovery(Snapshot.ReinforcementPool);
+	Context.GameState->SetMissionOutcomeAuthority(Snapshot.MatchOutcome);
+
 	// v10:恢复世界不解析 travel options,任务设置以快照为准。
 	FWeaponMissionSettings RestoredMission;
 	RestoredMission.Seed = Snapshot.MissionSeed;
@@ -1277,6 +1324,13 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		{
 			Player.bRespawnPending = true;
 			Player.RespawnRemainingSeconds = FMath::Max(0.0f, RespawnServerTime - GameState->GetServerWorldTimeSeconds());
+		}
+		// v12:生存状态与流血剩余秒数(DownedServerTime 为流血 Timer 的复制投影,屏障内由 Release 重新锚定)
+		Player.LifeState = PlayerState->GetLifeState();
+		if (Player.LifeState == EWeaponPlayerLifeState::Downed)
+		{
+			Player.DownedRemainingSeconds = FMath::Max(
+				0.0f, PlayerState->GetDownedServerTime() - GameState->GetServerWorldTimeSeconds());
 		}
 
 		if (!Character)

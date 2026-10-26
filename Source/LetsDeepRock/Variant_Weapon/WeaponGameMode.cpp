@@ -343,6 +343,9 @@ bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
 			ReturnToWaitingForPlayers();
 		}
 	}
+
+	// 屏障内的死亡/救起/快照恢复不会触发失败检查;此时屏障标志已清、池与 LifeState 已完整恢复,补做一次。
+	CheckMissionFailure();
 	return true;
 }
 

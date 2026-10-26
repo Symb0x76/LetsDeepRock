@@ -5,11 +5,12 @@
 #include "GameplayTagContainer.h"
 #include "GridMap/GridMapTypes.h"
 #include "Online/WeaponRecoveryRoster.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponGameState.h"
 #include "WeaponSnapshot.generated.h"
 
 /** Snapshot contract version. Increment only when the serialized layout changes. */
-inline constexpr int32 WeaponSnapshotVersion = 11;
+inline constexpr int32 WeaponSnapshotVersion = 12;
 
 /** v10:一条生效中的状态效果(GE 叠层 + 剩余时长 + 组件侧应用策略)。 */
 USTRUCT()
@@ -171,6 +172,13 @@ struct LETSDEEPROCK_API FWeaponPlayerSnapshot
 
 	UPROPERTY(SaveGame)
 	float RespawnRemainingSeconds = 0.0f;
+
+	/** v12:生存状态;倒地时 DownedRemainingSeconds 为流血剩余秒数 */
+	UPROPERTY(SaveGame)
+	EWeaponPlayerLifeState LifeState = EWeaponPlayerLifeState::Up;
+
+	UPROPERTY(SaveGame)
+	float DownedRemainingSeconds = 0.0f;
 };
 
 /** Minimal state needed to respawn one living enemy. */
@@ -343,4 +351,11 @@ struct LETSDEEPROCK_API FWeaponSnapshot
 	/** v10 */
 	UPROPERTY(SaveGame)
 	FWeaponWaveDirectorSnapshot WaveDirector;
+
+	/** v12:增援池剩余次数与任务结局 */
+	UPROPERTY(SaveGame)
+	int32 ReinforcementPool = 0;
+
+	UPROPERTY(SaveGame)
+	EWeaponMissionOutcome MatchOutcome = EWeaponMissionOutcome::None;
 };
