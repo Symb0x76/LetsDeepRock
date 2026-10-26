@@ -155,6 +155,13 @@ public:
 	/** 仅服务端调用;相同值直接返回。不进 CopyProperties:重连从 Up 开始,由快照恢复真实状态。 */
 	void SetLifeStateAuthority(EWeaponPlayerLifeState NewLifeState);
 
+	/** 倒地流血结束的服务器绝对时间戳;0 = 未倒地。客户端用 GetServerWorldTimeSeconds 换算剩余秒数。 */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	float GetDownedServerTime() const { return DownedServerTime; }
+
+	/** 仅服务端调用;由 WeaponGameMode 在倒地/受伤缩短/复活/屏障解除时写入。 */
+	void SetDownedServerTime(float NewDownedServerTime);
+
 protected:
 	virtual void OnDeactivated() override;
 
@@ -174,6 +181,9 @@ protected:
 
 	UPROPERTY(Replicated)
 	float RespawnServerTime = 0.0f;
+
+	UPROPERTY(Replicated)
+	float DownedServerTime = 0.0f;
 
 	UPROPERTY(Replicated)
 	EWeaponPlayerLifeState LifeState = EWeaponPlayerLifeState::Up;

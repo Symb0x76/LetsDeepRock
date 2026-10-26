@@ -226,6 +226,8 @@ void AWeaponCharacter::InitAbilitySystem()
 		{
 			HealthSet->OnHealthDepleted.RemoveAll(this);
 			HealthSet->OnHealthDepleted.AddUObject(this, &AWeaponCharacter::HandleHealthDepleted);
+			HealthSet->OnDownedDamageTaken.RemoveAll(this);
+			HealthSet->OnDownedDamageTaken.AddUObject(this, &AWeaponCharacter::HandleDownedDamageTaken);
 		}
 	}
 
@@ -296,6 +298,7 @@ void AWeaponCharacter::InitializeAttributionTombstone(AWeaponPlayerState* Source
 	if (UWeaponHealthSet* HealthSet = SourcePlayerState->GetHealthSet())
 	{
 		HealthSet->OnHealthDepleted.RemoveAll(this);
+		HealthSet->OnDownedDamageTaken.RemoveAll(this);
 	}
 	if (GrenadeAbilityHandle.IsValid() && AbilitySystemComponent)
 	{
@@ -632,8 +635,63 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 		DiagnosticEquipComp ? DiagnosticEquipComp->GetCurrentWeaponIndex() : INDEX_NONE,
 		*GetNameSafe(DiagnosticEquipComp ? DiagnosticEquipComp->GetCurrentWeaponData() : nullptr));
 
+	// 交给 GameMode 决定倒地还是死亡(无 GameMode 时按旧行为直接死亡)
+	if (AWeaponGameMode* GM = GetWorld()->GetAuthGameMode<AWeaponGameMode>())
+	{
+		GM->PlayerHealthDepleted(GetController());
+	}
+	else
+	{
+		EnterDeath();
+	}
+}
+
+void AWeaponCharacter::EnterDowned()
+{
+	if (!AbilitySystemComponent)
+	{
+		return;
+	}
+	if (!AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Downed))
+	{
+		AbilitySystemComponent->AddLooseGameplayTag(TAG_State_Downed);
+	}
+	CancelChargeFire();
+	HideGrenadePreview();
+
+	// 禁用移动;保留碰撞与可见,倒地者仍可被敌人命中(缩短流血时间)。
+	GetCharacterMovement()->DisableMovement();
+	GetCharacterMovement()->StopMovementImmediately();
+}
+
+void AWeaponCharacter::ExitDowned()
+{
+	if (AbilitySystemComponent && AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Downed))
+	{
+		AbilitySystemComponent->RemoveLooseGameplayTag(TAG_State_Downed);
+	}
+	GetCharacterMovement()->SetMovementMode(MOVE_Walking);
+}
+
+void AWeaponCharacter::EnterDeath()
+{
+	if (!AbilitySystemComponent)
+	{
+		return;
+	}
+	CancelChargeFire();
+
+	// 0. 倒地中死亡:先移除 State.Downed(HealthSet 据此区分"倒地受击"与普通受击)
+	if (AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Downed))
+	{
+		AbilitySystemComponent->RemoveLooseGameplayTag(TAG_State_Downed);
+	}
+
 	// 1. 添加 State.Dead Tag 到 ASC（阻断所有 Ability 激活）
-	AbilitySystemComponent->AddLooseGameplayTag(TAG_State_Dead);
+	if (!AbilitySystemComponent->HasMatchingGameplayTag(TAG_State_Dead))
+	{
+		AbilitySystemComponent->AddLooseGameplayTag(TAG_State_Dead);
+	}
 	if (AWeaponPlayerState* DeadPlayerState = GetPlayerState<AWeaponPlayerState>())
 	{
 		DeadPlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Dead);
@@ -658,10 +716,13 @@ void AWeaponCharacter::HandleHealthDepleted(AActor* OwningActor)
 		DeathEquipComp->UnequipWeapon();
 	}
 
-	// 7. 通知 GameMode 启动重生流程
-	if (AWeaponGameMode* GM = GetWorld()->GetAuthGameMode<AWeaponGameMode>())
+}
+
+void AWeaponCharacter::HandleDownedDamageTaken(AActor* OwningActor, const float Damage)
+{
+	if (AWeaponGameMode* GM = GetWorld() ? GetWorld()->GetAuthGameMode<AWeaponGameMode>() : nullptr)
 	{
-		GM->PlayerDied(GetController());
+		GM->PlayerDownedDamaged(GetController(), Damage);
 	}
 }
 

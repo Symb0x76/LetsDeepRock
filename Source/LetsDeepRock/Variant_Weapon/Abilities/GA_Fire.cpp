@@ -29,6 +29,8 @@ UGA_Fire::UGA_Fire()
 
 	// 死亡时阻断所有武器 Ability
 	ActivationBlockedTags.AddTag(TAG_State_Dead);
+	// 倒地同样不能开火
+	ActivationBlockedTags.AddTag(TAG_State_Downed);
 }
 
 void UGA_Fire::ActivateAbility(const FGameplayAbilitySpecHandle Handle,

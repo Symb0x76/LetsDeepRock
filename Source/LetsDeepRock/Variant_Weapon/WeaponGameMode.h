@@ -87,6 +87,26 @@ public:
 	 */
 	void PlayerDied(AController* DeadPlayerController);
 
+	/**
+	 *  生命归零的统一入口(由 WeaponCharacter::HandleHealthDepleted 调用):
+	 *  InGame 且(有其他存活队友 或 不要求救援者)→ 倒地并开始流血计时;否则直接死亡并走 PlayerDied。
+	 */
+	void PlayerHealthDepleted(AController* PlayerController);
+
+	/** 倒地期间受到伤害:按 Damage / MaxHealth * BleedOutSeconds 缩短剩余流血时间,归零则立即流血致死。 */
+	void PlayerDownedDamaged(AController* PlayerController, float Damage);
+
+	/** 快照恢复(Task 7 使用):把玩家置为倒地,按剩余秒数重新排流血计时(屏障内计时暂停)。 */
+	void RestoreDownedPlayer(AController* PlayerController, float RemainingSeconds);
+
+	/** 清掉某玩家的复活与流血计时(Logout 调用;也供测试直接调用)。 */
+	void ClearPlayerLifeTimers(AController* PlayerController);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** 测试用:当前挂起的流血计时数量 */
+	int32 GetBleedOutTimerCountForTest() const { return BleedOutTimers.Num(); }
+#endif
+
 	/** 所有玩家 ready 且人数达标时，由 Listen Host 发起开局倒计时。 */
 	UFUNCTION(BlueprintCallable, Category = "Match")
 	bool TryStartWeaponMatch();
@@ -199,6 +219,18 @@ protected:
 
 	/** 设置(或重置)单个玩家的复活 Timer,并写入复制给 HUD 的复活时间戳 */
 	void ArmRespawnTimer(AController* PlayerToRespawn, float DelaySeconds);
+
+	/** 倒地流血计时:每个 Controller 一个;屏障内与 RespawnTimers 同样暂停/重新锚定。Logout / 复活 / 结算时清除。 */
+	TMap<TObjectPtr<AController>, FTimerHandle> BleedOutTimers;
+
+	/** 设置(或重置)流血计时,并写入复制给 HUD 的 DownedServerTime */
+	void ArmBleedOutTimer(AController* DownedController, float Seconds);
+
+	/** 流血结束:DownedServerTime 清零、角色死亡、LifeState=Dead、走 PlayerDied(排自动增援/任务失败检查) */
+	void ExpireBleedOut(AController* DownedController);
+
+	/** 清除某玩家的流血计时与 DownedServerTime(不动 LifeState) */
+	void ClearBleedOut(AController* PlayerController);
 
 private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;

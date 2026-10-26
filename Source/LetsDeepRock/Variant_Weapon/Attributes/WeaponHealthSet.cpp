@@ -7,6 +7,7 @@
 #include "Net/UnrealNetwork.h"
 #include "WeaponPlayerController.h"
 #include "Abilities/WeaponGameplayCues.h"
+#include "WeaponGameplayTags.h"
 
 UWeaponHealthSet::UWeaponHealthSet()
 {
@@ -106,7 +107,11 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 		float AppliedHealthDamage = 0.0f;
 		bool bJustDied = false;
 
-		if (LocalDamage > 0.0f)
+		// 倒地中:伤害不再扣护盾/生命(Health 已为 0),改为通知 GameMode 缩短流血时间。
+		const UAbilitySystemComponent* DamageOwnerASC = GetOwningAbilitySystemComponent();
+		const bool bOwnerDowned = DamageOwnerASC && DamageOwnerASC->HasMatchingGameplayTag(TAG_State_Downed);
+
+		if (LocalDamage > 0.0f && !bOwnerDowned)
 		{
 			float RemainingDamage = LocalDamage;
 
@@ -149,6 +154,14 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 		// B1:命中表现。此处是唯一知道"护盾/生命各扣了多少"的服务器结算点。
 		WeaponGameplayCues::ExecuteHitCue(GetOwningAbilitySystemComponent(), Data.EffectSpec.GetContext(),
 			AppliedShieldDamage, AppliedHealthDamage);
+		if (bOwnerDowned && LocalDamage > 0.0f)
+		{
+			const AActor* DownedOwner = GetOwningActor();
+			if (DownedOwner && DownedOwner->HasAuthority())
+			{
+				OnDownedDamageTaken.Broadcast(GetOwningActor(), LocalDamage);
+			}
+		}
 		if (bJustDied)
 		{
 			const FGameplayEffectContextHandle& EffectContext = Data.EffectSpec.GetContext();

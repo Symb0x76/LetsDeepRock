@@ -109,6 +109,15 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+	/** 倒地(仅服务端,由 GameMode 调用):State.Downed、取消蓄力/预览、禁用移动;保留碰撞与可见,敌人仍可命中 */
+	void EnterDowned();
+
+	/** 死亡表现(仅服务端):State.Dead、LifeState=Dead、禁移动/碰撞、隐藏、卸武器;不通知 GameMode */
+	void EnterDeath();
+
+	/** 退出倒地(被救起):移除 State.Downed 并恢复行走 */
+	void ExitDowned();
+
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
@@ -181,8 +190,11 @@ protected:
 	/** 按职业配置和存档初始化主副武器 */
 	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
-	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
+	/** Health 归零时的服务端回调：交给 GameMode 决定倒地还是死亡 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
+
+	/** 倒地期间受击的服务端回调:转给 GameMode 缩短流血时间 */
+	void HandleDownedDamageTaken(AActor* OwningActor, float Damage);
 
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;

@@ -28,6 +28,8 @@ UGA_ThrowGrenade::UGA_ThrowGrenade()
 
 	// 死亡时阻断
 	ActivationBlockedTags.AddTag(TAG_State_Dead);
+	// 倒地同样不能投掷
+	ActivationBlockedTags.AddTag(TAG_State_Downed);
 }
 
 void UGA_ThrowGrenade::ActivateAbility(const FGameplayAbilitySpecHandle Handle,

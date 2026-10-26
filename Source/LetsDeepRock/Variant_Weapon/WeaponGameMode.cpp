@@ -267,6 +267,11 @@ bool AWeaponGameMode::EnterGameplayRecoveryBarrier()
 	{
 		GetWorldTimerManager().PauseTimer(TimerPair.Value);
 	}
+	// 倒地流血计时同语义:屏障内暂停。
+	for (const auto& BleedPair : BleedOutTimers)
+	{
+		GetWorldTimerManager().PauseTimer(BleedPair.Value);
+	}
 	// 撤离倒计时与复活计时同语义:屏障内暂停,解除后续跑。
 	GetWorldTimerManager().PauseTimer(ExtractionTimer);
 
@@ -296,6 +301,16 @@ bool AWeaponGameMode::ReleaseGameplayRecoveryBarrier()
 				GetWorldTimerManager().GetTimerRemaining(TimerPair.Value));
 		}
 		GetWorldTimerManager().UnPauseTimer(TimerPair.Value);
+	}
+	for (const auto& BleedPair : BleedOutTimers)
+	{
+		// 流血结束时间戳同理:按暂停剩余时长重新锚定后再续跑。
+		if (AWeaponPlayerState* BleedPS = BleedPair.Key ? BleedPair.Key->GetPlayerState<AWeaponPlayerState>() : nullptr)
+		{
+			BleedPS->SetDownedServerTime(WeaponGameState->GetServerWorldTimeSeconds() +
+				GetWorldTimerManager().GetTimerRemaining(BleedPair.Value));
+		}
+		GetWorldTimerManager().UnPauseTimer(BleedPair.Value);
 	}
 	if (GetWorldTimerManager().IsTimerPaused(ExtractionTimer))
 	{
@@ -1160,12 +1175,7 @@ void AWeaponGameMode::Logout(AController* ExitingController)
 	// 首先清理 Timer，防止Super::Logout 后，Controller/PlayerState 已被移除或销毁，不适合作为 Timer Map 的查找键
 	if (ExitingController)
 	{
-		if (FTimerHandle* RespawnTimer =
-			RespawnTimers.Find(ExitingController))
-		{
-			GetWorldTimerManager().ClearTimer(*RespawnTimer);
-			RespawnTimers.Remove(ExitingController);
-		}
+		ClearPlayerLifeTimers(ExitingController);
 	}
 	if (ExitingPlayerId.IsValid())
 	{
@@ -1217,6 +1227,170 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 	}
 
 	ArmRespawnTimer(DeadPlayerController, RespawnDelay);
+}
+
+void AWeaponGameMode::PlayerHealthDepleted(AController* PlayerController)
+{
+	if (!HasAuthority() || !PlayerController)
+	{
+		return;
+	}
+
+	AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerController->GetPawn());
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	AWeaponPlayerState* PS = PlayerController->GetPlayerState<AWeaponPlayerState>();
+
+	// 仅局内(且屏障未关)才有倒地规则;其余阶段保持旧行为:死亡 → RespawnDelay → 免费复活。
+	const bool bInGame = WeaponGameState && WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame &&
+		!WeaponGameState->IsGameplayRecoveryBlocked();
+	if (bInGame && Character && PS && PS->GetLifeState() == EWeaponPlayerLifeState::Up &&
+		WeaponShouldEnterDowned(WeaponCountUpPlayers(GetWorld(), PlayerController), bDownedRequiresReviver))
+	{
+		Character->EnterDowned();
+		PS->SetLifeStateAuthority(EWeaponPlayerLifeState::Downed);
+		ArmBleedOutTimer(PlayerController, BleedOutSeconds);
+		UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s downed, bleed-out %.1f s"),
+			*GetNameSafe(PlayerController), BleedOutSeconds);
+		CheckMissionFailure();
+		return;
+	}
+
+	if (Character)
+	{
+		Character->EnterDeath();
+	}
+	PlayerDied(PlayerController);
+}
+
+void AWeaponGameMode::PlayerDownedDamaged(AController* PlayerController, const float Damage)
+{
+	if (!HasAuthority() || !PlayerController || Damage <= 0.0f ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
+
+	const AWeaponPlayerState* PS = PlayerController->GetPlayerState<AWeaponPlayerState>();
+	const FTimerHandle* BleedTimer = BleedOutTimers.Find(PlayerController);
+	if (!PS || PS->GetLifeState() != EWeaponPlayerLifeState::Downed || !BleedTimer)
+	{
+		return;
+	}
+
+	const UWeaponHealthSet* HealthSet = PS->GetHealthSet();
+	const float Remaining = GetWorldTimerManager().GetTimerRemaining(*BleedTimer) -
+		WeaponDownedDamageToSeconds(Damage, HealthSet ? HealthSet->GetMaxHealth() : 0.0f, BleedOutSeconds);
+	if (Remaining <= 0.0f)
+	{
+		ExpireBleedOut(PlayerController);
+	}
+	else
+	{
+		ArmBleedOutTimer(PlayerController, Remaining);
+	}
+}
+
+void AWeaponGameMode::RestoreDownedPlayer(AController* PlayerController, const float RemainingSeconds)
+{
+	AWeaponPlayerState* PS = PlayerController ? PlayerController->GetPlayerState<AWeaponPlayerState>() : nullptr;
+	if (!HasAuthority() || !PS)
+	{
+		return;
+	}
+
+	if (AWeaponCharacter* Character = Cast<AWeaponCharacter>(PlayerController->GetPawn()))
+	{
+		Character->EnterDowned();
+	}
+	PS->SetLifeStateAuthority(EWeaponPlayerLifeState::Downed);
+	ArmBleedOutTimer(PlayerController, FMath::Max(RemainingSeconds, 0.1f));
+	if (AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		if (FTimerHandle* BleedTimer = BleedOutTimers.Find(PlayerController))
+		{
+			GetWorldTimerManager().PauseTimer(*BleedTimer);
+		}
+	}
+}
+
+void AWeaponGameMode::ArmBleedOutTimer(AController* DownedController, const float Seconds)
+{
+	FTimerHandle& BleedTimer = BleedOutTimers.FindOrAdd(DownedController);
+	GetWorldTimerManager().ClearTimer(BleedTimer);
+
+	TWeakObjectPtr<AController> WeakController(DownedController);
+	GetWorldTimerManager().SetTimer(
+		BleedTimer, [this, WeakController]
+		{
+			if (!WeakController.IsValid())
+			{
+				return;
+			}
+			ExpireBleedOut(WeakController.Get());
+		},
+		Seconds,
+		false);
+
+	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (AWeaponPlayerState* PS = DownedController->GetPlayerState<AWeaponPlayerState>(); PS && WeaponGameState)
+	{
+		PS->SetDownedServerTime(WeaponGameState->GetServerWorldTimeSeconds() + Seconds);
+	}
+}
+
+void AWeaponGameMode::ExpireBleedOut(AController* DownedController)
+{
+	if (!HasAuthority() || !DownedController || AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return;
+	}
+
+	AWeaponPlayerState* PS = DownedController->GetPlayerState<AWeaponPlayerState>();
+	if (!PS || PS->GetLifeState() != EWeaponPlayerLifeState::Downed)
+	{
+		ClearBleedOut(DownedController);
+		return;
+	}
+
+	ClearBleedOut(DownedController);
+	if (AWeaponCharacter* Character = Cast<AWeaponCharacter>(DownedController->GetPawn()))
+	{
+		Character->EnterDeath();
+	}
+	PS->SetLifeStateAuthority(EWeaponPlayerLifeState::Dead);
+	UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s bled out"), *GetNameSafe(DownedController));
+	PlayerDied(DownedController);
+}
+
+void AWeaponGameMode::ClearBleedOut(AController* PlayerController)
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+	if (FTimerHandle* BleedTimer = BleedOutTimers.Find(PlayerController))
+	{
+		GetWorldTimerManager().ClearTimer(*BleedTimer);
+		BleedOutTimers.Remove(PlayerController);
+	}
+	if (AWeaponPlayerState* PS = PlayerController->GetPlayerState<AWeaponPlayerState>())
+	{
+		PS->SetDownedServerTime(0.0f);
+	}
+}
+
+void AWeaponGameMode::ClearPlayerLifeTimers(AController* PlayerController)
+{
+	if (!PlayerController)
+	{
+		return;
+	}
+	if (FTimerHandle* RespawnTimer = RespawnTimers.Find(PlayerController))
+	{
+		GetWorldTimerManager().ClearTimer(*RespawnTimer);
+		RespawnTimers.Remove(PlayerController);
+	}
+	ClearBleedOut(PlayerController);
 }
 
 bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
@@ -1596,6 +1770,17 @@ void AWeaponGameMode::EndWeaponMatch(const EWeaponMissionOutcome Outcome)
 	WeaponGameState->SetMissionOutcomeAuthority(Outcome);
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Ending, EndingDuration);
 
+	// 结算期不再流血致死:清掉全部流血计时(倒地者随后走下面的免费复活,RespawnPlayer 会恢复为 Up)。
+	for (auto& BleedPair : BleedOutTimers)
+	{
+		GetWorldTimerManager().ClearTimer(BleedPair.Value);
+		if (AWeaponPlayerState* BleedPS = BleedPair.Key ? BleedPair.Key->GetPlayerState<AWeaponPlayerState>() : nullptr)
+		{
+			BleedPS->SetDownedServerTime(0.0f);
+		}
+	}
+	BleedOutTimers.Empty();
+
 	// 局内死亡且未排复活(池空)的玩家:离开 InGame 后恢复"死亡 → RespawnDelay → 免费复活"的旧行为,
 	// 否则他们会带着尸体进入下一局。放在结算开始而非回到 Waiting,保证下一局开始前已复活。
 	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
@@ -1696,6 +1881,9 @@ void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 		return;
 	}
 
+	// 0. 倒地者被复活/增援:清掉流血计时与时间戳
+	ClearBleedOut(PlayerController);
+
 	// 1. 销毁旧 Pawn（如果还存在）
 	if (APawn* OldPawn = PlayerController->GetPawn())
 	{
@@ -1708,6 +1896,12 @@ void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 	{
 		RespawnedPS->SetRespawnServerTime(0.0f);
 		RespawnedPS->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+		// State.Downed 是 PlayerState ASC 上的松散 Tag,不随旧 Pawn 销毁,必须显式清除。
+		if (UAbilitySystemComponent* RespawnASC = RespawnedPS->GetAbilitySystemComponent();
+			RespawnASC && RespawnASC->HasMatchingGameplayTag(TAG_State_Downed))
+		{
+			RespawnASC->RemoveLooseGameplayTag(TAG_State_Downed);
+		}
 	}
 	APawn* NewPawn = PlayerController->GetPawn();
 	if (!NewPawn)

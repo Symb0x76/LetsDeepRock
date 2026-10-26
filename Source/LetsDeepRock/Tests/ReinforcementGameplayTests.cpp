@@ -11,10 +11,12 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "EnemyCharacter.h"
+#include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayEffect.h"
 #include "Reinforcement/WeaponReinforcementRules.h"
 #include "UObject/Package.h"
+#include "WeaponCharacter.h"
 #include "WeaponGameplayTags.h"
 #include "WeaponGameMode.h"
 #include "WeaponGameState.h"
@@ -140,6 +142,19 @@ static void ReinforceAddStartMatch(const FSwarmGameplayTestContextRef& Context)
 	});
 }
 
+/** 对本地玩家施加一次瞬时 Damage 效果(每次新建匿名 Effect,同一测试里可重复调用) */
+static void ReinforceApplyDamage(FSwarmGameplayTestContext& Ctx, const float Damage)
+{
+	UAbilitySystemComponent* ASC = Ctx.PlayerState->GetAbilitySystemComponent();
+	UGameplayEffect* Effect = NewObject<UGameplayEffect>(GetTransientPackage());
+	Effect->DurationPolicy = EGameplayEffectDurationType::Instant;
+	FGameplayModifierInfo& Modifier = Effect->Modifiers.AddDefaulted_GetRef();
+	Modifier.Attribute = UWeaponHealthSet::GetDamageAttribute();
+	Modifier.ModifierOp = EGameplayModOp::Additive;
+	Modifier.ModifierMagnitude = FScalableFloat(Damage);
+	ASC->ApplyGameplayEffectToSelf(Effect, 1.f, ASC->MakeEffectContext());
+}
+
 /** 一击必杀:护盾清零、Health 基础值压到 1,再施加一次瞬时 Damage 效果 */
 static void ReinforceKill(FSwarmGameplayTestContext& Ctx)
 {
@@ -147,14 +162,13 @@ static void ReinforceKill(FSwarmGameplayTestContext& Ctx)
 	ASC->SetNumericAttributeBase(UWeaponHealthSet::GetMaxShieldAttribute(), 0.f);
 	ASC->SetNumericAttributeBase(UWeaponHealthSet::GetShieldAttribute(), 0.f);
 	ASC->SetNumericAttributeBase(UWeaponHealthSet::GetHealthAttribute(), 1.f);
+	ReinforceApplyDamage(Ctx, ReinforceGameplayTestConstants::LethalDamage);
+}
 
-	UGameplayEffect* Effect = NewObject<UGameplayEffect>(GetTransientPackage(), TEXT("ReinforceKillEffect"));
-	Effect->DurationPolicy = EGameplayEffectDurationType::Instant;
-	FGameplayModifierInfo& Modifier = Effect->Modifiers.AddDefaulted_GetRef();
-	Modifier.Attribute = UWeaponHealthSet::GetDamageAttribute();
-	Modifier.ModifierOp = EGameplayModOp::Additive;
-	Modifier.ModifierMagnitude = FScalableFloat(ReinforceGameplayTestConstants::LethalDamage);
-	ASC->ApplyGameplayEffectToSelf(Effect, 1.f, ASC->MakeEffectContext());
+/** 当前服务器世界时间(与 PlayerState 上的绝对时间戳同一时基) */
+static float ReinforceServerNow(const FSwarmGameplayTestContext& Ctx)
+{
+	return Ctx.World->GetGameState<AWeaponGameState>()->GetServerWorldTimeSeconds();
 }
 
 /** 死亡日志([DeathTrace])以 Error 级输出,属预期 */
@@ -288,6 +302,199 @@ bool FReinforceGameplayProfessionRespawnBlockedWhenOutTest::RunTest(const FStrin
 		GameMode->RespawnPlayerImmediately(Controller);
 		Ctx.Test->TestEqual(TEXT("still Dead after immediate respawn"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
 		Ctx.Test->TestEqual(TEXT("pool untouched"), GameState->GetReinforcementPool(), 1);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 倒地 / 流血(solo 测试把 bDownedRequiresReviver 关掉;Arrange 的 MaxHealth 1e6 在受伤前压回 100)
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayZeroHealthGoesDownedTest, "LetsDeepRock.Reinforcement.Gameplay.ZeroHealthGoesDowned")
+bool FReinforceGameplayZeroHealthGoesDownedTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 2.f;
+		ReinforceKill(Ctx);
+
+		const UAbilitySystemComponent* ASC = Ctx.PlayerState->GetAbilitySystemComponent();
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestTrue(TEXT("bleed-out deadline is in the future"), Ctx.PlayerState->GetDownedServerTime() > ReinforceServerNow(Ctx));
+		Ctx.Test->TestTrue(TEXT("State.Downed tag set"), ASC->HasMatchingGameplayTag(TAG_State_Downed));
+		Ctx.Test->TestFalse(TEXT("State.Dead tag not set"), ASC->HasMatchingGameplayTag(TAG_State_Dead));
+		const AWeaponCharacter* Pawn = Cast<AWeaponCharacter>(Ctx.World->GetFirstPlayerController()->GetPawn());
+		Ctx.Test->TestNotNull(TEXT("downed player keeps its pawn"), Pawn);
+		if (Pawn)
+		{
+			Ctx.Test->TestFalse(TEXT("pawn stays visible"), Pawn->IsHidden());
+			Ctx.Test->TestEqual(TEXT("movement disabled"), Pawn->GetCharacterMovement()->MovementMode.GetValue(), static_cast<uint8>(MOVE_None));
+		}
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayBleedOutKillsTest, "LetsDeepRock.Reinforcement.Gameplay.BleedOutKills")
+bool FReinforceGameplayBleedOutKillsTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 2.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+	});
+	ReinforceAddWait(Context, 2.5f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		const AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		Ctx.Test->TestTrue(TEXT("pool is positive"), GameState->GetReinforcementPool() > 0);
+		Ctx.Test->TestEqual(TEXT("life state is Dead after bleed-out"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("downed timestamp cleared"), Ctx.PlayerState->GetDownedServerTime(), 0.f);
+		Ctx.Test->TestTrue(TEXT("auto-reinforce scheduled"), Ctx.PlayerState->GetRespawnServerTime() > 0.f);
+		Ctx.Test->TestFalse(TEXT("State.Downed cleared"), Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Downed));
+		Ctx.Test->TestTrue(TEXT("State.Dead set"), Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Dead));
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplaySoloSkipsDownedTest, "LetsDeepRock.Reinforcement.Gameplay.SoloSkipsDowned")
+bool FReinforceGameplaySoloSkipsDownedTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = true;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("no other player is up, so the lethal hit kills outright"),
+			Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("no downed timestamp"), Ctx.PlayerState->GetDownedServerTime(), 0.f);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayDamageShortensBleedOutTest, "LetsDeepRock.Reinforcement.Gameplay.DamageShortensBleedOut")
+bool FReinforceGameplayDamageShortensBleedOutTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 10.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(1);
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+
+		// 受伤前把 MaxHealth 压回 100(Arrange 抬到了 1e6):50 点伤害 = 5 s。
+		Ctx.PlayerState->GetAbilitySystemComponent()->SetNumericAttributeBase(UWeaponHealthSet::GetMaxHealthAttribute(), 100.f);
+		ReinforceApplyDamage(Ctx, 50.f);
+		Ctx.Test->TestEqual(TEXT("still Downed after half the bar"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestEqual(TEXT("bleed-out shortened to about 5 s"),
+			Ctx.PlayerState->GetDownedServerTime() - ReinforceServerNow(Ctx), 5.f, 0.2f);
+
+		// 再受 60 点(6 s > 剩余 5 s)→ 死亡,走一次 PlayerDied。
+		ReinforceApplyDamage(Ctx, 60.f);
+		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("downed timestamp cleared"), Ctx.PlayerState->GetDownedServerTime(), 0.f);
+		const float RespawnTime = Ctx.PlayerState->GetRespawnServerTime();
+		Ctx.Test->TestTrue(TEXT("auto-reinforce scheduled"), RespawnTime > 0.f);
+		Ctx.ValueA = RespawnTime;
+
+		// 死者再受伤:不得再次走 PlayerDied(否则会重排计时,RespawnServerTime 会移动)。
+		ReinforceApplyDamage(Ctx, 10.f);
+		Ctx.Test->TestEqual(TEXT("still Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("respawn timestamp unchanged by a second hit"),
+			static_cast<double>(Ctx.PlayerState->GetRespawnServerTime()), Ctx.ValueA);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayBarrierPausesBleedOutTest, "LetsDeepRock.Reinforcement.Gameplay.BarrierPausesBleedOut")
+bool FReinforceGameplayBarrierPausesBleedOutTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 2.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestTrue(TEXT("barrier entered"), GameMode->EnterGameplayRecoveryBarrier());
+	});
+	ReinforceAddWait(Context, 3.f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.Test->TestEqual(TEXT("still Downed through the barrier"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		Ctx.Test->TestTrue(TEXT("barrier released"), GameMode->ReleaseGameplayRecoveryBarrier());
+		Ctx.Test->TestTrue(TEXT("deadline re-anchored in the future"), Ctx.PlayerState->GetDownedServerTime() > ReinforceServerNow(Ctx));
+	});
+	ReinforceAddWait(Context, 2.5f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.Test->TestEqual(TEXT("bled out after the barrier opened"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayLeaverClearsBleedOutTest, "LetsDeepRock.Reinforcement.Gameplay.LeaverClearsBleedOut")
+bool FReinforceGameplayLeaverClearsBleedOutTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 2.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestEqual(TEXT("one bleed-out timer pending"), GameMode->GetBleedOutTimerCountForTest(), 1);
+
+		// Logout 调用的清理入口(真实 Logout 本地玩家在 -game 下不安全)
+		GameMode->ClearPlayerLifeTimers(Ctx.World->GetFirstPlayerController());
+		Ctx.Test->TestEqual(TEXT("bleed-out timer cleared"), GameMode->GetBleedOutTimerCountForTest(), 0);
+	});
+	ReinforceAddWait(Context, 2.5f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.Test->TestEqual(TEXT("no expiry fired after the clear"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;
