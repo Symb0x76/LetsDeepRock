@@ -15,6 +15,8 @@
 #include "GameFramework/PlayerController.h"
 #include "GameplayEffect.h"
 #include "GridMap/GridMapObjectiveActors.h"
+#include "Online/WeaponSnapshot.h"
+#include "Online/WeaponSnapshotCoordinator.h"
 #include "Reinforcement/WeaponReinforcementRules.h"
 #include "UObject/Package.h"
 #include "WeaponCharacter.h"
@@ -613,6 +615,83 @@ bool FReinforceGameplayDeadPlayerDoesNotChargeObjectiveTest::RunTest(const FStri
 		}
 		Ctx.Test->TestEqual(TEXT("dead player does not charge the objective"), Objective->GetChargeProgress(), 0.f);
 		Objective->Destroy();
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// 快照 v12 恢复:ApplyPlayerLifeState 是 ApplySnapshot 与 RestoreReconnectedPlayer 共用的唯一入口,
+// 直接对本地真实玩家调用即同时覆盖两条恢复路径(完整 Coordinator 恢复需要多进程迁移,单进程 -game 无法驱动)。
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplaySnapshotRestoresDownedTest, "LetsDeepRock.Reinforcement.Gameplay.SnapshotRestoresDowned")
+bool FReinforceGameplaySnapshotRestoresDownedTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		Ctx.Test->TestEqual(TEXT("starts Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+
+		FWeaponPlayerSnapshot Snapshot;
+		Snapshot.LifeState = EWeaponPlayerLifeState::Downed;
+		Snapshot.DownedRemainingSeconds = 4.5f;
+		UWeaponSnapshotCoordinator::ApplyPlayerLifeState(GameMode, Controller, Ctx.PlayerState.Get(), Ctx.Player.Get(),
+			Snapshot, EWeaponMatchPhase::InGame);
+
+		Ctx.Test->TestEqual(TEXT("restored Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestTrue(TEXT("State.Downed tag"),
+			Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Downed));
+		Ctx.Test->TestEqual(TEXT("one bleed-out timer"), GameMode->GetBleedOutTimerCountForTest(), 1);
+		Ctx.Test->TestEqual(TEXT("remaining matches the snapshot"),
+			Ctx.PlayerState->GetDownedServerTime() - ReinforceServerNow(Ctx), 4.5f, 0.3f);
+
+		// 再应用一份 Up 快照:默认值不得保留倒地标签。
+		FWeaponPlayerSnapshot UpSnapshot;
+		UWeaponSnapshotCoordinator::ApplyPlayerLifeState(GameMode, Controller, Ctx.PlayerState.Get(), Ctx.Player.Get(),
+			UpSnapshot, EWeaponMatchPhase::InGame);
+		Ctx.Test->TestEqual(TEXT("Up snapshot restores Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+		Ctx.Test->TestFalse(TEXT("State.Downed cleared"),
+			Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Downed));
+		GameMode->ClearPlayerLifeTimers(Controller);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplaySnapshotRestoresDeadTest, "LetsDeepRock.Reinforcement.Gameplay.SnapshotRestoresDead")
+bool FReinforceGameplaySnapshotRestoresDeadTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+
+		// 池空而死:bRespawnPending=false → 保持死亡,不排复活。
+		FWeaponPlayerSnapshot Snapshot;
+		Snapshot.LifeState = EWeaponPlayerLifeState::Dead;
+		Snapshot.bRespawnPending = false;
+		UWeaponSnapshotCoordinator::ApplyPlayerLifeState(GameMode, Controller, Ctx.PlayerState.Get(), Ctx.Player.Get(),
+			Snapshot, EWeaponMatchPhase::InGame);
+		Ctx.Test->TestEqual(TEXT("restored Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestTrue(TEXT("State.Dead tag"),
+			Ctx.PlayerState->GetAbilitySystemComponent()->HasMatchingGameplayTag(TAG_State_Dead));
+		Ctx.Test->TestEqual(TEXT("no respawn scheduled"), Ctx.PlayerState->GetRespawnServerTime(), 0.f);
+
+		// 等待复活的死者:按快照剩余秒数重排。
+		Snapshot.bRespawnPending = true;
+		Snapshot.RespawnRemainingSeconds = 20.f;
+		UWeaponSnapshotCoordinator::ApplyPlayerLifeState(GameMode, Controller, Ctx.PlayerState.Get(), Ctx.Player.Get(),
+			Snapshot, EWeaponMatchPhase::InGame);
+		Ctx.Test->TestEqual(TEXT("respawn re-armed from snapshot"),
+			Ctx.PlayerState->GetRespawnServerTime() - ReinforceServerNow(Ctx), 20.f, 0.3f);
+		GameMode->ClearPlayerLifeTimers(Controller);
 	});
 	SwarmGameplayAddCleanup(Context);
 	return true;
