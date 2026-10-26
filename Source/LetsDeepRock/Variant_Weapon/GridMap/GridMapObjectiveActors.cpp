@@ -231,7 +231,7 @@ void AGridMapExtractionActor::Tick(float DeltaTime)
 			SetActorTickEnabled(false);
 			if (AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>())
 			{
-				GameMode->EndWeaponMatch();
+				GameMode->EndWeaponMatch(EWeaponMissionOutcome::Extracted);
 			}
 		}
 	}

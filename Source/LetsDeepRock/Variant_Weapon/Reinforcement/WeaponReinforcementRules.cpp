@@ -1,6 +1,11 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "WeaponReinforcementRules.h"
+#include "Engine/World.h"
+#include "GameFramework/Controller.h"
+#include "GameFramework/GameStateBase.h"
+#include "GameFramework/PlayerState.h"
+#include "WeaponPlayerState.h"
 
 int32 WeaponReinforcementPoolForDifficulty(int32 Difficulty, const TArray<int32>& PoolByDifficulty)
 {
@@ -60,4 +65,33 @@ void FWeaponReviveTracker::Reset()
 {
 	TargetPtr = nullptr;
 	Elapsed = 0.f;
+}
+
+EWeaponPlayerLifeState WeaponGetLifeState(const APlayerState* PlayerState)
+{
+	const AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
+	return WeaponPlayerState ? WeaponPlayerState->GetLifeState() : EWeaponPlayerLifeState::Dead;
+}
+
+int32 WeaponCountUpPlayers(const UWorld* World, const AController* Exclude)
+{
+	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	if (!GameState)
+	{
+		return 0;
+	}
+
+	int32 Count = 0;
+	for (const APlayerState* PlayerState : GameState->PlayerArray)
+	{
+		if (!PlayerState || (Exclude && PlayerState->GetOwningController() == Exclude))
+		{
+			continue;
+		}
+		if (WeaponGetLifeState(PlayerState) == EWeaponPlayerLifeState::Up && PlayerState->GetPawn())
+		{
+			++Count;
+		}
+	}
+	return Count;
 }

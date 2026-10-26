@@ -193,6 +193,9 @@ protected:
 	/** 检查玩家是否处于死亡状态（ASC 是否持有 State.Dead Tag） */
 	bool IsDead() const;
 
+	/** 不能行动(倒地/死亡):读复制的 PlayerState.LifeState,客户端同样可用 */
+	bool IsOutOfAction() const;
+
 	/** 处理移动输入 */
 	void Move(const FInputActionValue& Value);
 

@@ -32,6 +32,15 @@ enum class EWeaponMatchPhase : uint8
 	
 };
 
+/** 任务结果:撤离成功 / 全员倒下且增援池耗尽 */
+UENUM(BlueprintType)
+enum class EWeaponMissionOutcome : uint8
+{
+	None = 0,
+	Extracted = 1,
+	Failed = 2
+};
+
 /** 客户端显示战局阶段所需的完整快照。 */
 USTRUCT(BlueprintType)
 struct FWeaponReplicatedMatchState
@@ -44,6 +53,10 @@ struct FWeaponReplicatedMatchState
 	/** 使用 GameState 的同步服务器时间；0 表示当前阶段没有倒计时。 */
 	UPROPERTY(BlueprintReadOnly, Category = "Match")
 	float PhaseEndServerTime = 0.0f;
+
+	/** 本局任务结果;进行中为 None,Ending 阶段为 Extracted/Failed。 */
+	UPROPERTY(BlueprintReadOnly, Category = "Match")
+	EWeaponMissionOutcome Outcome = EWeaponMissionOutcome::None;
 };
 
 /** 一局的目标/撤离进度(A1,客户端 HUD 与大厅可读)。 */
@@ -136,6 +149,17 @@ public:
 	/** Low-level gameplay owners use this without depending on GameMode. */
 	static bool IsGameplayRecoveryBlockedFor(const UObject* WorldContextObject);
 
+	/** 团队共享的增援池(剩余可复活次数) */
+	UFUNCTION(BlueprintPure, Category = "Reinforcement")
+	int32 GetReinforcementPool() const { return ReinforcementPool; }
+
+	/** 本局任务结果 */
+	UFUNCTION(BlueprintPure, Category = "Match")
+	EWeaponMissionOutcome GetMissionOutcome() const { return MatchState.Outcome; }
+
+	/** 服务器权威写入增援池(夹到 >= 0)。 */
+	void SetReinforcementPoolAuthority(int32 NewPool);
+
 	/** 目标/撤离进度(A1) */
 	UFUNCTION(BlueprintPure, Category = "Objective")
 	const FWeaponObjectiveState& GetObjectiveState() const { return ObjectiveState; }
@@ -159,6 +183,10 @@ protected:
 	/** 当前阶段及其倒计时作为一个复制快照发送。 */
 	UPROPERTY(ReplicatedUsing = OnRep_MatchState, BlueprintReadOnly, Category = "Match")
 	FWeaponReplicatedMatchState MatchState;
+
+	/** 团队共享的增援池;开局按难度初始化,每次自动增援复活扣 1。 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Reinforcement")
+	int32 ReinforcementPool = 0;
 
 	UPROPERTY(ReplicatedUsing = OnRep_GameplayRecoveryBlocked, BlueprintReadOnly, Category = "Recovery")
 	bool bGameplayRecoveryBlocked = false;
@@ -187,6 +215,10 @@ private:
 	friend class UWeaponSnapshotCoordinator;
 	friend class UWeaponSessionSubsystem;
 	void SetMatchPhase(EWeaponMatchPhase NewPhase, float PhaseDuration = 0.0f);
+	/** 服务器写入任务结果(GameMode 在结束/重置时调用)。 */
+	void SetMissionOutcomeAuthority(EWeaponMissionOutcome NewOutcome);
+	/** Snapshot 恢复专用:屏障内写回增援池。 */
+	void RestoreReinforcementPoolForRecovery(int32 RestoredPool);
 	bool SetMaxPlayersAuthority(int32 NewMaxPlayers);
 	bool SetGameplayRecoveryBlockedAuthority(bool bBlocked);
 	/** Snapshot v10 恢复专用:屏障内绕过 Waiting/Starting 阶段校验写回任务设置。 */

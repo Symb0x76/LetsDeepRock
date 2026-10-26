@@ -6,6 +6,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Online/WeaponRecoveryRoster.h"
 #include "WeaponGameState.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
@@ -96,7 +97,47 @@ public:
 
 	/** 由服务端胜负/任务逻辑调用，进入结算阶段。 */
 	UFUNCTION(BlueprintCallable, Category = "Match")
-	void EndWeaponMatch();
+	void EndWeaponMatch(EWeaponMissionOutcome Outcome);
+
+	/**
+	 *  增援入口(自动增援与未来的 Reinforce 战略配置共用):
+	 *  InGame 时池为 0 则不复活并检查任务失败;否则扣 1 后复活。非 InGame 免费复活。
+	 *  返回是否真的复活了该玩家。
+	 */
+	bool TryReinforcePlayer(AController* PlayerController);
+
+	/** InGame 中池空且无人存活 → EndWeaponMatch(Failed)。 */
+	void CheckMissionFailure();
+
+	// ---- 增援/倒地规则(默认值见 WeaponReinforcementDefaults) ----
+
+	/** 倒地后的流血时长(秒) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.1"))
+	float BleedOutSeconds = WeaponReinforcementDefaults::BleedOutSeconds;
+
+	/** 死亡后自动增援的延迟(秒) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.0"))
+	float AutoReinforceDelay = WeaponReinforcementDefaults::AutoReinforceDelay;
+
+	/** 按住交互救起倒地队友所需秒数 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.1"))
+	float ReviveSeconds = WeaponReinforcementDefaults::ReviveSeconds;
+
+	/** 救援有效半径(2D,厘米) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.0"))
+	float ReviveRadius = WeaponReinforcementDefaults::ReviveRadius;
+
+	/** 被救起后的生命比例 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	float RevivedHealthFraction = WeaponReinforcementDefaults::RevivedHealthFraction;
+
+	/** 难度 1/2/3 的增援池 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement")
+	TArray<int32> ReinforcementPoolByDifficulty = { 8, 6, 4 };
+
+	/** 致命一击是否先倒地等待救援(无其他存活队友时直接死亡) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement")
+	bool bDownedRequiresReviver = true;
 
 
 	/** A1:目标点充能完成的服务器入口(由 AGridMapObjectiveActor 调用)。 */

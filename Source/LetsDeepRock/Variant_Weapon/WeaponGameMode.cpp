@@ -29,6 +29,7 @@
 #include "Components/CapsuleComponent.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/PlayerStart.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 
 namespace
 {
@@ -1196,7 +1197,71 @@ void AWeaponGameMode::PlayerDied(AController* DeadPlayerController)
 		return;
 	}
 	
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (WeaponGameState && WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame)
+	{
+		// 局内:增援池有余量 → 延迟自动增援;池空则不排复活(HUD 时间戳清零),并检查任务失败。
+		if (WeaponGameState->GetReinforcementPool() > 0)
+		{
+			ArmRespawnTimer(DeadPlayerController, AutoReinforceDelay);
+		}
+		else if (AWeaponPlayerState* PS = DeadPlayerController->GetPlayerState<AWeaponPlayerState>())
+		{
+			PS->SetRespawnServerTime(0.0f);
+		}
+		CheckMissionFailure();
+		return;
+	}
+
 	ArmRespawnTimer(DeadPlayerController, RespawnDelay);
+}
+
+bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !PlayerController || !WeaponGameState ||
+		AWeaponGameState::IsGameplayRecoveryBlockedFor(this))
+	{
+		return false;
+	}
+
+	if (WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame)
+	{
+		const int32 Pool = WeaponGameState->GetReinforcementPool();
+		if (Pool <= 0)
+		{
+			if (AWeaponPlayerState* PS = PlayerController->GetPlayerState<AWeaponPlayerState>())
+			{
+				PS->SetRespawnServerTime(0.0f);
+			}
+			CheckMissionFailure();
+			return false;
+		}
+		WeaponGameState->SetReinforcementPoolAuthority(Pool - 1);
+		UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] %s reinforced, pool %d -> %d"),
+			*GetNameSafe(PlayerController), Pool, Pool - 1);
+	}
+
+	RespawnPlayer(PlayerController);
+	return true;
+}
+
+void AWeaponGameMode::CheckMissionFailure()
+{
+	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
+		WeaponGameState->GetMatchPhase() != EWeaponMatchPhase::InGame)
+	{
+		return;
+	}
+
+	const int32 UpPlayers = WeaponCountUpPlayers(GetWorld());
+	if (WeaponShouldFailMission(WeaponGameState->GetReinforcementPool(), UpPlayers,
+		WeaponGameState->GetConnectedPlayerCount()))
+	{
+		UE_LOG(LogLetsDeepRock, Log, TEXT("[Reinforce] mission failed: pool empty and no player is up"));
+		EndWeaponMatch(EWeaponMissionOutcome::Failed);
+	}
 }
 
 void AWeaponGameMode::ArmRespawnTimer(AController* PlayerToRespawn, const float DelaySeconds)
@@ -1221,7 +1286,7 @@ void AWeaponGameMode::ArmRespawnTimer(AController* PlayerToRespawn, const float 
 			// Timer 已经触发，移除记录，避免 Map 无限积累。
 			RespawnTimers.Remove(PlayerController);
 
-			RespawnPlayer(PlayerController);
+			TryReinforcePlayer(PlayerController);
 		},
 		DelaySeconds,
 		false); // 不循环
@@ -1346,6 +1411,18 @@ void AWeaponGameMode::BeginWeaponMatch()
 	{
 		WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 		return;
+	}
+
+	// 增援:池按难度初始化,任务结果清空,全员回到 Up。
+	WeaponGameState->SetReinforcementPoolAuthority(WeaponReinforcementPoolForDifficulty(
+		WeaponGameState->GetMissionSettings().Difficulty, ReinforcementPoolByDifficulty));
+	WeaponGameState->SetMissionOutcomeAuthority(EWeaponMissionOutcome::None);
+	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
+	{
+		if (AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState))
+		{
+			WeaponPlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+		}
 	}
 
 	SpawnObjectiveActors();
@@ -1493,7 +1570,7 @@ void AWeaponGameMode::OpenExtraction()
 	UE_LOG(LogLetsDeepRock, Log, TEXT("[A1] Extraction zone open"));
 }
 
-void AWeaponGameMode::EndWeaponMatch()
+void AWeaponGameMode::EndWeaponMatch(const EWeaponMissionOutcome Outcome)
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
 	if (!HasAuthority() || !WeaponGameState || WeaponGameState->IsGameplayRecoveryBlocked() ||
@@ -1503,6 +1580,7 @@ void AWeaponGameMode::EndWeaponMatch()
 	}
 
 	GetWorldTimerManager().ClearTimer(MatchPhaseTimer);
+	WeaponGameState->SetMissionOutcomeAuthority(Outcome);
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Ending, EndingDuration);
 
 	if (EndingDuration <= 0.0f)
@@ -1535,6 +1613,7 @@ void AWeaponGameMode::ReturnToWaitingForPlayers()
 	{
 		WaveDirector->ResetWaves(true);
 	}
+	WeaponGameState->SetMissionOutcomeAuthority(EWeaponMissionOutcome::None);
 	WeaponGameState->SetMatchPhase(EWeaponMatchPhase::Waiting);
 }
 
@@ -1567,6 +1646,14 @@ void AWeaponGameMode::RespawnPlayerImmediately(AController* PlayerController)
 		return;
 	}
 
+	// 局内:已倒下/死亡的玩家不能借职业选择绕开增援池(只能等自动增援或被救起)。
+	if (const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
+		WeaponGameState && WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame &&
+		WeaponGetLifeState(PlayerController->GetPlayerState<APlayerState>()) != EWeaponPlayerLifeState::Up)
+	{
+		return;
+	}
+
 	// 若当前存在挂起的死亡重生计时器，先清除，避免稍后重复触发一次 RespawnPlayer
 	if (FTimerHandle* RespawnTimer = RespawnTimers.Find(PlayerController))
 	{
@@ -1595,6 +1682,7 @@ void AWeaponGameMode::RespawnPlayer(AController* PlayerController)
 	if (AWeaponPlayerState* RespawnedPS = PlayerController->GetPlayerState<AWeaponPlayerState>())
 	{
 		RespawnedPS->SetRespawnServerTime(0.0f);
+		RespawnedPS->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
 	}
 	APawn* NewPawn = PlayerController->GetPawn();
 	if (!NewPawn)

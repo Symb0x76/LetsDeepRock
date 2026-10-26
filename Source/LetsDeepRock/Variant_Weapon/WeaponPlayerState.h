@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerState.h"
 #include "AbilitySystemInterface.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponPlayerState.generated.h"
 
 class UAbilitySystemComponent;
@@ -147,6 +148,13 @@ public:
 	/** 仅服务端调用;由 WeaponGameMode 在死亡/复活/屏障解除时写入。 */
 	void SetRespawnServerTime(float NewRespawnServerTime);
 
+	/** 生存状态(Up/Downed/Dead);复制,客户端可读。 */
+	UFUNCTION(BlueprintPure, Category = "Player")
+	EWeaponPlayerLifeState GetLifeState() const { return LifeState; }
+
+	/** 仅服务端调用;相同值直接返回。不进 CopyProperties:重连从 Up 开始,由快照恢复真实状态。 */
+	void SetLifeStateAuthority(EWeaponPlayerLifeState NewLifeState);
+
 protected:
 	virtual void OnDeactivated() override;
 
@@ -166,6 +174,9 @@ protected:
 
 	UPROPERTY(Replicated)
 	float RespawnServerTime = 0.0f;
+
+	UPROPERTY(Replicated)
+	EWeaponPlayerLifeState LifeState = EWeaponPlayerLifeState::Up;
 
 	/** 能力系统组件（在 PlayerState 上创建并复制） */
 	UPROPERTY(VisibleAnywhere, Category = "GAS")
