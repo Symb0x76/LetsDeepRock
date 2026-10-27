@@ -95,3 +95,30 @@ int32 WeaponCountUpPlayers(const UWorld* World, const AController* Exclude)
 	}
 	return Count;
 }
+
+int32 WeaponReinforceQueueRank(const TConstArrayView<TPair<float, int32>> PendingTimesAndIds, const int32 OwnId)
+{
+	const TPair<float, int32>* Own = nullptr;
+	for (const TPair<float, int32>& Entry : PendingTimesAndIds)
+	{
+		if (Entry.Value == OwnId)
+		{
+			Own = &Entry;
+			break;
+		}
+	}
+	if (!Own)
+	{
+		return INDEX_NONE;
+	}
+
+	int32 Rank = 0;
+	for (const TPair<float, int32>& Entry : PendingTimesAndIds)
+	{
+		if (&Entry != Own && (Entry.Key < Own->Key || (Entry.Key == Own->Key && Entry.Value < Own->Value)))
+		{
+			++Rank;
+		}
+	}
+	return Rank;
+}

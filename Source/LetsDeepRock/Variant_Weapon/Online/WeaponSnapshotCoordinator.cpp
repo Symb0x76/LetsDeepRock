@@ -1346,7 +1346,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 	TMap<FUniqueNetIdRepl, AWeaponCharacter*> TombstonePawns;
 	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> TombstonePlayerStates;
 	GameMode->GetAttributionTombstoneActors(TombstonePawns, TombstonePlayerStates);
-	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds, GameState](
+	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds, GameState, GameMode](
 		const AWeaponPlayerState* PlayerState,
 		const AWeaponCharacter* Character) -> bool
 	{
@@ -1377,8 +1377,12 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		Player.LifeState = PlayerState->GetLifeState();
 		if (Player.LifeState == EWeaponPlayerLifeState::Downed)
 		{
-			Player.DownedRemainingSeconds = FMath::Max(
+			// 优先读 Timer 本身:屏障内 Timer 暂停,而复制投影会随时间下降,会低估剩余时间。
+			// 取两者较大值:没有 GameMode 或该玩家没有流血 Timer(如离线墓碑)时自然回退到复制投影。
+			const float Projected = FMath::Max(
 				0.0f, PlayerState->GetDownedServerTime() - GameState->GetServerWorldTimeSeconds());
+			const float Exact = GameMode ? GameMode->GetBleedOutRemaining(PlayerState->GetOwningController()) : 0.0f;
+			Player.DownedRemainingSeconds = FMath::Max(Projected, Exact);
 		}
 
 		if (!Character)

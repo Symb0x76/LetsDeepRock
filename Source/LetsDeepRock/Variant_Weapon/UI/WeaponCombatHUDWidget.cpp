@@ -345,8 +345,29 @@ void UWeaponCombatHUDWidget::RefreshRespawn()
 	}
 	else if (LifeState == EWeaponPlayerLifeState::Dead && RespawnServerTime > 0.0f)
 	{
-		const float Remaining = FMath::Max(0.0f, RespawnServerTime - ServerNow);
-		Line = FString::Printf(TEXT("已阵亡 · %.1f 秒后增援"), Remaining);
+		// 自动增援按 RespawnServerTime 先后触发、每次扣一条命:排在池容量之后的死者其计时会空转,
+		// 不能承诺"X 秒后增援"。全部由复制状态在客户端推算。
+		TArray<TPair<float, int32>> PendingReinforces;
+		for (const APlayerState* Other : WeaponGameState->PlayerArray)
+		{
+			const AWeaponPlayerState* OtherState = Cast<AWeaponPlayerState>(Other);
+			if (OtherState && OtherState->GetLifeState() == EWeaponPlayerLifeState::Dead &&
+				OtherState->GetRespawnServerTime() > 0.0f)
+			{
+				PendingReinforces.Emplace(OtherState->GetRespawnServerTime(), OtherState->GetPlayerId());
+			}
+		}
+		const int32 Rank = WeaponReinforceQueueRank(PendingReinforces, PS->GetPlayerId());
+		const int32 Pool = WeaponGameState->GetReinforcementPool();
+		if (WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame && Rank != INDEX_NONE && Rank >= Pool)
+		{
+			Line = FString::Printf(TEXT("已阵亡 · 等待增援(剩余 %d)"), Pool);
+		}
+		else
+		{
+			const float Remaining = FMath::Max(0.0f, RespawnServerTime - ServerNow);
+			Line = FString::Printf(TEXT("已阵亡 · %.1f 秒后增援"), Remaining);
+		}
 	}
 	else if (LifeState == EWeaponPlayerLifeState::Dead &&
 		WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame)

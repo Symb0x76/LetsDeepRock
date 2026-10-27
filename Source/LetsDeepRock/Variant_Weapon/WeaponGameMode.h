@@ -149,6 +149,12 @@ public:
 	 */
 	bool TryReinforcePlayer(AController* PlayerController);
 
+	/**
+	 *  倒地玩家流血计时的精确剩余秒数(读 Timer 本身,屏障内暂停时同样准确);
+	 *  没有计时或结果为负返回 0。服务端使用。
+	 */
+	float GetBleedOutRemaining(AController* PlayerController) const;
+
 	/** InGame 中池空且无人存活 → EndWeaponMatch(Failed)。 */
 	void CheckMissionFailure();
 

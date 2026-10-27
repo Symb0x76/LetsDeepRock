@@ -73,6 +73,7 @@ void AWeaponGameMode::InitGameState()
 	if (AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr)
 	{
 		WeaponGameState->SetMissionSettingsAuthority(ParsedMissionSettings);
+		WeaponGameState->SetReviveRadiusAuthority(ReviveRadius);
 	}
 	if (bRecoveryWorldRequested && !EnterGameplayRecoveryBarrier())
 	{
@@ -1489,6 +1490,16 @@ bool AWeaponGameMode::ApplyDepartedLifeState(AController* NewPlayer)
 	return true;
 }
 
+float AWeaponGameMode::GetBleedOutRemaining(AController* PlayerController) const
+{
+	const FTimerHandle* BleedTimer = PlayerController ? BleedOutTimers.Find(PlayerController) : nullptr;
+	if (!BleedTimer)
+	{
+		return 0.0f;
+	}
+	return FMath::Max(0.0f, GetWorldTimerManager().GetTimerRemaining(*BleedTimer));
+}
+
 bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
 {
 	AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
@@ -1498,14 +1509,21 @@ bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
 		return false;
 	}
 
-	// 已存活且有 Pawn 的玩家不能被增援(否则白扣一条命):Up 且 Pawn 有效 → 拒绝。
-	if (WeaponGetLifeState(PlayerController->GetPlayerState<APlayerState>()) == EWeaponPlayerLifeState::Up &&
-		PlayerController->GetPawn())
+	const EWeaponPlayerLifeState LifeState = WeaponGetLifeState(PlayerController->GetPlayerState<APlayerState>());
+	const bool bInGame = WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame;
+
+	// 局内只有 Dead 才能被增援;Up(白扣一条命)与 Downed(会打断流血计时并白扣命)都拒绝。
+	if (bInGame && LifeState != EWeaponPlayerLifeState::Dead)
+	{
+		return false;
+	}
+	// 非局内保持免费复活,仅拒绝已存活且有 Pawn 的玩家。
+	if (!bInGame && LifeState == EWeaponPlayerLifeState::Up && PlayerController->GetPawn())
 	{
 		return false;
 	}
 
-	if (WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame)
+	if (bInGame)
 	{
 		const int32 Pool = WeaponGameState->GetReinforcementPool();
 		if (Pool <= 0)
@@ -1700,6 +1718,8 @@ void AWeaponGameMode::BeginWeaponMatch()
 	WeaponGameState->SetReinforcementPoolAuthority(WeaponReinforcementPoolForDifficulty(
 		WeaponGameState->GetMissionSettings().Difficulty, ReinforcementPoolByDifficulty));
 	WeaponGameState->SetMissionOutcomeAuthority(EWeaponMissionOutcome::None);
+	// 救援半径:InitGameState 已写入一次;开局再同步,使运行期对 GameMode 调参的修改也能到达客户端。
+	WeaponGameState->SetReviveRadiusAuthority(ReviveRadius);
 	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
 		AWeaponPlayerState* WeaponPlayerState = Cast<AWeaponPlayerState>(PlayerState);
@@ -1887,13 +1907,14 @@ void AWeaponGameMode::EndWeaponMatch(const EWeaponMissionOutcome Outcome)
 	}
 	BleedOutTimers.Empty();
 
-	// 局内死亡且未排复活(池空)的玩家:离开 InGame 后恢复"死亡 → RespawnDelay → 免费复活"的旧行为,
-	// 否则他们会带着尸体进入下一局。放在结算开始而非回到 Waiting,保证下一局开始前已复活。
+	// 局内死亡的玩家(含池空未排复活、以及已排 30 s 自动增援的):离开 InGame 后恢复
+	// "死亡 → RespawnDelay → 免费复活"的旧行为,否则他们会带着尸体进入下一局(或要等满 30 s)。
+	// ArmRespawnTimer 会清掉旧计时,所以对所有非 Up 玩家一律重排到 RespawnDelay。
+	// 放在结算开始而非回到 Waiting,保证下一局开始前已复活。
 	for (APlayerState* PlayerState : WeaponGameState->PlayerArray)
 	{
 		AController* PlayerController = PlayerState ? PlayerState->GetOwningController() : nullptr;
-		if (PlayerController && WeaponGetLifeState(PlayerState) != EWeaponPlayerLifeState::Up &&
-			!RespawnTimers.Contains(PlayerController))
+		if (PlayerController && WeaponGetLifeState(PlayerState) != EWeaponPlayerLifeState::Up)
 		{
 			ArmRespawnTimer(PlayerController, RespawnDelay);
 		}

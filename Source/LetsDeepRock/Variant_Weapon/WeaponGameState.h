@@ -10,6 +10,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/GameStateBase.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponGameState.generated.h"
 
 class AWeaponGameMode;
@@ -160,6 +161,13 @@ public:
 	/** 服务器权威写入增援池(夹到 >= 0)。 */
 	void SetReinforcementPoolAuthority(int32 NewPool);
 
+	/** 救援有效半径(2D,厘米);由 GameMode 的调参复制而来,客户端据此判定可救援目标。 */
+	UFUNCTION(BlueprintPure, Category = "Reinforcement")
+	float GetReviveRadius() const { return ReviveRadius; }
+
+	/** 服务器权威写入救援半径(夹到 >= 0)。 */
+	void SetReviveRadiusAuthority(float NewRadius);
+
 	/** 目标/撤离进度(A1) */
 	UFUNCTION(BlueprintPure, Category = "Objective")
 	const FWeaponObjectiveState& GetObjectiveState() const { return ObjectiveState; }
@@ -187,6 +195,10 @@ protected:
 	/** 团队共享的增援池;开局按难度初始化,每次自动增援复活扣 1。 */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Reinforcement")
 	int32 ReinforcementPool = 0;
+
+	/** 救援有效半径(2D);默认值与 GameMode 默认调参一致,开局前由 GameMode 覆盖。 */
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Reinforcement")
+	float ReviveRadius = WeaponReinforcementDefaults::ReviveRadius;
 
 	UPROPERTY(ReplicatedUsing = OnRep_GameplayRecoveryBlocked, BlueprintReadOnly, Category = "Recovery")
 	bool bGameplayRecoveryBlocked = false;

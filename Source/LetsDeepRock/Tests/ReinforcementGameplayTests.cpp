@@ -638,6 +638,138 @@ bool FReinforceGameplayReinforceIgnoresUpPlayerTest::RunTest(const FString& Para
 }
 
 // ---------------------------------------------------------------------------
+// F1:TryReinforcePlayer 对倒地者同样拒绝,不扣池、不打断流血计时
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReinforceIgnoresDownedTest, "LetsDeepRock.Reinforcement.Gameplay.ReinforceIgnoresDowned")
+bool FReinforceGameplayReinforceIgnoresDownedTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 10.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(2);
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		Ctx.Test->TestFalse(TEXT("Downed player is not reinforced"), GameMode->TryReinforcePlayer(Controller));
+		Ctx.Test->TestEqual(TEXT("pool untouched"), GameState->GetReinforcementPool(), 2);
+		Ctx.Test->TestEqual(TEXT("still Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestEqual(TEXT("bleed-out timer kept"), GameMode->GetBleedOutTimerCountForTest(), 1);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// F2:结算开始时,已排的 30 s 增援计时必须缩短到 RespawnDelay
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayEndMatchShortensPendingReinforceTest, "LetsDeepRock.Reinforcement.Gameplay.EndMatchShortensPendingReinforce")
+bool FReinforceGameplayEndMatchShortensPendingReinforceTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		GameMode->AutoReinforceDelay = 30.f;
+		GameState->SetReinforcementPoolAuthority(2);
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Dead"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Dead);
+		Ctx.Test->TestEqual(TEXT("pending reinforce is about 30 s away"),
+			Ctx.PlayerState->GetRespawnServerTime() - ReinforceServerNow(Ctx), 30.f, 0.5f);
+
+		GameMode->EndWeaponMatch(EWeaponMissionOutcome::Extracted);
+		Ctx.Test->TestEqual(TEXT("phase is Ending"), GameState->GetMatchPhase(), EWeaponMatchPhase::Ending);
+		Ctx.Test->TestTrue(TEXT("pending reinforce shortened to RespawnDelay"),
+			Ctx.PlayerState->GetRespawnServerTime() - ReinforceServerNow(Ctx) <= GameMode->GetRespawnDelay() + 0.2f);
+	});
+	ReinforceAddWait(Context, 4.f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.Test->TestEqual(TEXT("player is Up again"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// F3:屏障内流血计时暂停,GetBleedOutRemaining 仍给出精确剩余(复制投影 DownedServerTime 会随时间下降)
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayBleedOutRemainingExactUnderBarrierTest, "LetsDeepRock.Reinforcement.Gameplay.BleedOutRemainingExactUnderBarrier")
+bool FReinforceGameplayBleedOutRemainingExactUnderBarrierTest::RunTest(const FString& Parameters)
+{
+	ReinforceExpectDeathTrace(*this);
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		GameMode->bDownedRequiresReviver = false;
+		GameMode->BleedOutSeconds = 10.f;
+		GameMode->AutoReinforceDelay = 30.f;
+		ReinforceKill(Ctx);
+		Ctx.Test->TestEqual(TEXT("life state is Downed"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Downed);
+		Ctx.Test->TestTrue(TEXT("barrier entered"), GameMode->EnterGameplayRecoveryBarrier());
+		Ctx.ValueA = GameMode->GetBleedOutRemaining(Ctx.World->GetFirstPlayerController());
+		Ctx.Test->TestEqual(TEXT("remaining at barrier entry is about 10 s"), static_cast<float>(Ctx.ValueA), 10.f, 0.3f);
+	});
+	ReinforceAddWait(Context, 3.f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		Ctx.Test->TestEqual(TEXT("remaining unchanged by 3 s under the barrier"),
+			GameMode->GetBleedOutRemaining(Ctx.World->GetFirstPlayerController()), static_cast<float>(Ctx.ValueA), 0.3f);
+		Ctx.Test->TestTrue(TEXT("barrier released"), GameMode->ReleaseGameplayRecoveryBarrier());
+	});
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		Ctx.Test->TestTrue(TEXT("remaining is still positive after release"), GameMode->GetBleedOutRemaining(Controller) > 0.f);
+		GameMode->ClearPlayerLifeTimers(Controller);
+		Ctx.Test->TestEqual(TEXT("no timer → 0"), GameMode->GetBleedOutRemaining(Controller), 0.f);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// F6:救援半径由 GameMode 调参并复制到 GameState(客户端据此判定)
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReviveRadiusReplicatedTest, "LetsDeepRock.Reinforcement.Gameplay.ReviveRadiusFollowsGameMode")
+bool FReinforceGameplayReviveRadiusReplicatedTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		Ctx.World->GetAuthGameMode<AWeaponGameMode>()->ReviveRadius = 333.f;
+	});
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		const AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		const AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		Ctx.Test->TestEqual(TEXT("GameState radius follows the GameMode tunable"), GameState->GetReviveRadius(), GameMode->ReviveRadius);
+		Ctx.Test->TestEqual(TEXT("custom value applied"), GameState->GetReviveRadius(), 333.f);
+	});
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // M2:Ending 阶段快照里的倒地者按死亡恢复并保留待复活计时(不再 0.1 s 流血)
 // ---------------------------------------------------------------------------
 REINFORCE_GAMEPLAY_TEST(FReinforceGameplaySnapshotEndingDownedRestoresDeadTest, "LetsDeepRock.Reinforcement.Gameplay.SnapshotEndingDownedRestoresDead")

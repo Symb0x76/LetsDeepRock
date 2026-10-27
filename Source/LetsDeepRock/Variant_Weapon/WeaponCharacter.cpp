@@ -678,13 +678,13 @@ void AWeaponCharacter::ExitDowned()
 AWeaponPlayerState* AWeaponCharacter::FindReviveTargetState() const
 {
 	const UWorld* World = GetWorld();
-	const AGameStateBase* GameState = World ? World->GetGameState() : nullptr;
+	const AWeaponGameState* GameState = World ? World->GetGameState<AWeaponGameState>() : nullptr;
 	if (!GameState)
 	{
 		return nullptr;
 	}
-	const AWeaponGameMode* GM = World->GetAuthGameMode<AWeaponGameMode>();
-	const float Radius = GM ? GM->ReviveRadius : WeaponReinforcementDefaults::ReviveRadius;
+	// 半径取复制到 GameState 的值:服务端与客户端使用同一份 GameMode 调参。
+	const float Radius = GameState->GetReviveRadius();
 	const APlayerState* OwnState = GetPlayerState();
 
 	AWeaponPlayerState* Best = nullptr;

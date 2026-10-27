@@ -152,8 +152,10 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 
 		ConsumePendingWeaponDamageDebug(AppliedShieldDamage, AppliedHealthDamage);
 		// B1:命中表现。此处是唯一知道"护盾/生命各扣了多少"的服务器结算点。
+		// 倒地者被击中:护盾/生命都不再扣(Applied 为 0),但命中仍要可见,所以把原始伤害当作生命部分传给 Cue。
+		// Cue 只读这两个数做表现(闪光大小/颜色),不影响 Health、bJustDied 与伤害统计(ConsumePendingWeaponDamageDebug 已在上面按 Applied 结算)。
 		WeaponGameplayCues::ExecuteHitCue(GetOwningAbilitySystemComponent(), Data.EffectSpec.GetContext(),
-			AppliedShieldDamage, AppliedHealthDamage);
+			AppliedShieldDamage, bOwnerDowned ? LocalDamage : AppliedHealthDamage);
 		if (bOwnerDowned && LocalDamage > 0.0f)
 		{
 			const AActor* DownedOwner = GetOwningActor();

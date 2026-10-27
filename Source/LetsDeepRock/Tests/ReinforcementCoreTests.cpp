@@ -79,6 +79,20 @@ bool FReinforceReviveTrackerTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+REINFORCE_TEST(FReinforceQueueRankTest, "LetsDeepRock.Reinforcement.Rules.ReinforceQueueRank")
+bool FReinforceQueueRankTest::RunTest(const FString& Parameters)
+{
+	// 条目 = (RespawnServerTime, PlayerId);计时器按时间先后触发,同时刻按 id 先后
+	const TArray<TPair<float, int32>> Pending = { {30.f, 7}, {10.f, 5}, {20.f, 9}, {20.f, 3} };
+	TestEqual(TEXT("最早的时间排第 0"), WeaponReinforceQueueRank(Pending, 5), 0);
+	TestEqual(TEXT("同时刻 id 小者在前"), WeaponReinforceQueueRank(Pending, 3), 1);
+	TestEqual(TEXT("同时刻 id 大者在后"), WeaponReinforceQueueRank(Pending, 9), 2);
+	TestEqual(TEXT("最晚的排最后"), WeaponReinforceQueueRank(Pending, 7), 3);
+	TestEqual(TEXT("自己不在队列里 → INDEX_NONE"), WeaponReinforceQueueRank(Pending, 42), static_cast<int32>(INDEX_NONE));
+	TestEqual(TEXT("空队列 → INDEX_NONE"), WeaponReinforceQueueRank(TArray<TPair<float, int32>>(), 1), static_cast<int32>(INDEX_NONE));
+	return true;
+}
+
 #undef REINFORCE_TEST
 
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -118,6 +118,21 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 	DOREPLIFETIME(AWeaponGameState, ObjectiveState);
 	DOREPLIFETIME(AWeaponGameState, ReinforcementPool);
+	DOREPLIFETIME(AWeaponGameState, ReviveRadius);
+}
+
+void AWeaponGameState::SetReviveRadiusAuthority(const float NewRadius)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	const float Clamped = FMath::Max(NewRadius, 0.0f);
+	if (!FMath::IsNearlyEqual(ReviveRadius, Clamped))
+	{
+		ReviveRadius = Clamped;
+		ForceNetUpdate();
+	}
 }
 
 void AWeaponGameState::SetReinforcementPoolAuthority(const int32 NewPool)

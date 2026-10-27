@@ -44,6 +44,13 @@ float WeaponDownedDamageToSeconds(float Damage, float MaxHealth, float BleedOutS
 /** 增援池耗尽且无人存活 → 任务失败 */
 bool WeaponShouldFailMission(int32 Pool, int32 UpPlayers, int32 ConnectedPlayers);
 
+/**
+ * 自动增援的排队名次:条目为 (RespawnServerTime, PlayerId),仅含等待增援的死者。
+ * 计时器按时间先后触发(同时刻按 id),每次触发扣一条命;返回 OwnId 的名次(从 0 起),不在队列中返回 INDEX_NONE。
+ * 纯函数,HUD 用它判断"池里是否还有轮到我的命"。
+ */
+int32 WeaponReinforceQueueRank(TConstArrayView<TPair<float, int32>> PendingTimesAndIds, int32 OwnId);
+
 /** 按住交互的救援进度追踪(纯逻辑,便于测试) */
 struct FWeaponReviveTracker
 {

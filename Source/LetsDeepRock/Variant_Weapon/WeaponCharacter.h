@@ -121,8 +121,8 @@ public:
 
 	/**
 	 *  离自己最近、倒地且在 ReviveRadius(2D)内的其他玩家的 PlayerState;没有则 nullptr。
-	 *  const 且客户端可用(只读复制的 LifeState 与 Pawn 位置)。服务端半径取 GameMode.ReviveRadius,
-	 *  客户端没有 GameMode,回退到 WeaponReinforcementDefaults::ReviveRadius。
+	 *  const 且客户端可用(只读复制的 LifeState 与 Pawn 位置)。半径取 AWeaponGameState::GetReviveRadius()
+	 *  (GameMode 调参复制而来,服务端与客户端一致)。
 	 */
 	AWeaponPlayerState* FindReviveTargetState() const;
 
