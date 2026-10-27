@@ -157,6 +157,12 @@ UWeaponMatchSaveGame* MakeSaveGame(
 	SwarmCount.ArchetypeRow = TEXT("BasicGrunt");
 	SwarmCount.Count = 5;
 
+	// v12:增援池、任务结局、倒地玩家与流血剩余秒数。
+	Snapshot.ReinforcementPool = 5;
+	Snapshot.MatchOutcome = EWeaponMissionOutcome::None;
+	Player.LifeState = EWeaponPlayerLifeState::Downed;
+	Player.DownedRemainingSeconds = 4.5f;
+
 	FGridMapRecoveryState& GridMap = Snapshot.GridMap;
 	GridMap.GenerationVersion = 1;
 	GridMap.Config.MapWidth = TestGridWidth;
@@ -405,6 +411,13 @@ bool FWeaponMigrationPayloadBufferAutomationTest::RunTest(const FString& Paramet
 	{
 		TestEqual(TEXT("Swarm count"), RoundTripped.WaveDirector.SwarmCounts[0].Count, 5);
 		TestEqual(TEXT("Swarm room remaining"), RoundTripped.WaveDirector.CombatRooms[0].RemainingSwarm, 7);
+	}
+	TestEqual(TEXT("Reinforcement pool"), RoundTripped.ReinforcementPool, 5);
+	TestEqual(TEXT("Match outcome"), RoundTripped.MatchOutcome, EWeaponMissionOutcome::None);
+	if (TestEqual(TEXT("Round-tripped player count"), RoundTripped.Players.Num(), 1))
+	{
+		TestEqual(TEXT("Player life state"), RoundTripped.Players[0].LifeState, EWeaponPlayerLifeState::Downed);
+		TestEqual(TEXT("Player downed remaining"), RoundTripped.Players[0].DownedRemainingSeconds, 4.5f);
 	}
 
 	UWeaponMatchSaveGame* NewerSaveGame = DuplicateObject<UWeaponMatchSaveGame>(

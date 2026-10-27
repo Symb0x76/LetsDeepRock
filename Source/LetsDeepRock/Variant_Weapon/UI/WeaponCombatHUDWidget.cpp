@@ -20,6 +20,8 @@
 #include "GameFramework/Pawn.h"
 #include "GameplayEffect.h"
 #include "Styling/CoreStyle.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
+#include "WeaponCharacter.h"
 #include "Weapons/WeaponDataAsset.h"
 #include "Weapons/WeaponEquipmentComponent.h"
 #include "WeaponGameplayTags.h"
@@ -320,8 +322,7 @@ void UWeaponCombatHUDWidget::RefreshRespawn()
 {
 	const AWeaponPlayerState* PS = GetOwningPlayerState<AWeaponPlayerState>();
 	const AWeaponGameState* WeaponGameState = GetWorld() ? GetWorld()->GetGameState<AWeaponGameState>() : nullptr;
-	const float RespawnServerTime = PS ? PS->GetRespawnServerTime() : 0.0f;
-	if (!RespawnText || !WeaponGameState || RespawnServerTime <= 0.0f)
+	if (!RespawnText || !WeaponGameState || !PS)
 	{
 		if (RespawnText && RespawnText->GetVisibility() != ESlateVisibility::Collapsed)
 		{
@@ -330,8 +331,68 @@ void UWeaponCombatHUDWidget::RefreshRespawn()
 		return;
 	}
 
-	const float Remaining = FMath::Max(0.0f, RespawnServerTime - WeaponGameState->GetServerWorldTimeSeconds());
-	SetTextIfChanged(RespawnText, RespawnTextCache, FString::Printf(TEXT("已倒下 · %.1f 秒后复活"), Remaining));
+	// 首个匹配的行生效:倒下 > 阵亡(有计时/增援耗尽) > 救援中 > 可救援提示
+	const float ServerNow = WeaponGameState->GetServerWorldTimeSeconds();
+	const float RespawnServerTime = PS->GetRespawnServerTime();
+	const EWeaponPlayerLifeState LifeState = PS->GetLifeState();
+	const AWeaponCharacter* Character = Cast<AWeaponCharacter>(GetOwningPlayerPawn());
+
+	FString Line;
+	if (LifeState == EWeaponPlayerLifeState::Downed)
+	{
+		const float Remaining = FMath::Max(0.0f, PS->GetDownedServerTime() - ServerNow);
+		Line = FString::Printf(TEXT("已倒下 · %.1f 秒后阵亡 · 等待队友救援"), Remaining);
+	}
+	else if (LifeState == EWeaponPlayerLifeState::Dead && RespawnServerTime > 0.0f)
+	{
+		// 自动增援按 RespawnServerTime 先后触发、每次扣一条命:排在池容量之后的死者其计时会空转,
+		// 不能承诺"X 秒后增援"。全部由复制状态在客户端推算。
+		TArray<TPair<float, int32>> PendingReinforces;
+		for (const APlayerState* Other : WeaponGameState->PlayerArray)
+		{
+			const AWeaponPlayerState* OtherState = Cast<AWeaponPlayerState>(Other);
+			if (OtherState && OtherState->GetLifeState() == EWeaponPlayerLifeState::Dead &&
+				OtherState->GetRespawnServerTime() > 0.0f)
+			{
+				PendingReinforces.Emplace(OtherState->GetRespawnServerTime(), OtherState->GetPlayerId());
+			}
+		}
+		const int32 Rank = WeaponReinforceQueueRank(PendingReinforces, PS->GetPlayerId());
+		const int32 Pool = WeaponGameState->GetReinforcementPool();
+		if (WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame && Rank != INDEX_NONE && Rank >= Pool)
+		{
+			Line = FString::Printf(TEXT("已阵亡 · 等待增援(剩余 %d)"), Pool);
+		}
+		else
+		{
+			const float Remaining = FMath::Max(0.0f, RespawnServerTime - ServerNow);
+			Line = FString::Printf(TEXT("已阵亡 · %.1f 秒后增援"), Remaining);
+		}
+	}
+	else if (LifeState == EWeaponPlayerLifeState::Dead &&
+		WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame)
+	{
+		Line = TEXT("已阵亡 · 增援耗尽");
+	}
+	else if (LifeState == EWeaponPlayerLifeState::Up && Character && Character->GetReviveProgress() > 0.0f)
+	{
+		Line = FString::Printf(TEXT("救援中 %d%%"), FMath::RoundToInt(Character->GetReviveProgress() * 100.0f));
+	}
+	else if (LifeState == EWeaponPlayerLifeState::Up && Character && Character->FindReviveTargetState())
+	{
+		Line = TEXT("按住 E 救援队友");
+	}
+
+	if (Line.IsEmpty())
+	{
+		if (RespawnText->GetVisibility() != ESlateVisibility::Collapsed)
+		{
+			RespawnText->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		return;
+	}
+
+	SetTextIfChanged(RespawnText, RespawnTextCache, Line);
 	if (RespawnText->GetVisibility() != ESlateVisibility::HitTestInvisible)
 	{
 		RespawnText->SetVisibility(ESlateVisibility::HitTestInvisible);

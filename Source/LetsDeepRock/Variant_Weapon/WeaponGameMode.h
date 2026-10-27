@@ -6,6 +6,7 @@
 #include "GameFramework/GameModeBase.h"
 #include "Online/WeaponRecoveryRoster.h"
 #include "WeaponGameState.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "WeaponGameMode.generated.h"
 
 class AWeaponCharacter;
@@ -86,6 +87,49 @@ public:
 	 */
 	void PlayerDied(AController* DeadPlayerController);
 
+	/**
+	 *  生命归零的统一入口(由 WeaponCharacter::HandleHealthDepleted 调用):
+	 *  InGame 且(有其他存活队友 或 不要求救援者)→ 倒地并开始流血计时;否则直接死亡并走 PlayerDied。
+	 */
+	void PlayerHealthDepleted(AController* PlayerController);
+
+	/** 倒地期间受到伤害:按 Damage / MaxHealth * BleedOutSeconds 缩短剩余流血时间,归零则立即流血致死。 */
+	void PlayerDownedDamaged(AController* PlayerController, float Damage);
+
+	/** 快照恢复(Task 7 使用):把玩家置为倒地,按剩余秒数重新排流血计时(屏障内计时暂停)。 */
+	void RestoreDownedPlayer(AController* PlayerController, float RemainingSeconds);
+
+	/**
+	 *  救起倒地玩家(服务端):仅对倒地且屏障未关的玩家生效。清流血计时与 DownedServerTime、ExitDowned,
+	 *  Health = MaxHealth * RevivedHealthFraction、Shield 归零(倒地期间护盾仍在回复),LifeState = Up。
+	 */
+	void RevivePlayer(AController* DownedController);
+
+	/** 清掉某玩家的复活与流血计时(Logout 调用;也供测试直接调用)。 */
+	void ClearPlayerLifeTimers(AController* PlayerController);
+
+	/**
+	 *  Logout 调用:局内(屏障未关)离线的倒地/死亡玩家按身份(PlayerState UniqueId,与恢复名册同键)记为 Dead
+	 *  (倒地者也记 Dead);Up 玩家清除旧记录。重连时由 ApplyDepartedLifeState 还原,防止掉线重进绕开增援池。
+	 */
+	void RecordDepartedLifeState(AController* ExitingController);
+
+	/**
+	 *  RestartPlayer 在重连快照分支之后调用:若该身份有离线记录,消费记录并让新 Pawn 立即死亡,
+	 *  池>0 排自动增援,池空则不排并检查任务失败。返回是否应用了记录。
+	 */
+	bool ApplyDepartedLifeState(AController* NewPlayer);
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** 测试用:离线生存状态记录数量 */
+	int32 GetDepartedLifeStateCountForTest() const { return DepartedLifeStates.Num(); }
+#endif
+
+#if WITH_DEV_AUTOMATION_TESTS
+	/** 测试用:当前挂起的流血计时数量 */
+	int32 GetBleedOutTimerCountForTest() const { return BleedOutTimers.Num(); }
+#endif
+
 	/** 所有玩家 ready 且人数达标时，由 Listen Host 发起开局倒计时。 */
 	UFUNCTION(BlueprintCallable, Category = "Match")
 	bool TryStartWeaponMatch();
@@ -96,7 +140,53 @@ public:
 
 	/** 由服务端胜负/任务逻辑调用，进入结算阶段。 */
 	UFUNCTION(BlueprintCallable, Category = "Match")
-	void EndWeaponMatch();
+	void EndWeaponMatch(EWeaponMissionOutcome Outcome);
+
+	/**
+	 *  增援入口(自动增援与未来的 Reinforce 战略配置共用):
+	 *  InGame 时池为 0 则不复活并检查任务失败;否则扣 1 后复活。非 InGame 免费复活。
+	 *  返回是否真的复活了该玩家。
+	 */
+	bool TryReinforcePlayer(AController* PlayerController);
+
+	/**
+	 *  倒地玩家流血计时的精确剩余秒数(读 Timer 本身,屏障内暂停时同样准确);
+	 *  没有计时或结果为负返回 0。服务端使用。
+	 */
+	float GetBleedOutRemaining(AController* PlayerController) const;
+
+	/** InGame 中池空且无人存活 → EndWeaponMatch(Failed)。 */
+	void CheckMissionFailure();
+
+	// ---- 增援/倒地规则(默认值见 WeaponReinforcementDefaults) ----
+
+	/** 倒地后的流血时长(秒) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.1"))
+	float BleedOutSeconds = WeaponReinforcementDefaults::BleedOutSeconds;
+
+	/** 死亡后自动增援的延迟(秒) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.0"))
+	float AutoReinforceDelay = WeaponReinforcementDefaults::AutoReinforceDelay;
+
+	/** 按住交互救起倒地队友所需秒数 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.1"))
+	float ReviveSeconds = WeaponReinforcementDefaults::ReviveSeconds;
+
+	/** 救援有效半径(2D,厘米) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.0"))
+	float ReviveRadius = WeaponReinforcementDefaults::ReviveRadius;
+
+	/** 被救起后的生命比例 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement", meta = (ClampMin = "0.01", ClampMax = "1.0"))
+	float RevivedHealthFraction = WeaponReinforcementDefaults::RevivedHealthFraction;
+
+	/** 难度 1/2/3 的增援池 */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement")
+	TArray<int32> ReinforcementPoolByDifficulty = { 8, 6, 4 };
+
+	/** 致命一击是否先倒地等待救援(无其他存活队友时直接死亡) */
+	UPROPERTY(EditDefaultsOnly, Category = "Reinforcement")
+	bool bDownedRequiresReviver = true;
 
 
 	/** A1:目标点充能完成的服务器入口(由 AGridMapObjectiveActor 调用)。 */
@@ -158,6 +248,21 @@ protected:
 
 	/** 设置(或重置)单个玩家的复活 Timer,并写入复制给 HUD 的复活时间戳 */
 	void ArmRespawnTimer(AController* PlayerToRespawn, float DelaySeconds);
+
+	/** 倒地流血计时:每个 Controller 一个;屏障内与 RespawnTimers 同样暂停/重新锚定。Logout / 复活 / 结算时清除。 */
+	TMap<TObjectPtr<AController>, FTimerHandle> BleedOutTimers;
+
+	/** 局内离线者的生存状态(仅记 Dead;键与恢复名册一致)。BeginWeaponMatch / ReturnToWaitingForPlayers 清空。 */
+	TMap<FUniqueNetIdRepl, EWeaponPlayerLifeState> DepartedLifeStates;
+
+	/** 设置(或重置)流血计时,并写入复制给 HUD 的 DownedServerTime */
+	void ArmBleedOutTimer(AController* DownedController, float Seconds);
+
+	/** 流血结束:DownedServerTime 清零、角色死亡、LifeState=Dead、走 PlayerDied(排自动增援/任务失败检查) */
+	void ExpireBleedOut(AController* DownedController);
+
+	/** 清除某玩家的流血计时与 DownedServerTime(不动 LifeState) */
+	void ClearBleedOut(AController* PlayerController);
 
 private:
 	bool IsPlayerIdentityConnected(const FUniqueNetIdRepl& PlayerId) const;

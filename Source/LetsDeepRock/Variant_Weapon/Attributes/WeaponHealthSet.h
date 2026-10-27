@@ -14,6 +14,9 @@ class AWeaponPlayerController;
 /** 死亡事件委托：Health <= 0 时广播 */
 DECLARE_MULTICAST_DELEGATE_OneParam(FOnHealthDepleted, AActor* /*OwningActor*/);
 
+/** 倒地期间受到伤害:不扣护盾/生命,仅通知(服务端,Damage > 0),由 GameMode 缩短流血时间 */
+DECLARE_MULTICAST_DELEGATE_TwoParams(FOnDownedDamageTaken, AActor* /*Owner*/, float /*Damage*/);
+
 /**
  *  武器系统生命值属性集
  *
@@ -75,6 +78,9 @@ public:
 
 	/** 死亡事件（服务端 Health 归零时广播），供 Owner（PlayerState/NPC）订阅执行死亡流程 */
 	FOnHealthDepleted OnHealthDepleted;
+
+	/** 倒地(State.Downed)时受到伤害的服务端通知 */
+	FOnDownedDamageTaken OnDownedDamageTaken;
 
 	/** ExecCalc 在同步 Instant GE 扣值前暂存本次权威伤害元数据。 */
 	void SetPendingWeaponDamageDebug(const FWeaponDamageDebugEvent& Event, AWeaponPlayerController* SourceController);

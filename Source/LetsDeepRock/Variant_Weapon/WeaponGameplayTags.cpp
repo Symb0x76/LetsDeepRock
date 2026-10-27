@@ -29,6 +29,7 @@ UE_DEFINE_GAMEPLAY_TAG(TAG_GameplayCue_Status_Burning, "GameplayCue.Status.Burni
 
 // 状态
 UE_DEFINE_GAMEPLAY_TAG(TAG_State_Dead, "State.Dead");
+UE_DEFINE_GAMEPLAY_TAG(TAG_State_Downed, "State.Downed");
 
 // 状态伤害内部分类
 UE_DEFINE_GAMEPLAY_TAG(TAG_Damage_Status_Burning, "Damage.Status.Burning");

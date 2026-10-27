@@ -44,6 +44,7 @@ UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_GameplayCue_Status_Burning);
 
 // 状态
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Dead);
+UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_State_Downed);
 
 // 状态伤害内部分类
 UE_DECLARE_GAMEPLAY_TAG_EXTERN(TAG_Damage_Status_Burning);

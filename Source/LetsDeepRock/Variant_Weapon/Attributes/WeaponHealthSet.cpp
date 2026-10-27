@@ -7,6 +7,7 @@
 #include "Net/UnrealNetwork.h"
 #include "WeaponPlayerController.h"
 #include "Abilities/WeaponGameplayCues.h"
+#include "WeaponGameplayTags.h"
 
 UWeaponHealthSet::UWeaponHealthSet()
 {
@@ -106,7 +107,11 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 		float AppliedHealthDamage = 0.0f;
 		bool bJustDied = false;
 
-		if (LocalDamage > 0.0f)
+		// 倒地中:伤害不再扣护盾/生命(Health 已为 0),改为通知 GameMode 缩短流血时间。
+		const UAbilitySystemComponent* DamageOwnerASC = GetOwningAbilitySystemComponent();
+		const bool bOwnerDowned = DamageOwnerASC && DamageOwnerASC->HasMatchingGameplayTag(TAG_State_Downed);
+
+		if (LocalDamage > 0.0f && !bOwnerDowned)
 		{
 			float RemainingDamage = LocalDamage;
 
@@ -147,8 +152,18 @@ void UWeaponHealthSet::PostGameplayEffectExecute(const FGameplayEffectModCallbac
 
 		ConsumePendingWeaponDamageDebug(AppliedShieldDamage, AppliedHealthDamage);
 		// B1:命中表现。此处是唯一知道"护盾/生命各扣了多少"的服务器结算点。
+		// 倒地者被击中:护盾/生命都不再扣(Applied 为 0),但命中仍要可见,所以把原始伤害当作生命部分传给 Cue。
+		// Cue 只读这两个数做表现(闪光大小/颜色),不影响 Health、bJustDied 与伤害统计(ConsumePendingWeaponDamageDebug 已在上面按 Applied 结算)。
 		WeaponGameplayCues::ExecuteHitCue(GetOwningAbilitySystemComponent(), Data.EffectSpec.GetContext(),
-			AppliedShieldDamage, AppliedHealthDamage);
+			AppliedShieldDamage, bOwnerDowned ? LocalDamage : AppliedHealthDamage);
+		if (bOwnerDowned && LocalDamage > 0.0f)
+		{
+			const AActor* DownedOwner = GetOwningActor();
+			if (DownedOwner && DownedOwner->HasAuthority())
+			{
+				OnDownedDamageTaken.Broadcast(GetOwningActor(), LocalDamage);
+			}
+		}
 		if (bJustDied)
 		{
 			const FGameplayEffectContextHandle& EffectContext = Data.EffectSpec.GetContext();

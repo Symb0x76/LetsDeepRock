@@ -220,6 +220,71 @@ bool UWeaponSnapshotCoordinator::RestoreSaveGame(
 	return true;
 }
 
+void UWeaponSnapshotCoordinator::ApplyPlayerLifeState(
+	AWeaponGameMode* GameMode,
+	AController* Controller,
+	AWeaponPlayerState* PlayerState,
+	AWeaponCharacter* Character,
+	const FWeaponPlayerSnapshot& Player,
+	const EWeaponMatchPhase Phase)
+{
+	if (!GameMode || !PlayerState)
+	{
+		return;
+	}
+
+	// 显式写回生存状态:PlayerState 默认的 Up 不能泄漏到死亡/倒地玩家,并补齐服务端 GAS Tag。
+	// 倒地规则只在 InGame 有效:Ending 快照里的倒地者(流血计时已被结算清掉)按死亡恢复,
+	// 并沿用其待复活计时,而不是被还原成 0.1 s 流血的倒地状态。
+	EWeaponPlayerLifeState EffectiveLifeState = Player.LifeState;
+	if (EffectiveLifeState == EWeaponPlayerLifeState::Downed && Phase != EWeaponMatchPhase::InGame)
+	{
+		EffectiveLifeState = EWeaponPlayerLifeState::Dead;
+	}
+	switch (EffectiveLifeState)
+	{
+	case EWeaponPlayerLifeState::Downed:
+		if (Character && Controller)
+		{
+			// EnterDowned + State.Downed + 流血 Timer(屏障内暂停,Release 时重新锚定)
+			GameMode->RestoreDownedPlayer(Controller, Player.DownedRemainingSeconds);
+			return;
+		}
+		break; // 倒地却无 Pawn 的异常数据:按存活无 Pawn 兜底处理
+	case EWeaponPlayerLifeState::Dead:
+		// EnterDeath 写 State.Dead + LifeState=Dead,并隐藏/禁碰撞/卸武器。
+		if (Character)
+		{
+			Character->EnterDeath();
+		}
+		PlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Dead);
+		// 复活 Timer 在源世界存在才重建(与阶段无关,保持"其他阶段沿用旧行为");池空而死(未排复活)保持死亡。
+		if (Player.bRespawnPending && Controller)
+		{
+			GameMode->RestorePendingRespawn(Controller, Player.RespawnRemainingSeconds);
+		}
+		return;
+	default:
+		break;
+	}
+
+	if (Character)
+	{
+		UAbilitySystemComponent* ASC = PlayerState->GetAbilitySystemComponent();
+		if (ASC && ASC->HasMatchingGameplayTag(TAG_State_Downed))
+		{
+			Character->ExitDowned();
+		}
+	}
+	PlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
+	// 兜底:快照里为 Up 却在 InGame 中没有 Pawn(如捕获时尚未出生的中途加入玩家,或旧 v10 数据里的"死亡待复活")。
+	// 恢复世界没有原 Timer,按默认延迟重建(屏障内暂停);到点由 TryReinforcePlayer 免费补出 Pawn(不扣池)。
+	if (!Character && Phase == EWeaponMatchPhase::InGame && Controller)
+	{
+		GameMode->RestorePendingRespawn(Controller, GameMode->GetRespawnDelay());
+	}
+}
+
 bool UWeaponSnapshotCoordinator::RestoreReconnectedPlayer(
 	AWeaponPlayerController* PlayerController,
 	FString& OutError)
@@ -256,8 +321,17 @@ bool UWeaponSnapshotCoordinator::RestoreReconnectedPlayer(
 		OutError = FString::Printf(TEXT("Reconnect restore has no Snapshot player for %s"), *PlayerId.ToDebugString());
 		return false;
 	}
+	AWeaponGameMode* GameMode = PlayerController->GetWorld()
+		? PlayerController->GetWorld()->GetAuthGameMode<AWeaponGameMode>()
+		: nullptr;
+	const EWeaponMatchPhase SnapshotPhase = RetainedSaveGame->Snapshot.MatchPhase;
 	if (!PlayerSnapshot->bHasPawn)
 	{
+		// 快照中该玩家无 Pawn(死亡):RestartPlayer 给了活 Pawn,这里让它死亡并按同一规则排复活。
+		if (GameMode)
+		{
+			ApplyPlayerLifeState(GameMode, PlayerController, PlayerState, Character, *PlayerSnapshot, SnapshotPhase);
+		}
 		SnapshotAppliedPlayerIds.Add(PlayerId);
 		return true;
 	}
@@ -317,6 +391,10 @@ bool UWeaponSnapshotCoordinator::RestoreReconnectedPlayer(
 	Character->GetCharacterMovement()->Velocity = PlayerSnapshot->Velocity;
 	RestoreAttributeValues(PlayerState->GetAbilitySystemComponent(), PlayerSnapshot->AttributeState.Values);
 	Character->ForceNetUpdate();
+	if (GameMode)
+	{
+		ApplyPlayerLifeState(GameMode, PlayerController, PlayerState, Character, *PlayerSnapshot, SnapshotPhase);
+	}
 	SnapshotAppliedPlayerIds.Add(PlayerId);
 	UE_LOG(LogLetsDeepRock, Log, TEXT("Applied reconnect Snapshot Player=%s Location=%s Yaw=%.1f WeaponIndex=%d"),
 		*PlayerId.ToDebugString(),
@@ -700,6 +778,8 @@ bool UWeaponSnapshotCoordinator::CaptureSnapshot(
 	MatchSnapshot.RemainingPhaseTime = GameState->GetRemainingPhaseTime();
 	MatchSnapshot.MissionSeed = GameState->GetMissionSettings().Seed;
 	MatchSnapshot.MissionDifficulty = GameState->GetMissionSettings().Difficulty;
+	MatchSnapshot.ReinforcementPool = GameState->GetReinforcementPool();
+	MatchSnapshot.MatchOutcome = GameState->GetMissionOutcome();
 	if (const AWeaponGameMode* GameMode = World->GetAuthGameMode<AWeaponGameMode>())
 	{
 		GameMode->CaptureObjectiveSnapshot(MatchSnapshot.Objective);
@@ -765,8 +845,20 @@ bool UWeaponSnapshotCoordinator::ValidateSnapshot(
 			}
 		}
 	}
+	if (Snapshot.ReinforcementPool < 0 || Snapshot.ReinforcementPool > 99 ||
+		Snapshot.MatchOutcome > EWeaponMissionOutcome::Failed)
+	{
+		OutError = TEXT("Snapshot reinforcement pool or mission outcome is invalid");
+		return false;
+	}
 	for (const FWeaponPlayerSnapshot& Player : Snapshot.Players)
 	{
+		if (Player.LifeState > EWeaponPlayerLifeState::Dead ||
+			!FMath::IsFinite(Player.DownedRemainingSeconds) || Player.DownedRemainingSeconds < 0.0f)
+		{
+			OutError = TEXT("Snapshot player life state or downed timer is invalid");
+			return false;
+		}
 		if (Player.bRespawnPending &&
 			(!FMath::IsFinite(Player.RespawnRemainingSeconds) || Player.RespawnRemainingSeconds < 0.0f))
 		{
@@ -1092,12 +1184,8 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 			Target.ASC->InitAbilityActorInfo(Target.PlayerState, nullptr);
 			RestoreAttributeValues(Target.ASC, Player.AttributeState.Values);
 			// v10:InGame 中无 Pawn = 死亡等待复活。恢复世界没有原 Timer,在此重建(屏障内暂停)。
-			if (Snapshot.MatchPhase == EWeaponMatchPhase::InGame && Target.PlayerController)
-			{
-				Context.GameMode->RestorePendingRespawn(
-					Target.PlayerController,
-					Player.bRespawnPending ? Player.RespawnRemainingSeconds : Context.GameMode->GetRespawnDelay());
-			}
+			ApplyPlayerLifeState(Context.GameMode, Target.PlayerController, Target.PlayerState,
+				nullptr, Player, Snapshot.MatchPhase);
 			continue;
 		}
 
@@ -1146,6 +1234,10 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 			Target.Character->SetActorEnableCollision(true);
 			Target.Character->ForceNetUpdate();
 		}
+
+		// v12:显式写回生存状态(默认 Up 不能泄漏到死亡/倒地玩家),并补齐服务端 GAS Tag。
+		ApplyPlayerLifeState(Context.GameMode, Target.PlayerController, Target.PlayerState,
+			Target.Character, Player, Snapshot.MatchPhase);
 	}
 
 	for (int32 Index = 0; Index < Context.StagedEnemies.Num(); ++Index)
@@ -1219,6 +1311,10 @@ void UWeaponSnapshotCoordinator::ApplySnapshot(
 
 	Context.GameMode->ApplyRecoveredMatchPhase(Snapshot.MatchPhase, Snapshot.RemainingPhaseTime);
 
+	// v12:增援池与任务结局(屏障内写回;任务失败判定在屏障释放后由 GameMode 重检)。
+	Context.GameState->RestoreReinforcementPoolForRecovery(Snapshot.ReinforcementPool);
+	Context.GameState->SetMissionOutcomeAuthority(Snapshot.MatchOutcome);
+
 	// v10:恢复世界不解析 travel options,任务设置以快照为准。
 	FWeaponMissionSettings RestoredMission;
 	RestoredMission.Seed = Snapshot.MissionSeed;
@@ -1251,7 +1347,7 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 	TMap<FUniqueNetIdRepl, AWeaponCharacter*> TombstonePawns;
 	TMap<FUniqueNetIdRepl, AWeaponPlayerState*> TombstonePlayerStates;
 	GameMode->GetAttributionTombstoneActors(TombstonePawns, TombstonePlayerStates);
-	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds, GameState](
+	auto CapturePlayer = [&Snapshot, &OutError, &CapturedPlayerIds, GameState, GameMode](
 		const AWeaponPlayerState* PlayerState,
 		const AWeaponCharacter* Character) -> bool
 	{
@@ -1277,6 +1373,17 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		{
 			Player.bRespawnPending = true;
 			Player.RespawnRemainingSeconds = FMath::Max(0.0f, RespawnServerTime - GameState->GetServerWorldTimeSeconds());
+		}
+		// v12:生存状态与流血剩余秒数(DownedServerTime 为流血 Timer 的复制投影,屏障内由 Release 重新锚定)
+		Player.LifeState = PlayerState->GetLifeState();
+		if (Player.LifeState == EWeaponPlayerLifeState::Downed)
+		{
+			// 优先读 Timer 本身:屏障内 Timer 暂停,而复制投影会随时间下降,会低估剩余时间。
+			// 取两者较大值:该玩家没有流血 Timer(如离线墓碑)时自然回退到复制投影。
+			const float Projected = FMath::Max(
+				0.0f, PlayerState->GetDownedServerTime() - GameState->GetServerWorldTimeSeconds());
+			const float Exact = GameMode->GetBleedOutRemaining(PlayerState->GetOwningController());
+			Player.DownedRemainingSeconds = FMath::Max(Projected, Exact);
 		}
 
 		if (!Character)

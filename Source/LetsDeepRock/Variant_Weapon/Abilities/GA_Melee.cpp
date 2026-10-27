@@ -31,6 +31,8 @@ UGA_Melee::UGA_Melee()
 
 	// 死亡时阻断所有武器 Ability
 	ActivationBlockedTags.AddTag(TAG_State_Dead);
+	// 倒地同样不能近战
+	ActivationBlockedTags.AddTag(TAG_State_Downed);
 }
 
 void UGA_Melee::ActivateAbility(const FGameplayAbilitySpecHandle Handle,

@@ -14,6 +14,12 @@ struct FGameplayTag;
 struct FWeaponSnapshot;
 struct FWeaponStatusEffectSnapshot;
 class AEnemyCharacter;
+class AController;
+class AWeaponGameMode;
+class AWeaponPlayerState;
+class AWeaponCharacter;
+struct FWeaponPlayerSnapshot;
+enum class EWeaponMatchPhase : uint8;
 
 /** 服务器权威快照入口；负责捕获一致性边界和恢复前校验 */
 UCLASS()
@@ -36,6 +42,16 @@ public:
 	bool RestoreSaveGame(const UWeaponMatchSaveGame* SaveGame, FString& OutError);
 	/** Apply the saved state for a survivor that reconnects after the candidate World was restored. */
 	bool RestoreReconnectedPlayer(AWeaponPlayerController* PlayerController, FString& OutError);
+
+	/** v12:把快照里的生存状态(Downed/Dead/Up)应用到服务端玩家;ApplySnapshot 与重连恢复共用。
+	 *  Character 为空表示该玩家当前无 Pawn。Phase 为快照的比赛阶段。 */
+	static void ApplyPlayerLifeState(
+		AWeaponGameMode* GameMode,
+		AController* Controller,
+		AWeaponPlayerState* PlayerState,
+		AWeaponCharacter* Character,
+		const FWeaponPlayerSnapshot& Player,
+		EWeaponMatchPhase Phase);
 
 	/** SaveGame 序列化/反序列化 */
 	static bool SerializeSaveGame(UWeaponMatchSaveGame* SaveGame, TArray<uint8>& OutBytes, FString& OutError);

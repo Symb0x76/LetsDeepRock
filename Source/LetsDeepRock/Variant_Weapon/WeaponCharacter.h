@@ -7,6 +7,7 @@
 #include "AbilitySystemInterface.h"
 #include "GameplayCueInterface.h"
 #include "GridMap/GridMapTypes.h"
+#include "Reinforcement/WeaponReinforcementRules.h"
 #include "GameplayAbilitySpec.h"
 #include "WeaponCharacter.generated.h"
 
@@ -109,6 +110,28 @@ public:
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
+	/** 倒地(仅服务端,由 GameMode 调用):State.Downed、取消蓄力/预览、禁用移动;保留碰撞与可见,敌人仍可命中 */
+	void EnterDowned();
+
+	/** 死亡表现(仅服务端):State.Dead、LifeState=Dead、禁移动/碰撞、隐藏、卸武器;不通知 GameMode */
+	void EnterDeath();
+
+	/** 退出倒地(被救起):移除 State.Downed 并恢复行走 */
+	void ExitDowned();
+
+	/**
+	 *  离自己最近、倒地且在 ReviveRadius(2D)内的其他玩家的 PlayerState;没有则 nullptr。
+	 *  const 且客户端可用(只读复制的 LifeState 与 Pawn 位置)。半径取 AWeaponGameState::GetReviveRadius()
+	 *  (GameMode 调参复制而来,服务端与客户端一致)。
+	 */
+	AWeaponPlayerState* FindReviveTargetState() const;
+
+	/** 救援目标的 Controller(仅服务端非空:客户端没有其他玩家的 Controller) */
+	AController* FindReviveTarget() const;
+
+	/** 当前救援进度 0~1(仅拥有者收到复制),供 HUD 绘制 */
+	float GetReviveProgress() const { return ReviveProgress; }
+
 	//~ IAbilitySystemInterface：返回 PlayerState 上的 ASC
 	virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
 
@@ -181,8 +204,11 @@ protected:
 	/** 按职业配置和存档初始化主副武器 */
 	void InitProfessionWeapons(const FProfessionConfigRow* ProfessionRow, FName PrimaryWeaponId, FName SecondaryWeaponId);
 
-	/** Health 归零时的服务端回调：添加 State.Dead Tag、禁用输入/移动、通知 GameMode 重生 */
+	/** Health 归零时的服务端回调：交给 GameMode 决定倒地还是死亡 */
 	virtual void HandleHealthDepleted(AActor* OwningActor);
+
+	/** 倒地期间受击的服务端回调:转给 GameMode 缩短流血时间 */
+	void HandleDownedDamageTaken(AActor* OwningActor, float Damage);
 
 	/** 属性是否已从表初始化（避免重复初始化） */
 	bool bAttributesInitialized = false;
@@ -192,6 +218,29 @@ protected:
 
 	/** 检查玩家是否处于死亡状态（ASC 是否持有 State.Dead Tag） */
 	bool IsDead() const;
+
+	/** 不能行动(倒地/死亡):读复制的 PlayerState.LifeState,客户端同样可用 */
+	bool IsOutOfAction() const;
+
+	/** E 键按住救援:本地记录并上报服务端;服务端 Tick 推进 FWeaponReviveTracker */
+	void ReviveHeldPressed();
+	void ReviveHeldReleased();
+
+	UFUNCTION(Server, Reliable)
+	void ServerSetReviveHeld(bool bHeld);
+
+	/** 服务端:E 是否按住(客户端经 ServerSetReviveHeld 上报) */
+	bool bReviveHeld = false;
+
+	/** 服务端救援计时器 */
+	FWeaponReviveTracker ReviveTracker;
+
+	/** 救援进度 0~1,仅拥有者复制 */
+	UPROPERTY(Replicated)
+	float ReviveProgress = 0.0f;
+
+	/** 服务端每 Tick 推进救援;屏障/自身不能行动时视为松手 */
+	void TickRevive(float DeltaTime);
 
 	/** 处理移动输入 */
 	void Move(const FInputActionValue& Value);

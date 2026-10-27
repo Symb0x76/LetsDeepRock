@@ -117,6 +117,51 @@ void AWeaponGameState::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& Out
 	DOREPLIFETIME(AWeaponGameState, MissionSettings);
 	DOREPLIFETIME(AWeaponGameState, bGameplayRecoveryBlocked);
 	DOREPLIFETIME(AWeaponGameState, ObjectiveState);
+	DOREPLIFETIME(AWeaponGameState, ReinforcementPool);
+	DOREPLIFETIME(AWeaponGameState, ReviveRadius);
+}
+
+void AWeaponGameState::SetReviveRadiusAuthority(const float NewRadius)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	const float Clamped = FMath::Max(NewRadius, 0.0f);
+	if (!FMath::IsNearlyEqual(ReviveRadius, Clamped))
+	{
+		ReviveRadius = Clamped;
+		ForceNetUpdate();
+	}
+}
+
+void AWeaponGameState::SetReinforcementPoolAuthority(const int32 NewPool)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	const int32 Clamped = FMath::Max(NewPool, 0);
+	if (ReinforcementPool != Clamped)
+	{
+		ReinforcementPool = Clamped;
+		ForceNetUpdate();
+	}
+}
+
+void AWeaponGameState::RestoreReinforcementPoolForRecovery(const int32 RestoredPool)
+{
+	SetReinforcementPoolAuthority(RestoredPool);
+}
+
+void AWeaponGameState::SetMissionOutcomeAuthority(const EWeaponMissionOutcome NewOutcome)
+{
+	if (!HasAuthority() || MatchState.Outcome == NewOutcome)
+	{
+		return;
+	}
+	MatchState.Outcome = NewOutcome;
+	ForceNetUpdate();
 }
 
 void AWeaponGameState::SetObjectiveStateAuthority(const FWeaponObjectiveState& NewState)
