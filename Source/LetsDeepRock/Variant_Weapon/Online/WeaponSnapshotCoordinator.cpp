@@ -277,7 +277,8 @@ void UWeaponSnapshotCoordinator::ApplyPlayerLifeState(
 		}
 	}
 	PlayerState->SetLifeStateAuthority(EWeaponPlayerLifeState::Up);
-	// v10:InGame 中无 Pawn = 死亡等待复活。恢复世界没有原 Timer,按默认延迟重建(屏障内暂停)。
+	// 兜底:快照里为 Up 却在 InGame 中没有 Pawn(如捕获时尚未出生的中途加入玩家,或旧 v10 数据里的"死亡待复活")。
+	// 恢复世界没有原 Timer,按默认延迟重建(屏障内暂停);到点由 TryReinforcePlayer 免费补出 Pawn(不扣池)。
 	if (!Character && Phase == EWeaponMatchPhase::InGame && Controller)
 	{
 		GameMode->RestorePendingRespawn(Controller, GameMode->GetRespawnDelay());
@@ -1378,10 +1379,10 @@ bool UWeaponSnapshotCoordinator::CapturePlayers(
 		if (Player.LifeState == EWeaponPlayerLifeState::Downed)
 		{
 			// 优先读 Timer 本身:屏障内 Timer 暂停,而复制投影会随时间下降,会低估剩余时间。
-			// 取两者较大值:没有 GameMode 或该玩家没有流血 Timer(如离线墓碑)时自然回退到复制投影。
+			// 取两者较大值:该玩家没有流血 Timer(如离线墓碑)时自然回退到复制投影。
 			const float Projected = FMath::Max(
 				0.0f, PlayerState->GetDownedServerTime() - GameState->GetServerWorldTimeSeconds());
-			const float Exact = GameMode ? GameMode->GetBleedOutRemaining(PlayerState->GetOwningController()) : 0.0f;
+			const float Exact = GameMode->GetBleedOutRemaining(PlayerState->GetOwningController());
 			Player.DownedRemainingSeconds = FMath::Max(Projected, Exact);
 		}
 

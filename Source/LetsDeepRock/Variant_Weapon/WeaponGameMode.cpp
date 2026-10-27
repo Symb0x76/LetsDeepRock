@@ -1512,10 +1512,16 @@ bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
 	const EWeaponPlayerLifeState LifeState = WeaponGetLifeState(PlayerController->GetPlayerState<APlayerState>());
 	const bool bInGame = WeaponGameState->GetMatchPhase() == EWeaponMatchPhase::InGame;
 
-	// 局内只有 Dead 才能被增援;Up(白扣一条命)与 Downed(会打断流血计时并白扣命)都拒绝。
+	// 局内:Dead 走扣池增援;Up 且没有 Pawn(如中途加入、快照恢复时尚未出生)免费补出 Pawn,不扣池;
+	// Downed(会打断流血计时)与 Up 且已有 Pawn(白扣一条命)都拒绝。
+	bool bSpendPool = bInGame;
 	if (bInGame && LifeState != EWeaponPlayerLifeState::Dead)
 	{
-		return false;
+		if (LifeState != EWeaponPlayerLifeState::Up || PlayerController->GetPawn())
+		{
+			return false;
+		}
+		bSpendPool = false;
 	}
 	// 非局内保持免费复活,仅拒绝已存活且有 Pawn 的玩家。
 	if (!bInGame && LifeState == EWeaponPlayerLifeState::Up && PlayerController->GetPawn())
@@ -1523,7 +1529,7 @@ bool AWeaponGameMode::TryReinforcePlayer(AController* PlayerController)
 		return false;
 	}
 
-	if (bInGame)
+	if (bSpendPool)
 	{
 		const int32 Pool = WeaponGameState->GetReinforcementPool();
 		if (Pool <= 0)

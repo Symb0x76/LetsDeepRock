@@ -638,6 +638,40 @@ bool FReinforceGameplayReinforceIgnoresUpPlayerTest::RunTest(const FString& Para
 }
 
 // ---------------------------------------------------------------------------
+// Up 但没有 Pawn(中途加入/快照恢复时尚未出生):增援免费补出 Pawn,不扣池
+// ---------------------------------------------------------------------------
+REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReinforcePawnlessUpIsFreeTest, "LetsDeepRock.Reinforcement.Gameplay.ReinforcePawnlessUpIsFree")
+bool FReinforceGameplayReinforcePawnlessUpIsFreeTest::RunTest(const FString& Parameters)
+{
+	FSwarmGameplayTestContextRef Context = SwarmGameplayMakeContext(this);
+	SwarmGameplayAddArrange(Context, 300.f);
+	ReinforceAddStartMatch(Context);
+	SwarmGameplayAddStep(Context, [](FSwarmGameplayTestContext& Ctx)
+	{
+		AWeaponGameMode* GameMode = Ctx.World->GetAuthGameMode<AWeaponGameMode>();
+		AWeaponGameState* GameState = Ctx.World->GetGameState<AWeaponGameState>();
+		AController* Controller = Ctx.World->GetFirstPlayerController();
+		GameState->SetReinforcementPoolAuthority(2);
+		Ctx.Test->TestEqual(TEXT("local player is Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+
+		if (APawn* OldPawn = Controller->GetPawn())
+		{
+			Controller->UnPossess();
+			OldPawn->Destroy();
+		}
+		Ctx.Test->TestTrue(TEXT("controller has no pawn"), Controller->GetPawn() == nullptr);
+
+		Ctx.Test->TestTrue(TEXT("pawnless Up player is respawned"), GameMode->TryReinforcePlayer(Controller));
+		Ctx.Test->TestEqual(TEXT("pool untouched"), GameState->GetReinforcementPool(), 2);
+		Ctx.Test->TestTrue(TEXT("controller has a pawn again"), Controller->GetPawn() != nullptr);
+		Ctx.Test->TestEqual(TEXT("still Up"), Ctx.PlayerState->GetLifeState(), EWeaponPlayerLifeState::Up);
+	});
+	ReinforceAddWait(Context, 0.2f);
+	SwarmGameplayAddCleanup(Context);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // F1:TryReinforcePlayer 对倒地者同样拒绝,不扣池、不打断流血计时
 // ---------------------------------------------------------------------------
 REINFORCE_GAMEPLAY_TEST(FReinforceGameplayReinforceIgnoresDownedTest, "LetsDeepRock.Reinforcement.Gameplay.ReinforceIgnoresDowned")
